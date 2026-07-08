@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fdsvis"
+version = "1.1.0"
+description = "Interactive visualizer for FDS (Fire Dynamics Simulator) slice-file ensembles"
+requires-python = ">=3.9"
+dependencies = [
+    "PyQt5==5.15.*",
+    "matplotlib>=3.8",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+packages = ["fds", "fds.slice"]
+py-modules = [
+    "config",
+    "data_provider",
+    "load_data",
+    "main",
+    "main_window",
+    "scenario_store",
+    "simulation_controller",
+    "theme",
+    "widgets",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
