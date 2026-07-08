@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+
+# Logs
+*.log
+
+# Data: simulation outputs are large (2.3G) and regenerable; test fixtures
+# under tests/fixtures/ carry the data needed by the test suite.
+fds/sim/
+
+# Large media assets from the 2019 outreach event (425M + 647M)
+banner/
+image_video_sim/
+
+# Runtime caches and ML outputs (see ROADMAP.md §8)
+.cache/
+predictions/
+
+# LaTeX build side-products
+report/*.aux
+report/*.out
+report/*.toc
+report/*.lof
+report/*.lot
+report/*.synctex.gz
+protocol/*.synctex.gz
