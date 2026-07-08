@@ -39,19 +39,19 @@ class TestSliceParser:
         assert len(result) == 5
 
     def test_readSlice_tuple_contents(self, fixtures_dir):
-        """Verify readSlice tuple is (data, times, meshes, extent, norm_direction)."""
-        data, times, meshes, extent, norm_direction = readSlice(
+        """Verify readSlice tuple is (mesh, extent, data, mask, times)."""
+        mesh, extent, data, mask, times = readSlice(
             fixtures_dir, direction=1, offset=0, quantity="TEMPERATURE"
         )
         assert data.shape == (481, 49, 101)
         assert len(times) == 481
-        assert meshes is not None
+        assert mesh is not None
         assert extent is not None
-        assert norm_direction is not None
+        assert mask is not None
 
     def test_times_strictly_increasing(self, fixtures_dir):
         """Verify timestep array is strictly monotonic increasing."""
-        _, times, _, _, _ = readSlice(
+        mesh, extent, data, mask, times = readSlice(
             fixtures_dir, direction=1, offset=0, quantity="TEMPERATURE"
         )
         diffs = np.diff(times)
@@ -59,14 +59,14 @@ class TestSliceParser:
 
     def test_times_length_matches_frames(self, fixtures_dir):
         """Verify times array length matches the number of frames."""
-        data, times, _, _, _ = readSlice(
+        mesh, extent, data, mask, times = readSlice(
             fixtures_dir, direction=1, offset=0, quantity="TEMPERATURE"
         )
         assert len(times) == data.shape[0]
 
     def test_frame_zero_ambient_temperature(self, fixtures_dir):
         """Spot check: frame 0 should be approximately ambient (~20°C)."""
-        data, _, _, _, _ = readSlice(
+        mesh, extent, data, mask, times = readSlice(
             fixtures_dir, direction=1, offset=0, quantity="TEMPERATURE"
         )
         frame_0_mean = np.mean(data[0, :, :])
@@ -78,21 +78,21 @@ class TestSliceParser:
 
     def test_data_not_all_nan(self, fixtures_dir):
         """Verify data does not contain all NaN values."""
-        data, _, _, _, _ = readSlice(
+        mesh, extent, data, mask, times = readSlice(
             fixtures_dir, direction=1, offset=0, quantity="TEMPERATURE"
         )
         assert not np.all(np.isnan(data)), "data should not be entirely NaN"
 
     def test_data_not_all_zeros(self, fixtures_dir):
         """Verify data is not frozen at zero."""
-        data, _, _, _, _ = readSlice(
+        mesh, extent, data, mask, times = readSlice(
             fixtures_dir, direction=1, offset=0, quantity="TEMPERATURE"
         )
         assert not np.allclose(data, 0.0), "data should not be entirely zero"
 
     def test_temperature_increases_over_time(self, fixtures_dir):
         """Sanity check: spatial mean temperature should not decrease monotonically."""
-        data, _, _, _, _ = readSlice(
+        mesh, extent, data, mask, times = readSlice(
             fixtures_dir, direction=1, offset=0, quantity="TEMPERATURE"
         )
         # Compute spatial mean per frame

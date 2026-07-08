@@ -11,23 +11,27 @@ class TestScenarioStore:
 
     def test_store_get_returns_array(self):
         """Verify store.get returns a numpy array."""
-        # Mock load_data to avoid disk access
+        # Create fake folder list and mock load_data
+        folders = [f"/fake/scenario/{i}" for i in range(3)]
         with patch("scenario_store.load_data") as mock_load:
             mock_load.return_value = np.ones((481, 49, 101), dtype=np.float32)
-            store = ScenarioStore(size=2)
+            store = ScenarioStore(folders=folders, cache_size=2)
             result = store.get(0)
             assert isinstance(result, np.ndarray)
 
     def test_store_lru_eviction(self):
-        """Verify LRU eviction: with size=2, case 0 is evicted when cases 1,2 are loaded."""
+        """Verify LRU eviction: with cache_size=2, case 0 is evicted when cases 1,2 are loaded."""
+        folders = [f"/fake/scenario/{i}" for i in range(3)]
         call_count = {}
 
-        def mock_load(case_index):
-            call_count[case_index] = call_count.get(case_index, 0) + 1
-            return np.full((481, 49, 101), float(case_index), dtype=np.float32)
+        def mock_load(folder_path):
+            # Extract index from path to count loads per scenario
+            idx = int(folder_path.split("/")[-1])
+            call_count[idx] = call_count.get(idx, 0) + 1
+            return np.full((481, 49, 101), float(idx), dtype=np.float32)
 
         with patch("scenario_store.load_data", side_effect=mock_load):
-            store = ScenarioStore(size=2)
+            store = ScenarioStore(folders=folders, cache_size=2)
 
             # Load cases 0, 1, 2 (with size=2, case 0 should be evicted)
             store.get(0)
@@ -40,14 +44,16 @@ class TestScenarioStore:
 
     def test_store_cache_hit_no_reload(self):
         """Verify accessing a cached item doesn't trigger reload."""
+        folders = [f"/fake/scenario/{i}" for i in range(3)]
         call_count = {}
 
-        def mock_load(case_index):
-            call_count[case_index] = call_count.get(case_index, 0) + 1
+        def mock_load(folder_path):
+            idx = int(folder_path.split("/")[-1])
+            call_count[idx] = call_count.get(idx, 0) + 1
             return np.ones((481, 49, 101), dtype=np.float32)
 
         with patch("scenario_store.load_data", side_effect=mock_load):
-            store = ScenarioStore(size=2)
+            store = ScenarioStore(folders=folders, cache_size=2)
             store.get(0)
             store.get(0)  # Hit again
             store.get(0)  # Hit again
@@ -55,10 +61,11 @@ class TestScenarioStore:
 
     def test_store_returns_same_object_on_hit(self):
         """Verify cache hit returns the same numpy array object."""
+        folders = [f"/fake/scenario/{i}" for i in range(3)]
         with patch("scenario_store.load_data") as mock_load:
             arr = np.ones((481, 49, 101), dtype=np.float32)
             mock_load.return_value = arr
-            store = ScenarioStore(size=2)
+            store = ScenarioStore(folders=folders, cache_size=2)
             result1 = store.get(0)
             result2 = store.get(0)
             # Should be the same object (not just equal values)
@@ -68,14 +75,16 @@ class TestScenarioStore:
         """Smoke test: concurrent gets should not crash."""
         import threading
 
+        folders = [f"/fake/scenario/{i}" for i in range(4)]
         call_count = {}
 
-        def mock_load(case_index):
-            call_count[case_index] = call_count.get(case_index, 0) + 1
+        def mock_load(folder_path):
+            idx = int(folder_path.split("/")[-1])
+            call_count[idx] = call_count.get(idx, 0) + 1
             return np.ones((481, 49, 101), dtype=np.float32)
 
         with patch("scenario_store.load_data", side_effect=mock_load):
-            store = ScenarioStore(size=4)
+            store = ScenarioStore(folders=folders, cache_size=4)
 
             def hammer():
                 for _ in range(10):
