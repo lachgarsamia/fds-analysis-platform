@@ -1,0 +1,20 @@
+#!/bin/bash
+#SBATCH --job-name=fds_visual
+#SBATCH --account=slfire
+#SBATCH --partition=batch
+#SBATCH --ntasks=24
+#SBATCH --cpus-per-task=2
+#SBATCH --output=stdout.%j
+#SBATCH --error=stderr.%j
+#SBATCH --time=24:00:00
+
+
+# load FDS modules
+module use --append /p/project/cslfire/slfire10/modules_fire
+module load FDS/6.7.1_original-intel2019
+
+# set the number of OMP threads
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
+
+# run FDS executable
+srun fds *.fds

@@ -35,3 +35,9 @@ report/*.lof
 report/*.lot
 report/*.synctex.gz
 protocol/*.synctex.gz
+
+# Session/tooling local state
+.claude/
+
+# Windows leftovers
+Thumbs.db*

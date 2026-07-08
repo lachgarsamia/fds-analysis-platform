@@ -1,0 +1,482 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="enabled">
+   <bool>true</bool>
+  </property>
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1920</width>
+    <height>1100</height>
+   </rect>
+  </property>
+  <!--  <property name="minimumSize">
+   <size>
+    <width>1920</width>
+    <height>1100</height>
+   </size>
+  </property>
+  <property name="maximumSize">
+   <size>
+    <width>1920</width>
+    <height>1100</height>
+   </size>
+ </property>-->
+  <property name="mouseTracking">
+   <bool>false</bool>
+  </property>
+  <property name="windowTitle">
+   <string notr="true">FDS Visualization</string>
+  </property>
+  <property name="autoFillBackground">
+   <bool>false</bool>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">background-color: rgb(255, 255, 255);</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <widget class="QWidget" name="mplwindow" native="true">
+    <property name="geometry">
+     <rect>
+      <x>190</x>
+      <y>81</y>
+      <width>1441</width>
+      <height>701</height>
+     </rect>
+    </property>
+    <property name="sizePolicy">
+     <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+      <horstretch>0</horstretch>
+      <verstretch>0</verstretch>
+     </sizepolicy>
+    </property>
+    <property name="layoutDirection">
+     <enum>Qt::RightToLeft</enum>
+    </property>
+    <layout class="QVBoxLayout" name="mplvl"/>
+   </widget>
+   <widget class="QPushButton" name="quit_button">
+    <property name="geometry">
+     <rect>
+      <x>1570</x>
+      <y>860</y>
+      <width>100</width>
+      <height>40</height>
+     </rect>
+    </property>
+    <property name="sizePolicy">
+     <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+      <horstretch>0</horstretch>
+      <verstretch>0</verstretch>
+     </sizepolicy>
+    </property>
+    <property name="text">
+     <string>Exit</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="simulation_start">
+    <property name="geometry">
+     <rect>
+      <x>190</x>
+      <y>861</y>
+      <width>100</width>
+      <height>40</height>
+     </rect>
+    </property>
+    <property name="styleSheet">
+     <string notr="true">QPushButton::enabled{
+background-color: rgb(78, 154, 6);
+}
+QPushButton::disabled {
+background-color:rgb(200,200,200);
+}</string>
+    </property>
+    <property name="text">
+     <string>Start</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label">
+    <property name="geometry">
+     <rect>
+      <x>360</x>
+      <y>830</y>
+      <width>71</width>
+      <height>16</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Speedup:</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_3">
+    <property name="geometry">
+     <rect>
+      <x>1450</x>
+      <y>60</y>
+      <width>161</width>
+      <height>17</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Colorbar Upper-Limit:</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="temp_label">
+    <property name="geometry">
+     <rect>
+      <x>1600</x>
+      <y>60</y>
+      <width>71</width>
+      <height>17</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string/>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="simulation_stop">
+    <property name="geometry">
+     <rect>
+      <x>190</x>
+      <y>960</y>
+      <width>100</width>
+      <height>40</height>
+     </rect>
+    </property>
+    <property name="styleSheet">
+     <string notr="true">QPushButton::enabled{
+background-color: rgb(164, 0, 0);
+}
+QPushButton::disabled {
+background-color:rgb(200,200,200);
+}</string>
+    </property>
+    <property name="text">
+     <string>Stop</string>
+    </property>
+   </widget>
+   <widget class="QProgressBar" name="time_progress">
+    <property name="geometry">
+     <rect>
+      <x>190</x>
+      <y>791</y>
+      <width>1441</width>
+      <height>23</height>
+     </rect>
+    </property>
+    <property name="styleSheet">
+     <string notr="true">QProgressBar
+{
+    border: 1px solid grey;
+    border-radius: 0px;
+    text-align: center;
+}
+QProgressBar::chunk
+{
+    background-color: rgb(200,200,200);
+}</string>
+    </property>
+    <property name="maximum">
+     <number>120</number>
+    </property>
+    <property name="value">
+     <number>0</number>
+    </property>
+    <property name="textVisible">
+     <bool>true</bool>
+    </property>
+    <property name="format">
+     <string>%v sec.</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_2">
+    <property name="geometry">
+     <rect>
+      <x>510</x>
+      <y>830</y>
+      <width>91</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Candles:</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="simulation_restart">
+    <property name="geometry">
+     <rect>
+      <x>190</x>
+      <y>910</y>
+      <width>100</width>
+      <height>40</height>
+     </rect>
+    </property>
+    <property name="styleSheet">
+     <string notr="true">QPushButton::enabled{
+background-color: rgb(136, 138, 133);
+}
+QPushButton::disabled {
+background-color:rgb(200,200,200);
+}</string>
+    </property>
+    <property name="text">
+     <string>Restart</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_5">
+    <property name="geometry">
+     <rect>
+      <x>660</x>
+      <y>830</y>
+      <width>111</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Ceiling (Door)</string>
+    </property>
+   </widget>
+   <widget class="QSlider" name="temp">
+    <property name="geometry">
+     <rect>
+      <x>1650</x>
+      <y>90</y>
+      <width>22</width>
+      <height>691</height>
+     </rect>
+    </property>
+    <property name="layoutDirection">
+     <enum>Qt::LeftToRight</enum>
+    </property>
+    <property name="minimum">
+     <number>30</number>
+    </property>
+    <property name="maximum">
+     <number>300</number>
+    </property>
+    <property name="singleStep">
+     <number>10</number>
+    </property>
+    <property name="orientation">
+     <enum>Qt::Vertical</enum>
+    </property>
+    <property name="tickPosition">
+     <enum>QSlider::TicksAbove</enum>
+    </property>
+    <property name="tickInterval">
+     <number>50</number>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="candle_1">
+    <property name="geometry">
+     <rect>
+      <x>510</x>
+      <y>860</y>
+      <width>91</width>
+      <height>40</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>1</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="candle_2">
+    <property name="geometry">
+     <rect>
+      <x>510</x>
+      <y>910</y>
+      <width>91</width>
+      <height>40</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>2</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_7">
+    <property name="geometry">
+     <rect>
+      <x>190</x>
+      <y>830</y>
+      <width>121</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Settings</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="vod_open">
+    <property name="geometry">
+     <rect>
+      <x>660</x>
+      <y>860</y>
+      <width>91</width>
+      <height>40</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Open</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="vod_close">
+    <property name="geometry">
+     <rect>
+      <x>660</x>
+      <y>910</y>
+      <width>91</width>
+      <height>40</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Closed</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="vod_hvac">
+    <property name="geometry">
+     <rect>
+      <x>660</x>
+      <y>960</y>
+      <width>91</width>
+      <height>40</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Ventilator</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="voc_close">
+    <property name="geometry">
+     <rect>
+      <x>810</x>
+      <y>910</y>
+      <width>91</width>
+      <height>40</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Closed</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_8">
+    <property name="geometry">
+     <rect>
+      <x>810</x>
+      <y>830</y>
+      <width>121</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Ceiling (Candle)</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="voc_open">
+    <property name="geometry">
+     <rect>
+      <x>810</x>
+      <y>860</y>
+      <width>91</width>
+      <height>40</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Open</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="door_narrow">
+    <property name="geometry">
+     <rect>
+      <x>960</x>
+      <y>910</y>
+      <width>91</width>
+      <height>40</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Narrow</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_9">
+    <property name="geometry">
+     <rect>
+      <x>960</x>
+      <y>830</y>
+      <width>81</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Door</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="door_wide">
+    <property name="geometry">
+     <rect>
+      <x>960</x>
+      <y>860</y>
+      <width>91</width>
+      <height>40</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Wide</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="speed_1">
+    <property name="geometry">
+     <rect>
+      <x>350</x>
+      <y>860</y>
+      <width>91</width>
+      <height>40</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>x1</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="speed_2">
+    <property name="geometry">
+     <rect>
+      <x>350</x>
+      <y>910</y>
+      <width>91</width>
+      <height>40</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>x2</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="speed_3">
+    <property name="geometry">
+     <rect>
+      <x>350</x>
+      <y>960</y>
+      <width>91</width>
+      <height>40</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>x3</string>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QMenuBar" name="menuBar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>1920</width>
+     <height>22</height>
+    </rect>
+   </property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
