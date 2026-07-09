@@ -18,3 +18,7 @@ FRAMES_PER_SECOND = 4
 
 # Number of scenarios kept resident in memory at once by ScenarioStore.
 SCENARIO_CACHE_SIZE = 4
+
+# Ambient (room) temperature, degrees Celsius -- the color scale's fixed lower
+# bound (M1.3.2), so vmin no longer freezes at whatever frame 0 happens to show.
+AMBIENT_C = 20.0
