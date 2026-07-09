@@ -15,7 +15,7 @@ from collections import OrderedDict
 
 import numpy as np
 
-from load_data import load_data, SIM_ROOT
+from load_data import load_data, SIM_ROOT, QUANTITY, DIRECTION, OFFSET
 
 logger = logging.getLogger(__name__)
 
@@ -54,11 +54,14 @@ class ScenarioStore:
     call get() concurrently without corrupting the cache.
     """
 
-    def __init__(self, folders: list, cache_size: int = 4):
+    def __init__(self, folders: list, cache_size: int = 4, cache_dir: str = None):
         if not folders:
             raise ValueError("no scenario folders provided")
         self.folders = folders
         self.cache_size = cache_size
+        # Disk cache is opt-in (None = disabled) so tests that use fake,
+        # nonexistent folder paths don't touch the real filesystem.
+        self.cache_dir = cache_dir
         self._cache = OrderedDict()  # scenario_index -> ndarray, ordered least- to most-recently used
         self._lock = threading.Lock()
 
@@ -74,10 +77,45 @@ class ScenarioStore:
                 self._cache.move_to_end(scenario_index)
                 return cached
 
-            data = load_data(self.folders[scenario_index])
+            data = self._load_with_disk_cache(scenario_index)
             self._cache[scenario_index] = data
             self._cache.move_to_end(scenario_index)
             while len(self._cache) > self.cache_size:
                 evicted_index, _ = self._cache.popitem(last=False)
                 logger.debug("evicting scenario %d from cache", evicted_index)
             return data
+
+    def _cache_path(self, folder: str) -> str:
+        case = os.path.basename(os.path.normpath(folder))
+        return os.path.join(self.cache_dir, f"{case}_{QUANTITY}_dir{DIRECTION}_off{OFFSET}.npy")
+
+    @staticmethod
+    def _is_cache_fresh(folder: str, cache_path: str) -> bool:
+        if not os.path.exists(cache_path):
+            return False
+        source_files = glob.glob(os.path.join(folder, '*.sf')) + glob.glob(os.path.join(folder, '*.smv'))
+        if not source_files:
+            return False
+        cache_mtime = os.path.getmtime(cache_path)
+        newest_source_mtime = max(os.path.getmtime(f) for f in source_files)
+        return cache_mtime >= newest_source_mtime
+
+    def _load_with_disk_cache(self, scenario_index: int) -> np.ndarray:
+        folder = self.folders[scenario_index]
+        if self.cache_dir is None:
+            return load_data(folder)
+
+        cache_path = self._cache_path(folder)
+        if self._is_cache_fresh(folder, cache_path):
+            try:
+                return np.load(cache_path, mmap_mode='r')
+            except (OSError, ValueError) as e:
+                logger.warning("disk cache at %s is unreadable (%s); re-parsing", cache_path, e)
+
+        data = load_data(folder)
+        try:
+            os.makedirs(self.cache_dir, exist_ok=True)
+            np.save(cache_path, data)
+        except OSError as e:
+            logger.warning("could not write disk cache at %s (%s); continuing without it", cache_path, e)
+        return data

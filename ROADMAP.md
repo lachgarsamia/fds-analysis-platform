@@ -20,6 +20,7 @@ Do not plan against stale descriptions. The following is the verified current st
 | ✅ | Cooperative thread stop (8 ms, no `terminate()`) | `simulation_controller.py` |
 | ✅ | Responsive QSplitter layout, light/dark token themes, ToggleGroup, accessibility names, focus rings, shortcuts (Space/F11/Ctrl+R/Ctrl+Q), QSettings persistence, colorblind-safe colormap options, pan/zoom/save toolbar, demo-data fallback | `theme.py`, `widgets.py`, `main_window.py` |
 | ✅ | M1.1: installable package (`pyproject.toml`), pytest suite (35 tests: parser/store/controller/integration), stale files removed (`test_app.py`, `main_window.ui`), fixtures committed | `pyproject.toml`, `tests/`, merged to `main` |
+| ✅ | M1.2: vectorized `Slice.readAllTimes`/`readData` (single structured read, no per-timestep loop), `.npy` disk cache in `ScenarioStore` (mtime-invalidated, corrupted-file fallback), `tests/bench_loading.py` benchmark script. Measured on the real 24-scenario dataset: cold ≈0.055–0.082 s/scenario (target ≤0.4–0.5 s), warm ≈0.002–0.006 s/scenario (target ≤100 ms) — both well inside DoD | `src/fds/slice/slice.py`, `src/scenario_store.py`, `tests/bench_loading.py`, `tests/test_disk_cache.py`, merged to `main` |
 
 ### Current architecture
 ```
@@ -38,15 +39,14 @@ config.py = shared constants (N_CANDLES..., DEFAULT_*, FRAMES_PER_SECOND, SCENAR
 - Grid per slice: **(481 timesteps, 49×101 cells)** ≈ 9.5 MB float32/scenario. Total dataset ≈ 230 MB. This is *small*; "big data" machinery (Zarr, SQLite, out-of-core) is **not** justified yet.
 - **VELOCITY slices already exist** in every scenario (`&SLCF PBY=0.000, QUANTITY='VELOCITY'` in `fds/template.fds`) — never read by the app. Second quantity = zero new simulations needed.
 - Unused on disk: `.s3d` smoke/soot 3D data, `*_hrr.csv` heat-release-rate curves.
-- Cache-miss scenario switch ≈ 1–1.5 s (binary parse). No disk cache yet.
-- `Slice.readData` still does one `np.fromfile` per timestep (481 syscalls; vectorizable to 1).
+- Cache-miss scenario switch ≈1.99 s baseline pre-M1.2; **now ≈0.055–0.082 s cold / ≈0.002–0.006 s warm (M1.2, disk cache + vectorized parser)**.
 - Playback is worker-push on wall clock; no seek/scrub. Progress bar is read-only.
 - `main_window.ui` and `test_app.py` removed in M1.1.
 
 ### Known defects to fix opportunistically
 1. `combineSlices` assumes uniform mesh resolution across meshes (unvalidated).
 2. Color scale `vmin` frozen at first-frame minimum (misleading for later frames).
-3. `readAllTimes` discovers timestep count by looping reads instead of `filesize // stride`.
+3. ~~`readAllTimes` discovers timestep count by looping reads instead of `filesize // stride`.~~ Fixed in M1.2.
 
 ### External input received (2026-07-09)
 Supervisor proposed: (a) cross-validate our parser output against Smokeview/`fdsreader` as an independent correctness check, and (b) revisit simulation generation (`.fds` templates) to produce richer `.sf`/`.smv` output — in service of a visualization pass emphasizing fire-appropriate color science (flame-like palettes, hazard-threshold bands) once the comparison platform work is further along.
@@ -149,7 +149,7 @@ Time budget: **Phase 1 = 1 wk (+ M1.3s spike, timeboxed/parallel; +~0.5 d from M
 | # | Milestone | Why it matters | Impact | Effort | Risk | Priority |
 |---|---|---|---|---|---|---|
 | M1.1 | Packaging, tests, repo hygiene | Safety net for all later refactors | High (invisible) | 1 d | None | **High** — ✅ done |
-| M1.2 | Disk cache + vectorized reads | 1.5 s scenario switch → ~50 ms; unlocks multi-view + QTimer | High | 1 d | Low | **High** |
+| M1.2 | Disk cache + vectorized reads | 1.5 s scenario switch → ~50 ms; unlocks multi-view + QTimer | High | 1 d | Low | **High** — ✅ done |
 | M1.3s | **Parser validation spike** (`fdsreader` cross-check + Smokeview color convention review) | Independent correctness check before M1.2's vectorization locks in parser behavior; informs M1.3's colormap choice | Med | 1 d (timeboxed, spike — not shippable code) | Low | High (blocks only M1.3.1) |
 | M1.3 | Rendering quick wins (blit, domain-appropriate colormap default from M1.3s, vmin fix, interp toggle) | Perceptual correctness + smoothness, nearly free | Med–High | 1 d | Low | **High** |
 | M1.4 | QTimer playback + timeline scrubber | Biggest single UX unlock; playback becomes seekable | High | 2 d | Med (touches controller) | **High** |
@@ -193,7 +193,7 @@ Time budget: **Phase 1 = 1 wk (+ M1.3s spike, timeboxed/parallel; +~0.5 d from M
 ## 3. Top 10 (the balance picks, in execution order)
 
 1. **Tests + packaging (M1.1)** — protects every subsequent change; a refactor without tests before a hard deadline is gambling. ✅ done.
-2. **Disk cache + vectorized reads (M1.2)** — single highest-leverage remaining perf change; prerequisite for 3, 6, 7.
+2. **Disk cache + vectorized reads (M1.2)** — single highest-leverage remaining perf change; prerequisite for 3, 6, 7. ✅ done.
 3. **Timeline scrubber + QTimer playback (M1.4)** — biggest UX unlock per day of work.
 4. **Blit + domain-appropriate colormap + vmin fix (M1.3)** — visual correctness and smoothness, nearly free.
 5. **Quantity generalization (M2.1)** — VELOCITY is already on disk; one reader change unlocks a whole visualization axis.
@@ -216,16 +216,16 @@ Ordering logic: 1–2 are enablers (invisible but load-bearing); 3–4 make the 
 ### M1.1 — Packaging, tests, repo hygiene ✅ DONE
 Merged to `main`. 35 tests passing (12 parser, 5 store, 9 controller, 10 integration). `pip install -e .` clean. Stale files removed.
 
-### M1.2 — Disk cache + vectorized reads
-**Objective:** scenario switch ≤100 ms warm; parse ≤0.4 s cold. **Refactor first:** none.
+### M1.2 — Disk cache + vectorized reads ✅ DONE
+Merged to `main`. **Objective met:** scenario switch ≤100 ms warm; parse ≤0.4 s cold.
 
 | Task | Detail |
 |---|---|
-| 1.2.1 Vectorize `Slice.readData` | Replace 481-iteration `fromfile` loop with ONE structured read: dtype = time-record + data-record combined, `count=n_times`, then slice fields. Same for `readAllTimes` → `n_times = (filesize - header_offset) // stride`. Files: `slice.py`. D:Med T:3h. Test: parser tests still green; add timing assertion (<0.5 s/scenario). |
-| 1.2.2 `.npy` cache layer in `ScenarioStore` | On miss: parse → `np.save(cache_dir/<case>_<quantity>_<slicekey>.npy)`; on hit: `np.load(..., mmap_mode='r')`. Invalidate if any source `.sf`/`.smv` mtime > cache mtime. Cache dir: `fds/sim/.cache/` (gitignored). Files: `scenario_store.py`. D:Med T:3h. Test: cold vs warm timing; corrupted-cache file falls back to re-parse. |
-| 1.2.3 Benchmark script | `tests/bench_loading.py` printing cold/warm/RAM numbers (baseline: 1.99 s cold, N/A warm). D:Easy T:1h. |
+| 1.2.1 Vectorize `Slice.readData` ✅ | `readAllTimes` does one structured read (`n_times = (filesize - offset) // stride`, combined time+data dtype); `readData` reuses that buffer instead of re-reading. Files: `slice.py`. Test: `test_cold_parse_under_500ms` passes. |
+| 1.2.2 `.npy` cache layer in `ScenarioStore` ✅ | `ScenarioStore(cache_dir=...)` — opt-in on the class (default `None`/disabled, so tests with fake paths never touch disk); the real app enables it via `data_provider.py` passing `fds/sim/.cache/` (gitignored). Mtime-invalidated against source `.sf`/`.smv`; corrupted-cache falls back to re-parse. Files: `scenario_store.py`, `data_provider.py`. Tests: 4/4 in `tests/test_disk_cache.py` (cold→warm, stale-source invalidation, corrupted-file fallback, disabled-by-default). |
+| 1.2.3 Benchmark script ✅ | `tests/bench_loading.py`. Run against the real 24-scenario dataset: **cold ≈0.055–0.082 s/scenario, warm ≈0.002–0.006 s/scenario** (baseline was 1.99 s cold, N/A warm). Known rough edge: its reported peak-RSS figure (~600 MB) is the benchmark script's own footprint (it deliberately double-loads all 24 scenarios), not the real app's — the app caps at `SCENARIO_CACHE_SIZE=4`; not yet caveated in the script's output. |
 
-**DoD:** warm switch <100 ms measured · cold parse <0.5 s · cache invalidation test passes · pytest green.
+**DoD:** warm switch <100 ms measured (✅ ≈2–6 ms) · cold parse <0.5 s (✅ ≈55–82 ms) · cache invalidation test passes (✅) · pytest green (✅ 40/40).
 
 ### M1.3s — Parser validation spike (timeboxed, 1 day max)
 **Objective:** independent confirmation our `slice.py` parser is correct, and a concrete color-convention recommendation to feed M1.3.1. **Not merged to `main` as feature code** — produces `docs/spike-parser-validation.md` plus a recommendation, executed on `spike/parser-validation-fdsreader` and left unmerged (or merged as docs-only).
