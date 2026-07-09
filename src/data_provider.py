@@ -17,13 +17,14 @@ generated so the app is still runnable and demonstrable -- clearly labeled
 as demo data in the window title and status bar, never silently.
 """
 
+import os
 from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
 
 from config import N_CANDLES, N_DOORS, N_VOD, N_VOC, FRAMES_PER_SECOND, SCENARIO_CACHE_SIZE
-from load_data import check_scenario_count
+from load_data import check_scenario_count, SIM_ROOT
 from scenario_store import ScenarioStore, list_scenario_folders, build_data_matrix
 
 
@@ -114,7 +115,8 @@ def load_simulation_data(cache_size: int = SCENARIO_CACHE_SIZE) -> SimulationDat
     try:
         check_scenario_count(len(folders), N_CANDLES, N_DOORS, N_VOD, N_VOC)
         data_matrix = build_data_matrix(N_CANDLES, N_DOORS, N_VOD, N_VOC)
-        store = ScenarioStore(folders, cache_size=cache_size)
+        cache_dir = os.path.join(SIM_ROOT, '.cache')
+        store = ScenarioStore(folders, cache_size=cache_size, cache_dir=cache_dir)
         return SimulationData(store=store, data_matrix=data_matrix,
                                timesteps_per_second=FRAMES_PER_SECOND, is_demo=False)
     except Exception as e:

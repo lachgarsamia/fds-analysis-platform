@@ -12,13 +12,20 @@ logger = logging.getLogger(__name__)
 _SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 SIM_ROOT = os.path.join(_SRC_DIR, '..', 'fds', 'sim')
 
+# The single slice every scenario is loaded as today. Exposed as constants
+# (rather than inlined) so ScenarioStore's disk cache can build a matching
+# cache key without duplicating these values.
+QUANTITY = 'TEMPERATURE'
+DIRECTION = 1
+OFFSET = 0
+
 
 def load_data(root_dir: str) -> np.ndarray:
     """Load the TEMPERATURE slice (normal to y, offset 0) for one scenario folder.
 
     Returns an array of shape (n_times, n_y, n_x).
     """
-    data = fds.readDataOnly(root_dir, direction=1, offset=0, quantity='TEMPERATURE')
+    data = fds.readDataOnly(root_dir, direction=DIRECTION, offset=OFFSET, quantity=QUANTITY)
     data = np.flip(data, axis=1)
     return data
 
