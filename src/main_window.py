@@ -28,6 +28,7 @@ from theme import THEMES, build_qss
 from widgets import MplCanvas, ToggleGroup, CollapsibleSection
 from simulation_controller import SimulationController
 from data_provider import SimulationData
+from schematic import SchematicWidget, flame_icon, door_icon, vent_icon, resolve_room_extent
 
 ORG_NAME = "FZJuelich"
 APP_NAME = "FDSSLCFVisualizer"
@@ -157,6 +158,25 @@ class MainWindow(QtWidgets.QMainWindow):
         title.setWordWrap(True)
         outer.addWidget(title)
 
+        # --- Room diagram ----------------------------------------------------
+        # A live schematic for non-specialist users: shows the room, door,
+        # vents, and candle(s) matching the toggles below, proportioned from
+        # the scenario's real parsed .smv mesh extent (see schematic.py).
+        schematic_section = CollapsibleSection("Room diagram")
+        schematic_section.setToolTip(
+            "A simplified top-down diagram of the room, proportioned to match "
+            "the real physical layout. It updates automatically as you change "
+            "the candles, vents, and door below."
+        )
+        self.schematic = SchematicWidget()
+        schematic_section.add_row(self.schematic)
+        outer.addWidget(schematic_section)
+        room_extent = resolve_room_extent(self.controller.store, self.controller.current_case_index())
+        self.schematic.set_room_extent(room_extent)
+        self.schematic.update_state(DEFAULT_CANDLES, DEFAULT_DOOR, DEFAULT_VOD, DEFAULT_VOC)
+
+        outer.addWidget(self._divider())
+
         # --- Simulation transport controls ---------------------------------
         transport_row = QtWidgets.QHBoxLayout()
         transport_row.setSpacing(8)
@@ -200,39 +220,62 @@ class MainWindow(QtWidgets.QMainWindow):
         speed_section.add_row(self.speed_toggle)
         outer.addWidget(speed_section)
 
-        candle_section = CollapsibleSection("Candles")
+        candle_section = CollapsibleSection("Number of candles")
         self.candle_toggle = ToggleGroup(
             [("1 candle", 0), ("2 candles", 1)], default_index=DEFAULT_CANDLES,
             accessible_name="Number of candles",
+        )
+        self.candle_toggle.setToolTip(
+            "Sets how many lit candles are burning in the room. More candles "
+            "create a bigger, hotter fire source and change how quickly the "
+            "room heats up."
         )
         self.candle_toggle.value_changed.connect(self._on_candle_changed)
         candle_section.add_row(self.candle_toggle)
         outer.addWidget(candle_section)
 
-        vod_section = CollapsibleSection("Ventilation opening damper (VOD)")
+        # Plain-language primary label with the technical code (VOD) kept as
+        # secondary text, per the 2026-07-09c non-specialist label pass --
+        # raw variable names must never appear unexplained (ROADMAP §4 M1.6.4).
+        vod_section = CollapsibleSection("Air vent 1 (VOD)")
         self.vod_toggle = ToggleGroup(
             [("Open", 0), ("Closed", 1), ("HVAC", 2)], default_index=DEFAULT_VOD,
-            accessible_name="VOD state",
+            accessible_name="Air vent 1 (VOD) state",
+        )
+        self.vod_toggle.setToolTip(
+            "Opens, closes, or connects an air vent in the room to a fan "
+            "(HVAC). Open lets smoke and hot air escape and fresh air in; "
+            "closed traps heat and smoke inside."
         )
         self.vod_toggle.value_changed.connect(self._on_vod_changed)
         vod_section.add_row(self.vod_toggle)
         outer.addWidget(vod_section)
 
-        voc_section = CollapsibleSection("Ventilation opening cover (VOC)")
+        voc_section = CollapsibleSection("Air vent 2 (VOC)")
         self.voc_toggle = ToggleGroup(
             [("Open", 0), ("Closed", 1)], default_index=DEFAULT_VOC,
-            accessible_name="VOC state",
+            accessible_name="Air vent 2 (VOC) state",
+        )
+        self.voc_toggle.setToolTip(
+            "Opens or closes a second air vent in the room. Works the same "
+            "way as Air vent 1 -- open lets air move through, closed seals "
+            "the room."
         )
         self.voc_toggle.value_changed.connect(self._on_voc_changed)
         voc_section.add_row(self.voc_toggle)
         outer.addWidget(voc_section)
 
-        door_section = CollapsibleSection("Door")
+        door_section = CollapsibleSection("Door opening width")
         # Options list is [("Wide open", 1), ("Narrow", 0)]; DEFAULT_DOOR=1 is
         # at position 0, so default_index=0 correctly preselects "Wide open".
         self.door_toggle = ToggleGroup(
             [("Wide open", 1), ("Narrow", 0)], default_index=0,
             accessible_name="Door state",
+        )
+        self.door_toggle.setToolTip(
+            "Sets how wide the door opening is. A wider opening lets more "
+            "air, smoke, and heat move in and out of the room; 'Narrow' "
+            "restricts the flow."
         )
         self.door_toggle.value_changed.connect(self._on_door_changed)
         door_section.add_row(self.door_toggle)
@@ -342,18 +385,29 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_candle_changed(self, value):
         self.controller.set_candles(value)
         self._refresh_paused_frame()
+        self._refresh_schematic()
 
     def _on_vod_changed(self, value):
         self.controller.set_vod(value)
         self._refresh_paused_frame()
+        self._refresh_schematic()
 
     def _on_voc_changed(self, value):
         self.controller.set_voc(value)
         self._refresh_paused_frame()
+        self._refresh_schematic()
 
     def _on_door_changed(self, value):
         self.controller.set_door(value)
         self._refresh_paused_frame()
+        self._refresh_schematic()
+
+    def _refresh_schematic(self):
+        """The schematic mirrors the controller's own params -- no scenario
+        state is duplicated here, this just repaints from the same source
+        of truth the heatmap already reads."""
+        p = self.controller.params
+        self.schematic.update_state(p.candles, p.door, p.vod, p.voc)
 
     def _refresh_paused_frame(self):
         """When paused, changing a scenario toggle should still update the
@@ -409,6 +463,17 @@ class MainWindow(QtWidgets.QMainWindow):
     def _apply_theme(self):
         palette = THEMES[self.current_theme_name]
         self.setStyleSheet(build_qss(palette, self.ui_scale))
+        self.schematic.apply_palette(palette)
+        self._refresh_toggle_icons(palette)
+
+    def _refresh_toggle_icons(self, palette):
+        """Icon color is redrawn per theme so it stays legible against both
+        the light and dark control-panel background (ROADMAP §4 M1.6.4)."""
+        color = palette.text_secondary
+        self.candle_toggle.set_icon(flame_icon(color))
+        self.door_toggle.set_icon(door_icon(color))
+        self.vod_toggle.set_icon(vent_icon(color))
+        self.voc_toggle.set_icon(vent_icon(color))
 
     # -------------------------------------------------------- misc/window
     def _setup_shortcuts(self):
