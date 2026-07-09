@@ -25,8 +25,9 @@ from matplotlib import cm
 
 from config import DEFAULT_CANDLES, DEFAULT_DOOR, DEFAULT_VOD, DEFAULT_VOC, AMBIENT_C
 from theme import THEMES, build_qss
-from widgets import MplCanvas, ToggleGroup, CollapsibleSection
+from widgets import MplCanvas, ToggleGroup, CollapsibleSection, TimelineWidget
 from simulation_controller import SimulationController
+from time_controller import TimeController
 from data_provider import SimulationData
 from schematic import SchematicWidget, flame_icon, door_icon, vent_icon, resolve_room_extent
 
@@ -69,8 +70,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self.controller.params.door = DEFAULT_DOOR
         self.controller.params.vod = DEFAULT_VOD
         self.controller.params.voc = DEFAULT_VOC
-        self.controller.frame_ready.connect(self._on_frame)
-        self.controller.error.connect(self._on_sim_error)
+        self.controller.prefetch_finished.connect(self._on_prefetch_finished)
+        self.controller.prefetch_error.connect(self._on_prefetch_error)
+
+        # M1.4: pull-based playback clock. frame_count_fn must never trigger
+        # a load itself -- it just reports self._current_n_frames, which is
+        # only ever updated once a scenario is confirmed loaded (see
+        # _on_scenario_param_changed / _on_prefetch_finished below).
+        self._current_n_frames = 0
+        self._busy = False               # a cache-miss prefetch is in flight
+        self._pending_load_case = None   # which case_index that prefetch is for
+        self._was_playing_before_load = False
+        self.time_controller = TimeController(
+            lambda: self._current_n_frames, sim_data.timesteps_per_second
+        )
+        self.time_controller.time_changed.connect(self._on_time_changed)
+        self.time_controller.playing_changed.connect(self._on_playing_changed)
 
         self.current_theme_name = self.settings.value("theme", "dark")
         self.ui_scale = float(self.settings.value("ui_scale", 1.0))
@@ -213,18 +228,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self.restart_button = QtWidgets.QPushButton("Restart")
         self.restart_button.setAccessibleName("Restart simulation from the beginning")
         self.restart_button.setToolTip("Restart the simulation from t=0 (Ctrl+R)")
-        self.restart_button.setEnabled(False)
         self.restart_button.clicked.connect(self._restart_simulation)
 
         for b in (self.start_button, self.stop_button, self.restart_button):
             transport_row.addWidget(b)
         outer.addLayout(transport_row)
 
-        self.time_progress = QtWidgets.QProgressBar()
-        self.time_progress.setAccessibleName("Simulation time progress")
-        self.time_progress.setFormat("t = %v s")
-        self.time_progress.setRange(0, 100)
-        outer.addWidget(self.time_progress)
+        # M1.4: interactive scrubber (play/pause + seek slider + time label +
+        # loop toggle), replacing the old read-only QProgressBar.
+        self.timeline = TimelineWidget()
+        self.timeline.play_pause_clicked.connect(self._toggle_play_pause)
+        self.timeline.seek_requested.connect(self._on_seek_requested)
+        self.timeline.loop_toggled.connect(self.time_controller.set_loop)
+        outer.addWidget(self.timeline)
 
         outer.addWidget(self._divider())
 
@@ -234,7 +250,11 @@ class MainWindow(QtWidgets.QMainWindow):
             [("1x", 1), ("2x", 2), ("3x", 3)], default_index=0,
             accessible_name="Playback speed",
         )
-        self.speed_toggle.value_changed.connect(self.controller.set_speed)
+        self.speed_toggle.setToolTip(
+            "Controls how fast the simulation plays back -- 2x and 3x speed "
+            "up the animation without changing the underlying simulation."
+        )
+        self.speed_toggle.value_changed.connect(self.time_controller.set_speed)
         speed_section.add_row(self.speed_toggle)
         outer.addWidget(speed_section)
 
@@ -370,7 +390,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # Use the controller's actual default parameters (candles/door/vod/voc
         # as set in __init__) so the first frame shown matches what the
         # control-panel toggles display as selected.
-        first_frame = self.controller.store.get(self.controller.current_case_index())[0, :, :]
+        first_scenario = self.controller.store.get(self.controller.current_case_index())
+        self._current_n_frames = first_scenario.shape[0]
+        first_frame = first_scenario[0, :, :]
         self.heatmap = self.ax.imshow(
             first_frame,
             cmap=self.current_colormap,
@@ -386,6 +408,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # temperature, not whatever frame 0 happened to show (M1.3.2).
         self.heatmap.set_clim(vmin=AMBIENT_C, vmax=self.temp_slider.value())
         self.canvas.capture_background()
+        self.timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
+        self.timeline.set_index(0)
 
     def _redraw(self, frame):
         """Per-frame playback path: blit instead of a full draw_idle() so
@@ -397,34 +421,67 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas.blit_update(self.heatmap)
 
     # -------------------------------------------------------- signal slots
-    def _on_frame(self, frame, current_time, index):
+    def _on_time_changed(self, index: int):
+        """TimeController's tick/seek signal (M1.4.1): pull the frame for
+        the *current* scenario at `index` and redraw. Relies on M1.2's disk
+        cache making an already-warm store.get() ~1-6ms -- cheap enough to
+        call directly here without stalling the GUI thread on every tick."""
+        case_idx = self.controller.current_case_index()
+        frame = self.controller.store.get(case_idx)[index]
         self._redraw(frame)
-        self.time_progress.setValue(current_time)
-        self.statusBar().showMessage(f"Simulating - t = {current_time}s", 2000)
+        self.timeline.set_index(index)
+        current_time = index / self.time_controller.timesteps_per_second
+        self.statusBar().showMessage(f"t = {current_time:.1f} s", 2000)
+
+    def _on_playing_changed(self, playing: bool):
+        self.timeline.set_playing(playing)
+        self.start_button.setEnabled(not playing)
+        self.stop_button.setEnabled(playing)
+
+    def _on_seek_requested(self, index: int):
+        self.time_controller.seek(index)
 
     def _on_sim_error(self, message: str):
         QtWidgets.QMessageBox.critical(self, "Simulation error", message)
         self.stop_button.setEnabled(False)
         self.start_button.setEnabled(True)
 
+    def _on_prefetch_finished(self, case_idx: int):
+        """A background scenario load completed (M1.4.4). If the user has
+        since switched to a different combination, this is stale -- ignore
+        it silently, the busy state stays active for whichever request is
+        still pending (or was already cleared by a cache hit)."""
+        if case_idx != self._pending_load_case:
+            return
+        self._pending_load_case = None
+        self._end_busy_state()
+        self._sync_current_scenario(case_idx)
+        if self._was_playing_before_load:
+            self.time_controller.play()
+
+    def _on_prefetch_error(self, message: str):
+        self._pending_load_case = None
+        self._end_busy_state()
+        self._on_sim_error(message)
+
     def _on_candle_changed(self, value):
         self.controller.set_candles(value)
-        self._refresh_paused_frame()
+        self._on_scenario_param_changed()
         self._refresh_schematic()
 
     def _on_vod_changed(self, value):
         self.controller.set_vod(value)
-        self._refresh_paused_frame()
+        self._on_scenario_param_changed()
         self._refresh_schematic()
 
     def _on_voc_changed(self, value):
         self.controller.set_voc(value)
-        self._refresh_paused_frame()
+        self._on_scenario_param_changed()
         self._refresh_schematic()
 
     def _on_door_changed(self, value):
         self.controller.set_door(value)
-        self._refresh_paused_frame()
+        self._on_scenario_param_changed()
         self._refresh_schematic()
 
     def _refresh_schematic(self):
@@ -434,17 +491,56 @@ class MainWindow(QtWidgets.QMainWindow):
         p = self.controller.params
         self.schematic.update_state(p.candles, p.door, p.vod, p.voc)
 
-    def _refresh_paused_frame(self):
-        """When paused, changing a scenario toggle should still update the
-        plot immediately instead of waiting for the next Start press.
+    def _on_scenario_param_changed(self):
+        """A scenario-defining toggle changed (M1.4.4). Ensures the new
+        scenario is displayed without ever blocking the GUI thread on a
+        cold parse, whether paused or mid-playback: a cache hit updates
+        immediately; a cache miss pauses the timeline, shows a busy cursor
+        and status message, and prefetches on a background thread, resuming
+        playback (if it was playing) once the prefetch completes.
 
-        Note: if the newly selected scenario isn't cached, this synchronously
-        parses it on the GUI thread (~1-1.5s pause) -- same documented
-        trade-off as the original app's update_figure_once(). While playing,
-        the controller's worker thread loads scenarios on its own thread instead.
+        `_pending_load_case` always tracks the *latest requested* scenario,
+        so rapid re-toggling while a prefetch is in flight is safe: only the
+        prefetch matching the current selection is allowed to end the busy
+        state (see _on_prefetch_finished) -- an earlier, now-superseded
+        prefetch simply finishes in the background and is ignored.
         """
-        if not self.controller.is_running():
-            self._redraw(self.controller.current_frame())
+        case_idx = self.controller.current_case_index()
+        if self.controller.is_cached(case_idx):
+            self._pending_load_case = None
+            if self._busy:
+                self._end_busy_state()
+            self._sync_current_scenario(case_idx)
+            return
+
+        self._pending_load_case = case_idx
+        if not self._busy:
+            self._begin_busy_state()
+        self.controller.prefetch(case_idx)
+
+    def _begin_busy_state(self):
+        self._busy = True
+        self._was_playing_before_load = self.time_controller.is_playing()
+        self.time_controller.pause()
+        self.timeline.slider.setEnabled(False)
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        self.statusBar().showMessage("Loading scenario…")
+
+    def _end_busy_state(self):
+        self._busy = False
+        QtWidgets.QApplication.restoreOverrideCursor()
+        self.timeline.slider.setEnabled(True)
+        self.statusBar().showMessage("Ready.", 2000)
+
+    def _sync_current_scenario(self, case_idx: int):
+        """Refresh frame-count/timeline range for the now-confirmed-loaded
+        scenario at case_idx, and redraw the currently displayed frame
+        index against it. Only redraws (doesn't touch play state) -- the
+        caller decides whether to resume playback."""
+        self._current_n_frames = self.controller.store.get(case_idx).shape[0]
+        self.timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
+        if not self.time_controller.is_playing():
+            self._on_time_changed(self.time_controller.index)
 
     def _on_temp_changed(self, value):
         self.temp_label.setText(f"{value} °C")
@@ -456,21 +552,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas.capture_background()
 
     def _start_simulation(self):
-        self.controller.start()
-        self.start_button.setEnabled(False)
-        self.stop_button.setEnabled(True)
-        self.restart_button.setEnabled(True)
+        self.time_controller.play()
 
     def _stop_simulation(self):
-        self.controller.stop()
-        self.start_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
+        self.time_controller.pause()
 
     def _restart_simulation(self):
-        self.controller.restart()
-        self.start_button.setEnabled(False)
-        self.stop_button.setEnabled(True)
-        self.time_progress.setValue(0)
+        self.time_controller.restart()
 
     # ------------------------------------------------------------- theming
     def _set_theme(self, name: str):
@@ -521,6 +609,17 @@ class MainWindow(QtWidgets.QMainWindow):
         QtWidgets.QShortcut(QtGui.QKeySequence("Space"), self, activated=self._toggle_play_pause)
         QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+R"), self, activated=self._restart_simulation)
         QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Q"), self, activated=self.close)
+        # M1.4.3: frame/second stepping while paused or playing.
+        QtWidgets.QShortcut(QtGui.QKeySequence("Left"), self, activated=lambda: self.time_controller.step(-1))
+        QtWidgets.QShortcut(QtGui.QKeySequence("Right"), self, activated=lambda: self.time_controller.step(1))
+        QtWidgets.QShortcut(
+            QtGui.QKeySequence("Shift+Left"), self,
+            activated=lambda: self.time_controller.step(-self.time_controller.timesteps_per_second),
+        )
+        QtWidgets.QShortcut(
+            QtGui.QKeySequence("Shift+Right"), self,
+            activated=lambda: self.time_controller.step(self.time_controller.timesteps_per_second),
+        )
 
     def _toggle_fullscreen(self):
         if self.isFullScreen():
@@ -529,10 +628,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.showFullScreen()
 
     def _toggle_play_pause(self):
-        if self.start_button.isEnabled():
-            self._start_simulation()
-        elif self.stop_button.isEnabled():
+        if self.time_controller.is_playing():
             self._stop_simulation()
+        else:
+            self._start_simulation()
 
     def mouseDoubleClickEvent(self, event):
         # Kept as an explicit opt-in gesture, but no longer forced at startup.
@@ -552,5 +651,5 @@ class MainWindow(QtWidgets.QMainWindow):
     def closeEvent(self, event: QtGui.QCloseEvent):
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("splitter_state", self.splitter.saveState())
-        self.controller.stop()
+        self.time_controller.pause()
         super().closeEvent(event)

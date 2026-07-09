@@ -98,6 +98,29 @@ class _Worker(QtCore.QThread):
             self.error.emit(f"Simulation worker stopped unexpectedly: {e}")
 
 
+class _PrefetchWorker(QtCore.QThread):
+    """One-shot background scenario load (M1.4.4): warms ScenarioStore's
+    cache for a scenario switch so the GUI thread never blocks on a cold
+    parse. Not used for frame-driving playback -- see time_controller.py,
+    which pulls already-cached frames directly on the GUI thread instead.
+    """
+
+    finished_ok = QtCore.pyqtSignal(int)  # case_index that finished loading
+    error = QtCore.pyqtSignal(str)
+
+    def __init__(self, store, case_index: int):
+        super().__init__()
+        self._store = store
+        self._case_index = case_index
+
+    def run(self):
+        try:
+            self._store.get(self._case_index)
+            self.finished_ok.emit(self._case_index)
+        except Exception as e:  # noqa: BLE001 - never let a worker crash silently
+            self.error.emit(f"Failed to load scenario: {e}")
+
+
 class SimulationController(QtCore.QObject):
     """Public API the view talks to. No widget references live here."""
 
@@ -105,6 +128,9 @@ class SimulationController(QtCore.QObject):
     started = QtCore.pyqtSignal()
     stopped = QtCore.pyqtSignal()
     error = QtCore.pyqtSignal(str)
+
+    prefetch_finished = QtCore.pyqtSignal(int)  # case_index (M1.4.4)
+    prefetch_error = QtCore.pyqtSignal(str)
 
     def __init__(self, store, data_matrix, timesteps_per_second: int = 4):
         super().__init__()
@@ -114,6 +140,12 @@ class SimulationController(QtCore.QObject):
         self.params = SimulationParameters()
         self.current_index = 1
         self._worker: _Worker = None
+        # Keep every in-flight prefetch referenced until it actually
+        # finishes: a single overwritten attribute would let a still-running
+        # QThread get garbage-collected mid-run when a rapid second toggle
+        # change starts another prefetch, which Qt treats as fatal (crashes
+        # the whole process, not a Python exception) rather than a quiet bug.
+        self._prefetch_workers: list = []
 
     # -- parameter setters (called from the view's button handlers) --------
     def set_speed(self, speed: int):
@@ -149,6 +181,34 @@ class SimulationController(QtCore.QObject):
         """Return the frame for the current index at the current parameter
         combination - used for the "update once while paused" case."""
         return self.store.get(self.current_case_index())[self.current_index, :, :]
+
+    # -- prefetch (M1.4.4) ----------------------------------------------------
+    def is_cached(self, case_index: int) -> bool:
+        return self.store.is_cached(case_index)
+
+    def prefetch(self, case_index: int):
+        """Warm the store's cache for case_index on a background thread, so
+        the GUI thread never blocks on a cold parse when the view switches
+        to an uncached scenario. Fire-and-forget: emits prefetch_finished
+        or prefetch_error when done; a stale/superseded request (the user
+        switched again before this one finished) is the caller's concern to
+        detect (main_window.py checks case_index against what's still
+        wanted before acting on the result).
+
+        Multiple prefetches can be in flight at once (rapid toggle changes)
+        -- each worker is kept alive in _prefetch_workers until its own
+        finished signal fires, rather than living in a single attribute a
+        newer call would overwrite out from under a still-running thread."""
+        worker = _PrefetchWorker(self.store, case_index)
+        self._prefetch_workers.append(worker)
+        worker.finished_ok.connect(self.prefetch_finished)
+        worker.error.connect(self.prefetch_error)
+        worker.finished.connect(lambda w=worker: self._cleanup_prefetch_worker(w))
+        worker.start()
+
+    def _cleanup_prefetch_worker(self, worker):
+        if worker in self._prefetch_workers:
+            self._prefetch_workers.remove(worker)
 
     # -- lifecycle -----------------------------------------------------------
     def is_running(self) -> bool:
