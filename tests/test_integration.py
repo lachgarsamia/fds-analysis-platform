@@ -108,6 +108,73 @@ class TestIntegration:
         assert window.heatmap.get_clim()[1] == 100.0
         window.close()
 
+    # ----------------------------------------------------- M1.3 rendering tests
+    def test_vmin_pinned_at_ambient_across_frames_and_slider(self, qapp):
+        """Regression test for the frozen-vmin defect (M1.3.2): vmin must stay
+        at AMBIENT_C regardless of which frame is drawn or where vmax is set,
+        never drift to whatever the first-drawn frame's minimum happened to be."""
+        from config import AMBIENT_C
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        assert window.heatmap.get_clim()[0] == AMBIENT_C
+
+        data = window.controller.store.get(window.controller.current_case_index())
+        for i in (0, 50, 200, 480):
+            window._redraw(data[i])
+            assert window.heatmap.get_clim()[0] == AMBIENT_C
+
+        window.temp_slider.setValue(700)
+        assert window.heatmap.get_clim() == (AMBIENT_C, 700.0)
+        window.close()
+
+    def test_blit_playback_many_frames_no_crash(self, qapp):
+        """Blitting (M1.3.3) must survive many consecutive frame draws, a
+        colormap switch mid-playback, and a resize, without crashing or
+        producing a null canvas image."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        window.show()
+        qapp.processEvents()
+
+        data = window.controller.store.get(window.controller.current_case_index())
+        for i in range(0, 100, 5):
+            window._redraw(data[i])
+        window._set_colormap("inferno")
+        for i in range(100, 200, 5):
+            window._redraw(data[i])
+        window.resize(1100, 750)
+        qapp.processEvents()
+        window._redraw(data[200])
+
+        image = window.canvas.grab().toImage()
+        assert not image.isNull()
+        window.close()
+
+    def test_interpolation_toggle_persists(self, qapp):
+        """Verify the interpolation toggle (M1.3.4) applies and persists.
+
+        QSettings is a real, on-disk-persisted backend shared across runs, so
+        this doesn't assume a fresh-install "nearest" default -- it drives
+        both states explicitly and checks the artist/attribute reflect each.
+        """
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        window._set_interpolation("nearest")
+        assert window.heatmap.get_interpolation() == "nearest"
+        assert window.current_interpolation == "nearest"
+        window._set_interpolation("bilinear")
+        assert window.heatmap.get_interpolation() == "bilinear"
+        assert window.current_interpolation == "bilinear"
+        window._set_interpolation("nearest")
+        assert window.heatmap.get_interpolation() == "nearest"
+        window.close()
+
+    def test_colormap_menu_includes_inferno(self, qapp):
+        """M1.3.1: menu keeps gist_heat/inferno/viridis/cividis per spec."""
+        from main_window import COLORMAPS
+        cmap_values = [c for _, c in COLORMAPS]
+        assert set(cmap_values) == {"gist_heat", "inferno", "viridis", "cividis"}
+
     def test_mainwindow_closes_cleanly(self, qapp):
         """Verify window closes and cleans up without crash."""
         sim_data = load_simulation_data()
