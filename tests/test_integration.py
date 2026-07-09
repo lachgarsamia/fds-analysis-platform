@@ -2,7 +2,7 @@
 
 import pytest
 import time
-from PyQt5 import QtCore
+from PyQt5 import QtCore, QtWidgets
 from data_provider import load_simulation_data
 from main_window import MainWindow
 
@@ -306,4 +306,148 @@ class TestIntegration:
         assert window.voc_toggle.toolTip() != ""
         assert window.door_toggle.toolTip() != ""
         assert window.candle_toggle.toolTip() != ""
+        window.close()
+
+    # ------------------------------------------------- M1.4 timeline tests
+    def test_drag_seek_during_playback(self, qapp):
+        """DoD: 'drag-seek works during playback'. Dragging the timeline
+        slider while playing must move the displayed frame immediately and
+        leave playback running (not silently pause it)."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        window._start_simulation()
+        qapp.processEvents()
+        assert window.time_controller.is_playing()
+
+        window._on_seek_requested(250)
+        qapp.processEvents()
+        assert window.time_controller.index == 250
+        assert window.timeline.slider.value() == 250
+        assert window.time_controller.is_playing(), "seeking must not pause playback"
+        assert not window.heatmap.get_array() is None
+
+        window._stop_simulation()
+        window.close()
+
+    def test_seek_while_paused_updates_display_without_playing(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        assert not window.time_controller.is_playing()
+        window._on_seek_requested(100)
+        qapp.processEvents()
+        assert window.time_controller.index == 100
+        assert not window.time_controller.is_playing()
+        window.close()
+
+    def test_speed_change_takes_effect_immediately(self, qapp):
+        """DoD: 'speed change takes effect immediately'."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        window.speed_toggle.set_value(3)
+        window.time_controller.set_speed(3)
+        assert window.time_controller._speed == 3
+        window.close()
+
+    def test_scenario_switch_cache_miss_does_not_block_gui_thread(self, qapp):
+        """DoD: 'no GUI freeze on scenario switch'. The toggle-change handler
+        itself must return quickly (well under the ~55-80ms a cold parse
+        takes) -- the actual load happens on a background thread; a busy
+        cursor + disabled slider + status message cover the gap instead of
+        the GUI thread blocking synchronously (M1.4.4)."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        window.show()
+        qapp.processEvents()
+
+        other_candles = 1 - window.controller.params.candles
+        case_idx = window.controller.data_matrix[
+            other_candles, window.controller.params.door,
+            window.controller.params.vod, window.controller.params.voc,
+        ]
+        if window.controller.is_cached(int(case_idx)):
+            pytest.skip("target scenario already warm from an earlier test in this run")
+
+        t0 = time.perf_counter()
+        window.candle_toggle.set_value(other_candles)
+        window._on_candle_changed(other_candles)
+        elapsed = time.perf_counter() - t0
+        assert elapsed < 0.05, f"toggle handler blocked the GUI thread for {elapsed*1000:.1f}ms"
+        assert window._busy
+        assert QtWidgets.QApplication.overrideCursor() is not None, "busy cursor must be active"
+        assert QtWidgets.QApplication.overrideCursor().shape() == QtCore.Qt.WaitCursor
+        assert not window.timeline.slider.isEnabled()
+
+        deadline = time.perf_counter() + 3.0
+        while window._busy and time.perf_counter() < deadline:
+            qapp.processEvents()
+            time.sleep(0.005)
+        assert not window._busy, "prefetch never completed within 3s"
+        assert QtWidgets.QApplication.overrideCursor() is None, "busy cursor must be restored"
+        assert window.timeline.slider.isEnabled()
+        window.close()
+
+    def test_rapid_toggle_changes_during_pending_prefetch_no_crash(self, qapp):
+        """Regression test for a real QThread lifecycle bug found while
+        building this milestone: firing several scenario-changing toggles
+        before an earlier prefetch finishes used to let a still-running
+        QThread be garbage-collected, which aborts the whole process (not a
+        catchable Python exception). Exercising this here would have caught
+        it before it reached main."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        window.show()
+        qapp.processEvents()
+
+        window.candle_toggle.set_value(1)
+        window._on_candle_changed(1)
+        window.door_toggle.set_value(0)
+        window._on_door_changed(0)
+        window.vod_toggle.set_value(2)
+        window._on_vod_changed(2)
+        qapp.processEvents()
+
+        assert window._pending_load_case == window.controller.current_case_index()
+
+        deadline = time.perf_counter() + 5.0
+        while window._busy and time.perf_counter() < deadline:
+            qapp.processEvents()
+            time.sleep(0.005)
+        assert not window._busy
+        assert window.timeline.slider.isEnabled()
+        # let any straggler background thread(s) actually finish before
+        # the window (and its store) goes away
+        time.sleep(0.2)
+        qapp.processEvents()
+        window.close()
+
+    def test_loop_toggle_wired_to_time_controller(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        assert window.time_controller._loop is True
+        window.timeline.loop_button.setChecked(False)
+        assert window.time_controller._loop is False
+        window.close()
+
+    def test_frame_and_second_step_shortcuts_move_the_index(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        window.time_controller.seek(50)
+        window.time_controller.step(1)
+        assert window.time_controller.index == 51
+        window.time_controller.step(-1)
+        assert window.time_controller.index == 50
+        window.time_controller.step(window.time_controller.timesteps_per_second)
+        assert window.time_controller.index == 50 + window.time_controller.timesteps_per_second
+        window.close()
+
+    def test_old_worker_push_path_not_wired_into_mainwindow(self, qapp):
+        """DoD: 'old worker-push path fully removed' (from MainWindow's
+        perspective -- simulation_controller.py's _Worker class itself is
+        deleted in a separate follow-up commit). MainWindow must not touch
+        the old frame_ready/start/stop/is_running surface at all anymore."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        assert not hasattr(window, "time_progress"), "old QProgressBar must be gone"
+        assert not hasattr(window, "_on_frame"), "old worker frame_ready slot must be gone"
+        assert not hasattr(window, "_refresh_paused_frame"), "superseded by _on_scenario_param_changed"
         window.close()
