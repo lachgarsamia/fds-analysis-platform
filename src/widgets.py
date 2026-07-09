@@ -18,7 +18,16 @@ from matplotlib.figure import Figure
 
 
 class MplCanvas(FigureCanvas):
-    """A matplotlib canvas that expands to fill available layout space."""
+    """A matplotlib canvas that expands to fill available layout space.
+
+    Supports blitting for per-frame playback updates: capture_background()
+    does one full draw and caches the rendered pixels; blit_update(artist)
+    restores that cache and redraws only `artist` on top, which is far
+    cheaper than a full draw_idle() when only the image data changed.
+    Anything that changes what's *underneath* the animated artist (resize,
+    theme, colormap, interpolation, clim) must call capture_background()
+    again -- see main_window.py's setters.
+    """
 
     def __init__(self, parent=None, dpi: int = 100):
         self.fig = Figure(dpi=dpi)
@@ -33,6 +42,28 @@ class MplCanvas(FigureCanvas):
         self.setAccessibleDescription(
             "Displays the current temperature field for the selected scenario."
         )
+        self._background = None
+
+    def capture_background(self):
+        """Full draw + cache the result for subsequent blit_update() calls."""
+        self.draw()
+        self._background = self.copy_from_bbox(self.fig.bbox)
+
+    def blit_update(self, artist):
+        """Fast per-frame redraw: restore the cached background, draw only
+        `artist` on top, blit to screen. Falls back to a full draw+capture
+        if there's no cached background yet (e.g. before the first paint)."""
+        if self._background is None:
+            self.capture_background()
+            return
+        self.restore_region(self._background)
+        artist.axes.draw_artist(artist)
+        self.blit(self.fig.bbox)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # The cached background no longer matches the new canvas size.
+        self._background = None
 
 
 class ToggleGroup(QtWidgets.QWidget):

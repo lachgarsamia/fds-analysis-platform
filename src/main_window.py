@@ -23,7 +23,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib import cm
 
-from config import DEFAULT_CANDLES, DEFAULT_DOOR, DEFAULT_VOD, DEFAULT_VOC
+from config import DEFAULT_CANDLES, DEFAULT_DOOR, DEFAULT_VOD, DEFAULT_VOC, AMBIENT_C
 from theme import THEMES, build_qss
 from widgets import MplCanvas, ToggleGroup, CollapsibleSection
 from simulation_controller import SimulationController
@@ -33,11 +33,19 @@ from schematic import SchematicWidget, flame_icon, door_icon, vent_icon, resolve
 ORG_NAME = "FZJuelich"
 APP_NAME = "FDSSLCFVisualizer"
 
-# Colormap options: keep the original gist_heat, add colorblind-safe alternatives.
+# Colormap options. Default (gist_heat) confirmed by the M1.3s validation
+# spike (docs/spike-parser-validation.md): already a black-red-orange-yellow-
+# white blackbody/flame progression, kept as-is rather than replaced.
 COLORMAPS = [
     ("Heat (gist_heat)", "gist_heat"),
+    ("Inferno", "inferno"),
     ("Viridis (colorblind-safe)", "viridis"),
     ("Cividis (colorblind-safe)", "cividis"),
+]
+
+INTERPOLATIONS = [
+    ("Nearest", "nearest"),
+    ("Bilinear", "bilinear"),
 ]
 
 MIN_WIDTH = 900
@@ -67,6 +75,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.current_theme_name = self.settings.value("theme", "dark")
         self.ui_scale = float(self.settings.value("ui_scale", 1.0))
         self.current_colormap = self.settings.value("colormap", "gist_heat")
+        self.current_interpolation = self.settings.value("interpolation", "nearest")
 
         self.setWindowTitle("FDS SLCF Fire Visualizer" + (" (demo data)" if sim_data.is_demo else ""))
         self.setMinimumSize(MIN_WIDTH, MIN_HEIGHT)
@@ -113,6 +122,15 @@ class MainWindow(QtWidgets.QMainWindow):
             action.triggered.connect(lambda _checked, c=cmap: self._set_colormap(c))
             self.colormap_action_group.addAction(action)
             colormap_menu.addAction(action)
+
+        interpolation_menu = view_menu.addMenu("Interpolation")
+        self.interpolation_action_group = QtWidgets.QActionGroup(self)
+        for label, interp in INTERPOLATIONS:
+            action = QtWidgets.QAction(label, self, checkable=True)
+            action.setChecked(interp == self.current_interpolation)
+            action.triggered.connect(lambda _checked, i=interp: self._set_interpolation(i))
+            self.interpolation_action_group.addAction(action)
+            interpolation_menu.addAction(action)
 
         fullscreen_action = QtWidgets.QAction("Toggle Fullscreen\tF11", self)
         fullscreen_action.triggered.connect(self._toggle_fullscreen)
@@ -356,6 +374,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.heatmap = self.ax.imshow(
             first_frame,
             cmap=self.current_colormap,
+            interpolation=self.current_interpolation,
             aspect="auto",
         )
         self.ax.set_xticks([])
@@ -363,13 +382,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas.fig.subplots_adjust(top=0.97, bottom=0.03, left=0.02, right=0.95)
         self.colorbar = self.canvas.fig.colorbar(self.heatmap, fraction=0.04, pad=0.02)
         self.colorbar.set_label("Temperature (°C)")
-        self.heatmap.set_clim(vmax=self.temp_slider.value())
-        self.canvas.draw_idle()
+        # Explicit vmin so the color scale's lower bound is always ambient
+        # temperature, not whatever frame 0 happened to show (M1.3.2).
+        self.heatmap.set_clim(vmin=AMBIENT_C, vmax=self.temp_slider.value())
+        self.canvas.capture_background()
 
     def _redraw(self, frame):
+        """Per-frame playback path: blit instead of a full draw_idle() so
+        only the image artist's pixels are re-rendered (M1.3.3). Anything
+        that changes what's underneath the image (clim/colormap/theme/
+        interpolation/resize) goes through the dedicated setters below,
+        which do a full draw + recapture instead of calling this."""
         self.heatmap.set_data(frame)
-        self.heatmap.set_clim(vmax=self.temp_slider.value())
-        self.canvas.draw_idle()
+        self.canvas.blit_update(self.heatmap)
 
     # -------------------------------------------------------- signal slots
     def _on_frame(self, frame, current_time, index):
@@ -423,8 +448,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_temp_changed(self, value):
         self.temp_label.setText(f"{value} °C")
-        self.heatmap.set_clim(vmax=value)
-        self.canvas.draw_idle()
+        # vmin stays pinned at AMBIENT_C; only vmax moves with the slider.
+        self.heatmap.set_clim(vmin=AMBIENT_C, vmax=value)
+        # Full redraw (not blit): the colorbar's tick range depends on clim
+        # and needs to actually repaint, and the cached blit background must
+        # be recaptured so subsequent playback frames blit against it.
+        self.canvas.capture_background()
 
     def _start_simulation(self):
         self.controller.start()
@@ -458,13 +487,24 @@ class MainWindow(QtWidgets.QMainWindow):
         self.current_colormap = cmap
         self.settings.setValue("colormap", cmap)
         self.heatmap.set_cmap(cm.get_cmap(cmap))
-        self.canvas.draw_idle()
+        self.canvas.capture_background()
+
+    def _set_interpolation(self, interpolation: str):
+        self.current_interpolation = interpolation
+        self.settings.setValue("interpolation", interpolation)
+        self.heatmap.set_interpolation(interpolation)
+        self.canvas.capture_background()
 
     def _apply_theme(self):
         palette = THEMES[self.current_theme_name]
         self.setStyleSheet(build_qss(palette, self.ui_scale))
         self.schematic.apply_palette(palette)
         self._refresh_toggle_icons(palette)
+        # The QSS restyle doesn't touch the matplotlib canvas itself, but the
+        # cached blit background is invalidated defensively per M1.3.3's spec
+        # (resize/theme/colormap changes all recapture) in case the canvas
+        # ever becomes theme-aware later.
+        self.canvas.capture_background()
 
     def _refresh_toggle_icons(self, palette):
         """Icon color is redrawn per theme so it stays legible against both
