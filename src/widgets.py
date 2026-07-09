@@ -12,7 +12,7 @@ Small reusable widgets used by the main window.
 
 from typing import List, Sequence, Tuple
 
-from PyQt5 import QtCore, QtWidgets
+from PyQt5 import QtCore, QtGui, QtWidgets
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
@@ -98,6 +98,15 @@ class ToggleGroup(QtWidgets.QWidget):
     def set_enabled_all(self, enabled: bool):
         for b in self._buttons:
             b.setEnabled(enabled)
+
+    def set_icon(self, icon: QtGui.QIcon, size: int = 14):
+        """Apply the same category icon (e.g. a flame or door glyph) to every
+        button, alongside its existing text label -- not replacing it, since
+        icon-only buttons are harder to parse for screen readers and for
+        users unfamiliar with the icon convention."""
+        for b in self._buttons:
+            b.setIcon(icon)
+            b.setIconSize(QtCore.QSize(size, size))
 
 
 class CollapsibleSection(QtWidgets.QWidget):
