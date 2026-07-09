@@ -44,7 +44,7 @@ config.py = shared constants (N_CANDLES..., DEFAULT_*, FRAMES_PER_SECOND, SCENAR
 - `main_window.ui` and `test_app.py` removed in M1.1.
 
 ### Known defects to fix opportunistically
-1. `combineSlices` assumes uniform mesh resolution across meshes (unvalidated).
+1. `combineSlices` assumes uniform mesh resolution across meshes (unvalidated). **M1.3s finding:** cross-validation against `fdsreader` found a real, isolated discrepancy at the domain's outer edge column (max 39.8°C, mean 1.7°C in that column only; interior of the domain agrees to <4°C max / 0.007°C mean, and per-frame max temperature matches exactly across all 481 frames). `fdsreader` shows an exact-duplicate value at that edge (boundary-padding signature); which side is correct wasn't adjudicated — needs FDS binary-format docs or a Smokeview visual check to resolve. See `docs/spike-parser-validation.md` §3. No practical impact observed yet, but worth fixing before M2.6's probe/isotherm work reads edge coordinates.
 2. Color scale `vmin` frozen at first-frame minimum (misleading for later frames).
 3. ~~`readAllTimes` discovers timestep count by looping reads instead of `filesize // stride`.~~ Fixed in M1.2.
 
@@ -150,7 +150,7 @@ Time budget: **Phase 1 = 1 wk (+ M1.3s spike, timeboxed/parallel; +~0.5 d from M
 |---|---|---|---|---|---|---|
 | M1.1 | Packaging, tests, repo hygiene | Safety net for all later refactors | High (invisible) | 1 d | None | **High** — ✅ done |
 | M1.2 | Disk cache + vectorized reads | 1.5 s scenario switch → ~50 ms; unlocks multi-view + QTimer | High | 1 d | Low | **High** — ✅ done |
-| M1.3s | **Parser validation spike** (`fdsreader` cross-check + Smokeview color convention review) | Independent correctness check before M1.2's vectorization locks in parser behavior; informs M1.3's colormap choice | Med | 1 d (timeboxed, spike — not shippable code) | Low | High (blocks only M1.3.1) |
+| M1.3s | **Parser validation spike** (`fdsreader` cross-check + Smokeview color convention review) | Independent correctness check before M1.2's vectorization locks in parser behavior; informs M1.3's colormap choice | Med | 1 d (timeboxed, spike — not shippable code) | Low | High (blocks only M1.3.1) — ✅ done |
 | M1.3 | Rendering quick wins (blit, domain-appropriate colormap default from M1.3s, vmin fix, interp toggle) | Perceptual correctness + smoothness, nearly free | Med–High | 1 d | Low | **High** |
 | M1.4 | QTimer playback + timeline scrubber | Biggest single UX unlock; playback becomes seekable | High | 2 d | Med (touches controller) | **High** |
 | M1.5 | MP4/GIF export | Demo assets; researchers share results | Med | 0.5 d | Low (ffmpeg dep) | Med |
@@ -227,18 +227,18 @@ Merged to `main`. **Objective met:** scenario switch ≤100 ms warm; parse ≤0.
 
 **DoD:** warm switch <100 ms measured (✅ ≈2–6 ms) · cold parse <0.5 s (✅ ≈55–82 ms) · cache invalidation test passes (✅) · pytest green (✅ 40/40).
 
-### M1.3s — Parser validation spike (timeboxed, 1 day max)
-**Objective:** independent confirmation our `slice.py` parser is correct, and a concrete color-convention recommendation to feed M1.3.1. **Not merged to `main` as feature code** — produces `docs/spike-parser-validation.md` plus a recommendation, executed on `spike/parser-validation-fdsreader` and left unmerged (or merged as docs-only).
+### M1.3s — Parser validation spike (timeboxed, 1 day max) ✅ DONE
+`docs/spike-parser-validation.md` on `spike/parser-validation-fdsreader` (merged docs-only). **Deviation:** `fdsreader==10.1` doesn't exist on PyPI (real range is `0.0.0`–`1.11.7`); used `1.11.7` instead, documented in the spike doc §0.
 
 | Task | Detail |
 |---|---|
-| s.1 Cross-validate vs `fdsreader` | Install `fdsreader==10.1` (pinned, scratch venv, not added to `pyproject.toml`). Scope: exactly ONE simulation — the existing fixture scenario, not a sweep across all 24. Load same scenario/quantity via both parsers. Compare shape, `times`, per-frame max-abs-difference. Report agreement with numbers, not just "matches." D:Easy T:2h. |
-| s.2 Triage any discrepancy | If arrays disagree, determine which is correct by checking raw byte layout against FDS output format docs — do not assume either side is right by default. File any real bug found as a note for M1.2 (don't fix in the spike branch). D:Med T:2h. |
-| s.3 Smokeview convention review (manual) | Open fixture scenario in Smokeview if the file set supports it standalone (note if it doesn't — full-scenario viewing may need more of the run's output than fixtures include). Note default temperature color bands/ramp style. No automated pixel comparison — Smokeview is a GUI tool; this is a written note, not a diff script. D:Easy T:1h. |
-| s.4 Colormap recommendation | Concrete output for M1.3.1: either "adopt Smokeview's default" or specific hex stops for a custom blackbody-style flame colormap (black→red→orange→yellow→white), plus a proposal for hazard-threshold color bands (e.g. <60°C / 60–300°C / >300°C) to pair with M2.6's isotherm feature. D:Easy T:1h. |
-| s.5 Scope flag for simulation regeneration | Explicit written answer: does "improve simulation output" require editing `fds/template.fds` and re-running FDS? If yes, estimate compute time and hand off to M-SIM rather than starting implementation here. D:Easy T:30m. |
+| s.1 Cross-validate vs `fdsreader` ✅ | Times: exact match (481 steps, 0.0 diff). Temperature: interior of domain agrees to max 3.76°C / mean 0.0068°C; per-frame max temperature matches **exactly** across all 481 frames. Ran against the full on-disk `fds/sim/c1_d0_vod0_voc0/` copy (same scenario as the fixture, not a sweep — the trimmed pytest fixture is missing `.sf` files `fdsreader` needs for slices we don't use). |
+| s.2 Triage any discrepancy ✅ | Found one real, isolated discrepancy at the domain's outer edge column (max 39.8°C, mean 1.7°C, confined to that single column). `fdsreader` shows an exact-duplicate boundary-padding signature there; not adjudicated which side is correct (needs FDS format docs or Smokeview, neither available in this environment). Filed as a note against known defect §0.1, not fixed here. |
+| s.3 Smokeview convention review (manual) | **Not performed** — Smokeview isn't installed in this environment and no GUI tooling is available to install/drive it. Documented as an honest limitation in the spike doc §4, not silently skipped. |
+| s.4 Colormap recommendation ✅ | Keep `gist_heat` (already the app's default, already a black→red→orange→yellow→white blackbody/flame progression) — no default to change for M1.3.1. Hazard bands proposed (<60°C / 60–300°C / >300°C) as general fire-safety reference points pending domain-expert review, not derived from this study's data. |
+| s.5 Scope flag for simulation regeneration ✅ | No — nothing in this spike requires editing `fds/template.fds`. VELOCITY is already present and unread (confirmed again); the one real finding (edge-column discrepancy) is parser-side (`slice.py`), not a simulation-output gap. |
 
-**DoD:** `docs/spike-parser-validation.md` exists with cross-validation numbers, any bug filed as a note (not fixed), a specific colormap recommendation, and the M-SIM scope flag answered. Reported to user; M1.3.1 uses this recommendation instead of a flat default.
+**DoD:** ✅ `docs/spike-parser-validation.md` exists with cross-validation numbers, the edge-column discrepancy filed as a note (not fixed), a specific colormap recommendation (keep `gist_heat`), and the M-SIM scope flag answered (no). M1.3.1 uses this recommendation.
 
 ### M1.3 — Rendering quick wins
 **Objective:** perceptually correct, smooth single-view rendering. **Depends on:** M1.3s's colormap recommendation for task 1.3.1.
