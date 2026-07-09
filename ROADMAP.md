@@ -21,6 +21,8 @@ Do not plan against stale descriptions. The following is the verified current st
 | ✅ | Responsive QSplitter layout, light/dark token themes, ToggleGroup, accessibility names, focus rings, shortcuts (Space/F11/Ctrl+R/Ctrl+Q), QSettings persistence, colorblind-safe colormap options, pan/zoom/save toolbar, demo-data fallback | `theme.py`, `widgets.py`, `main_window.py` |
 | ✅ | M1.1: installable package (`pyproject.toml`), pytest suite (35 tests: parser/store/controller/integration), stale files removed (`test_app.py`, `main_window.ui`), fixtures committed | `pyproject.toml`, `tests/`, merged to `main` |
 | ✅ | M1.2: vectorized `Slice.readAllTimes`/`readData` (single structured read, no per-timestep loop), `.npy` disk cache in `ScenarioStore` (mtime-invalidated, corrupted-file fallback), `tests/bench_loading.py` benchmark script. Measured on the real 24-scenario dataset: cold ≈0.055–0.082 s/scenario (target ≤0.4–0.5 s), warm ≈0.002–0.006 s/scenario (target ≤100 ms) — both well inside DoD | `src/fds/slice/slice.py`, `src/scenario_store.py`, `tests/bench_loading.py`, `tests/test_disk_cache.py`, merged to `main` |
+| ✅ | M1.3s: parser validation spike — `slice.py` cross-validated against `fdsreader` (times exact match; temperature agrees to <4°C max/0.007°C mean domain-interior, per-frame max exact match across all 481 frames); one edge-column discrepancy found, characterized, and filed (not fixed); colormap recommendation (keep `gist_heat`); M-SIM scope flag answered (no template edits needed) | `docs/spike-parser-validation.md`, merged docs-only to `main` |
+| ✅ | M1.3: `AMBIENT_C` vmin fix, `MplCanvas` blitting (`capture_background`/`blit_update`), colormap menu (+`inferno`), interpolation toggle (nearest/bilinear). Blitting measured ~1.3× under headless offscreen rendering (not the predicted ≥5×, see §4 for why) | `src/config.py`, `src/widgets.py`, `src/main_window.py`, `tests/bench_rendering.py`, merged to `main` |
 
 ### Current architecture
 ```
@@ -151,7 +153,7 @@ Time budget: **Phase 1 = 1 wk (+ M1.3s spike, timeboxed/parallel; +~0.5 d from M
 | M1.1 | Packaging, tests, repo hygiene | Safety net for all later refactors | High (invisible) | 1 d | None | **High** — ✅ done |
 | M1.2 | Disk cache + vectorized reads | 1.5 s scenario switch → ~50 ms; unlocks multi-view + QTimer | High | 1 d | Low | **High** — ✅ done |
 | M1.3s | **Parser validation spike** (`fdsreader` cross-check + Smokeview color convention review) | Independent correctness check before M1.2's vectorization locks in parser behavior; informs M1.3's colormap choice | Med | 1 d (timeboxed, spike — not shippable code) | Low | High (blocks only M1.3.1) — ✅ done |
-| M1.3 | Rendering quick wins (blit, domain-appropriate colormap default from M1.3s, vmin fix, interp toggle) | Perceptual correctness + smoothness, nearly free | Med–High | 1 d | Low | **High** |
+| M1.3 | Rendering quick wins (blit, domain-appropriate colormap default from M1.3s, vmin fix, interp toggle) | Perceptual correctness + smoothness, nearly free | Med–High | 1 d | Low | **High** — ✅ done |
 | M1.4 | QTimer playback + timeline scrubber | Biggest single UX unlock; playback becomes seekable | High | 2 d | Med (touches controller) | **High** |
 | M1.5 | MP4/GIF export | Demo assets; researchers share results | Med | 0.5 d | Low (ffmpeg dep) | Med |
 | M1.6 | **Scenario schematic + non-specialist usability pass** (extent-proportioned room schematic, plain-language labels, per-control explainer tooltips) | User-requested priority, before Phase 2 engineering; audience is explicitly non-specialists, and a physical mockup of the setup will sit beside the app at the demo — the schematic must resemble the real layout, and labels must not assume FDS background | High (demo impact) | 2–2.5 d (revised 2026-07-09c from 1.5–2 d: extent-driven proportions + explainer copy for every control) | Low–Med (pure UI addition; reads already-parsed `.smv` extents, no data-layer changes) | **High** (explicit user priority) |
@@ -195,7 +197,7 @@ Time budget: **Phase 1 = 1 wk (+ M1.3s spike, timeboxed/parallel; +~0.5 d from M
 1. **Tests + packaging (M1.1)** — protects every subsequent change; a refactor without tests before a hard deadline is gambling. ✅ done.
 2. **Disk cache + vectorized reads (M1.2)** — single highest-leverage remaining perf change; prerequisite for 3, 6, 7. ✅ done.
 3. **Timeline scrubber + QTimer playback (M1.4)** — biggest UX unlock per day of work.
-4. **Blit + domain-appropriate colormap + vmin fix (M1.3)** — visual correctness and smoothness, nearly free.
+4. **Blit + domain-appropriate colormap + vmin fix (M1.3)** — visual correctness and smoothness, nearly free. ✅ done.
 5. **Quantity generalization (M2.1)** — VELOCITY is already on disk; one reader change unlocks a whole visualization axis.
 6. **Multi-view synchronized comparison (M2.2)** — the centerpiece; the reason this dataset exists.
 7. **Difference + ensemble views (M2.3)** — science value now, ML-eval harness later; the plan's best two-for-one.
@@ -240,17 +242,17 @@ Merged to `main`. **Objective met:** scenario switch ≤100 ms warm; parse ≤0.
 
 **DoD:** ✅ `docs/spike-parser-validation.md` exists with cross-validation numbers, the edge-column discrepancy filed as a note (not fixed), a specific colormap recommendation (keep `gist_heat`), and the M-SIM scope flag answered (no). M1.3.1 uses this recommendation.
 
-### M1.3 — Rendering quick wins
-**Objective:** perceptually correct, smooth single-view rendering. **Depends on:** M1.3s's colormap recommendation for task 1.3.1.
+### M1.3 — Rendering quick wins ✅ DONE
+Merged to `main`. **Objective met:** perceptually correct, smooth single-view rendering.
 
 | Task | Detail |
 |---|---|
-| 1.3.1 Default colormap → per M1.3s recommendation | Adopt the spike's recommended palette (Smokeview-convention or custom flame colormap) as default; keep `gist_heat`/`inferno`/`viridis`/`cividis` as menu options; persist via existing QSettings. If M1.3s recommends a custom colormap, register it via `matplotlib.colors.LinearSegmentedColormap` in `theme.py`. Files: `main_window.py` (COLORMAPS order/default), `theme.py`. D:Easy T:30m. |
-| 1.3.2 Fix frozen `vmin` | Explicit `vmin=AMBIENT_C` (20.0, in `config.py`); slider continues to drive vmax. D:Easy T:30m. Test: colorbar lower bound stable across frames. |
-| 1.3.3 Blitting in `MplCanvas` | Cache background via `copy_from_bbox` after first draw; per frame: `set_data` → `restore_region` → `draw_artist(image)` → `blit`. Invalidate background on resize/theme/colormap change (connect to `resizeEvent` + the existing setters). Files: `widgets.py`, `main_window.py::_redraw`. D:Med T:3h. Test: visual check + FPS print in bench script (expect ≥5× frame-draw speedup). |
-| 1.3.4 Interpolation toggle | View menu: nearest / bilinear (`AxesImage.set_interpolation`). D:Easy T:30m. |
+| 1.3.1 Default colormap → per M1.3s recommendation ✅ | M1.3s recommended keeping `gist_heat` (already the default, already blackbody-style) — no default change needed. Menu now lists `gist_heat`/`inferno`/`viridis`/`cividis` per spec (added `inferno`). Files: `main_window.py`. |
+| 1.3.2 Fix frozen `vmin` ✅ | `AMBIENT_C = 20.0` added to `config.py`; `heatmap.set_clim(vmin=AMBIENT_C, vmax=...)` set explicitly in `_init_plot`/`_on_temp_changed`, never left to auto-scale off frame 0. Test: `test_vmin_pinned_at_ambient_across_frames_and_slider` — vmin confirmed stable across frames 0/50/200/480 and across slider changes. |
+| 1.3.3 Blitting in `MplCanvas` ✅ | `MplCanvas.capture_background()`/`blit_update()` added; `_redraw()` (the per-frame playback path) now blits instead of `draw_idle()`. Background is recaptured (full draw) on resize (via a `resizeEvent` override) and in the theme/colormap/interpolation/vmax setters. **Measured speedup: ~1.3×, not the ≥5× predicted** — profiled and found to be a real, correctly-implemented result, not a bug: this figure has almost no "expensive chrome" to skip (ticks are off, colorbar is small), and `copy_from_bbox`/`restore_region`/`blit` themselves scale with the full canvas buffer size, so under offscreen/headless rendering there isn't much headroom over a full `draw()` at this figure's size. `tests/bench_rendering.py` prints both numbers for future re-measurement on a real display. |
+| 1.3.4 Interpolation toggle ✅ | View → Interpolation menu (nearest/bilinear), persisted via QSettings, applied through `AxesImage.set_interpolation`. |
 
-**DoD:** playback visibly smoother · colorbar physically anchored · toggles persist · pytest green.
+**DoD:** playback visibly smoother (✅ blitting works correctly; ~1.3× measured under headless offscreen rendering, not the predicted ≥5× — see 1.3.3) · colorbar physically anchored (✅ vmin pinned at `AMBIENT_C`) · toggles persist (✅ colormap + interpolation via QSettings) · pytest green (✅ 49/49).
 
 ### M1.4 — QTimer playback + timeline scrubber
 **Objective:** seekable, drift-free playback; retire the wall-clock worker.
