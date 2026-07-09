@@ -1,5 +1,7 @@
 """Unit tests for the FDS binary parser (slice.py)."""
 
+import time
+
 import pytest
 import numpy as np
 from fds.slice.slice import readDataOnly, readSlice
@@ -102,3 +104,13 @@ class TestSliceParser:
             "temperature should not be uniformly decreasing "
             "(fire grows over time)"
         )
+
+    def test_cold_parse_under_500ms(self, fixtures_dir):
+        """Vectorized read must parse one scenario in well under 0.5s (M1.2 DoD)."""
+        t0 = time.perf_counter()
+        data = readDataOnly(
+            fixtures_dir, direction=1, offset=0, quantity="TEMPERATURE"
+        )
+        elapsed = time.perf_counter() - t0
+        assert data is not None
+        assert elapsed < 0.5, f"cold parse took {elapsed:.3f}s, expected <0.5s"
