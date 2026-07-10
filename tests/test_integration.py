@@ -5,6 +5,7 @@ import time
 from PyQt5 import QtCore, QtWidgets
 from data_provider import load_simulation_data
 from main_window import MainWindow
+from slice_key import DEFAULT_SLICE_KEY
 
 
 class TestIntegration:
@@ -479,13 +480,13 @@ class TestIntegration:
                 self._inner = inner
                 self._fail_on = fail_on
 
-            def get(self, case_index):
+            def get(self, case_index, key=DEFAULT_SLICE_KEY):
                 if case_index == self._fail_on:
                     raise RuntimeError("simulated load failure")
-                return self._inner.get(case_index)
+                return self._inner.get(case_index, key)
 
-            def is_cached(self, case_index):
-                return self._inner.is_cached(case_index)
+            def is_cached(self, case_index, key=DEFAULT_SLICE_KEY):
+                return self._inner.is_cached(case_index, key)
 
         window.controller.store = FlakyStoreWrapper(window.controller.store, fail_on=case_a)
 
@@ -621,4 +622,67 @@ class TestIntegration:
         window._exporter.request_cancel()
         window._exporter.wait(10000)
         qapp.processEvents()
+        window.close()
+
+    # -------------------------------------------------- M2.1 quantity switch
+    def test_quantity_combo_lists_temperature_and_velocity_for_real_data(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present; demo mode only exposes TEMPERATURE")
+        labels = {window.quantity_combo.itemText(i) for i in range(window.quantity_combo.count())}
+        assert labels == {"Temperature", "Air speed"}
+        assert window.quantity_combo.isEnabled()
+        window.close()
+
+    def test_switching_quantity_updates_heatmap_and_colorbar(self, qapp):
+        from slice_key import SliceKey
+
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present; nothing real to switch to")
+
+        assert window.current_quantity_key.quantity == "TEMPERATURE"
+        temp_frame = window.heatmap.get_array().copy()
+
+        window.quantity_combo.setCurrentIndex(1)
+        deadline = time.perf_counter() + 3.0
+        while window._busy and time.perf_counter() < deadline:
+            qapp.processEvents()
+            time.sleep(0.005)
+
+        assert window.current_quantity_key == SliceKey("VELOCITY", 1, 0)
+        assert "Air speed" in window.colorbar.ax.get_ylabel()
+        assert window.heatmap.get_clim()[0] == 0.0
+        assert not (window.heatmap.get_array() == temp_frame).all(), \
+            "heatmap must actually show different data after switching quantity"
+        window.close()
+
+    def test_quantity_combo_disabled_in_demo_mode(self, qapp, monkeypatch):
+        """Demo mode has no real .smv to discover quantities from -- the
+        combo must degrade to a single disabled TEMPERATURE entry rather
+        than crash or silently offer a non-functional VELOCITY option."""
+        monkeypatch.setattr("data_provider.list_scenario_folders", lambda *a, **kw: [])
+        sim_data = load_simulation_data()
+        assert sim_data.is_demo
+        window = MainWindow(sim_data)
+        assert window.quantity_combo.count() == 1
+        assert window.quantity_combo.itemText(0) == "Temperature"
+        assert not window.quantity_combo.isEnabled()
+        window.close()
+
+    def test_demo_mode_scenario_toggle_does_not_crash(self, qapp, monkeypatch):
+        """Regression test: DemoScenarioStore never implemented is_cached(),
+        so any scenario-param toggle in demo mode raised AttributeError
+        before this fix (found opportunistically while making the store
+        interface key-aware for M2.1)."""
+        monkeypatch.setattr("data_provider.list_scenario_folders", lambda *a, **kw: [])
+        sim_data = load_simulation_data()
+        assert sim_data.is_demo
+        window = MainWindow(sim_data)
+        window.candle_toggle.set_value(1)
+        window._on_candle_changed(1)  # must not raise
+        qapp.processEvents()
+        assert window.heatmap.get_array() is not None
         window.close()

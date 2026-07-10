@@ -19,14 +19,19 @@ worker run to completion, kept alive via _prefetch_workers until its own
 `finished` signal fires, is enough.
 
 Frames are fetched on demand through a ScenarioStore-like object (anything
-with a `.get(scenario_index) -> ndarray` method -- see data_provider.py),
-not a single preloaded array, so scenario switching still benefits from the
-lazy-loading/LRU-cache behavior introduced in the data layer.
+with a `.get(scenario_index, key) -> ndarray` method -- see
+data_provider.py), not a single preloaded array, so scenario switching
+still benefits from the lazy-loading/LRU-cache behavior introduced in the
+data layer. `key` (slice_key.SliceKey, M2.1) identifies which quantity is
+being fetched -- it defaults to the original TEMPERATURE slice so existing
+single-arg call sites are unaffected.
 """
 
 from dataclasses import dataclass
 
 from PyQt5 import QtCore
+
+from slice_key import SliceKey, DEFAULT_SLICE_KEY
 
 
 @dataclass
@@ -48,14 +53,15 @@ class _PrefetchWorker(QtCore.QThread):
     finished_ok = QtCore.pyqtSignal(int)  # case_index that finished loading
     error = QtCore.pyqtSignal(int, str)   # case_index that failed, message
 
-    def __init__(self, store, case_index: int):
+    def __init__(self, store, case_index: int, key: SliceKey = DEFAULT_SLICE_KEY):
         super().__init__()
         self._store = store
         self._case_index = case_index
+        self._key = key
 
     def run(self):
         try:
-            self._store.get(self._case_index)
+            self._store.get(self._case_index, self._key)
             self.finished_ok.emit(self._case_index)
         except Exception as e:  # noqa: BLE001 - never let a worker crash silently
             self.error.emit(self._case_index, f"Failed to load scenario: {e}")
@@ -99,23 +105,24 @@ class SimulationController(QtCore.QObject):
         ]
 
     # -- prefetch (M1.4.4) ----------------------------------------------------
-    def is_cached(self, case_index: int) -> bool:
-        return self.store.is_cached(case_index)
+    def is_cached(self, case_index: int, key: SliceKey = DEFAULT_SLICE_KEY) -> bool:
+        return self.store.is_cached(case_index, key)
 
-    def prefetch(self, case_index: int):
-        """Warm the store's cache for case_index on a background thread, so
-        the GUI thread never blocks on a cold parse when the view switches
-        to an uncached scenario. Fire-and-forget: emits prefetch_finished
-        or prefetch_error when done; a stale/superseded request (the user
-        switched again before this one finished) is the caller's concern to
-        detect (main_window.py checks case_index against what's still
-        wanted before acting on the result).
+    def prefetch(self, case_index: int, key: SliceKey = DEFAULT_SLICE_KEY):
+        """Warm the store's cache for (case_index, key) on a background
+        thread, so the GUI thread never blocks on a cold parse when the
+        view switches to an uncached scenario or quantity (M2.1). Fire-and-
+        forget: emits prefetch_finished or prefetch_error when done; a
+        stale/superseded request (the user switched again before this one
+        finished) is the caller's concern to detect (main_window.py checks
+        case_index against what's still wanted before acting on the
+        result).
 
         Multiple prefetches can be in flight at once (rapid toggle changes)
         -- each worker is kept alive in _prefetch_workers until its own
         finished signal fires, rather than living in a single attribute a
         newer call would overwrite out from under a still-running thread."""
-        worker = _PrefetchWorker(self.store, case_index)
+        worker = _PrefetchWorker(self.store, case_index, key)
         self._prefetch_workers.append(worker)
         worker.finished_ok.connect(self.prefetch_finished)
         worker.error.connect(self.prefetch_error)

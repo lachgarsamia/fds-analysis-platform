@@ -20,12 +20,13 @@ The rebuilt main window. Key differences from the original fixed-.ui version:
 """
 
 import os
+import logging
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib import cm
 
-from config import DEFAULT_CANDLES, DEFAULT_DOOR, DEFAULT_VOD, DEFAULT_VOC, AMBIENT_C
+from config import DEFAULT_CANDLES, DEFAULT_DOOR, DEFAULT_VOD, DEFAULT_VOC, QUANTITY_DISPLAY
 from theme import THEMES, build_qss
 from widgets import MplCanvas, ToggleGroup, CollapsibleSection, TimelineWidget
 from simulation_controller import SimulationController
@@ -33,6 +34,9 @@ from time_controller import TimeController
 from data_provider import SimulationData
 from schematic import SchematicWidget, flame_icon, door_icon, vent_icon, resolve_room_extent
 from export import AnimationExporter, ffmpeg_available
+from slice_key import SliceInfo, DEFAULT_SLICE_KEY, available_slices
+
+logger = logging.getLogger(__name__)
 
 ORG_NAME = "FZJuelich"
 APP_NAME = "FDSSLCFVisualizer"
@@ -137,6 +141,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui_scale = float(self.settings.value("ui_scale", 1.0))
         self.current_colormap = self.settings.value("colormap", "gist_heat")
         self.current_interpolation = self.settings.value("interpolation", "nearest")
+        # M2.1: which (quantity, direction, offset) slice the heatmap shows.
+        # Set before the control panel/plot are built since both read it.
+        self.current_quantity_key = DEFAULT_SLICE_KEY
 
         self.setWindowTitle("FDS SLCF Fire Visualizer" + (" (demo data)" if sim_data.is_demo else ""))
         self.setMinimumSize(MIN_WIDTH, MIN_HEIGHT)
@@ -373,16 +380,40 @@ class MainWindow(QtWidgets.QMainWindow):
 
         outer.addWidget(self._divider())
 
+        # --- Quantity selector (M2.1) ----------------------------------------
+        quantity_section = CollapsibleSection("Data shown")
+        self.quantity_infos = self._discover_quantities()
+        self.quantity_combo = QtWidgets.QComboBox()
+        self.quantity_combo.setAccessibleName("Quantity shown in the heatmap")
+        multiple_available = len(self.quantity_infos) > 1
+        tooltip = "Choose what the color map shows: temperature, or air speed."
+        if not multiple_available:
+            tooltip += " (Only temperature is available in demo-data mode.)"
+        self.quantity_combo.setToolTip(tooltip)
+        for info in self.quantity_infos:
+            label = QUANTITY_DISPLAY.get(info.key.quantity, {}).get('label', info.key.quantity.title())
+            self.quantity_combo.addItem(label)
+        self.quantity_combo.setEnabled(multiple_available)
+        self.quantity_combo.currentIndexChanged.connect(self._on_quantity_changed)
+        quantity_section.add_row(self.quantity_combo)
+        outer.addWidget(quantity_section)
+
         # --- Display controls -------------------------------------------------
-        temp_section = CollapsibleSection("Temperature scale (max)")
+        # Range/default/label come from QUANTITY_DISPLAY for the starting
+        # quantity (current_quantity_key, set in __init__); switching
+        # quantity later re-applies these via _apply_quantity_display_defaults.
+        initial_display = QUANTITY_DISPLAY[self.current_quantity_key.quantity]
+        temp_section = CollapsibleSection("Display scale (max)")
         temp_row = QtWidgets.QHBoxLayout()
         self.temp_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.temp_slider.setRange(50, 1000)
-        self.temp_slider.setValue(300)
-        self.temp_slider.setAccessibleName("Maximum temperature scale, degrees Celsius")
-        self.temp_slider.setToolTip("Adjust the maximum temperature shown on the color scale")
+        self.temp_slider.setRange(initial_display['slider_min'], initial_display['slider_max'])
+        self.temp_slider.setValue(initial_display['slider_default'])
+        self.temp_slider.setAccessibleName(
+            f"Maximum {initial_display['label'].lower()} scale, {initial_display['unit']}")
+        self.temp_slider.setToolTip(
+            f"Adjust the maximum {initial_display['label'].lower()} shown on the color scale")
         self.temp_slider.valueChanged.connect(self._on_temp_changed)
-        self.temp_label = QtWidgets.QLabel("300 °C")
+        self.temp_label = QtWidgets.QLabel(f"{initial_display['slider_default']} {initial_display['unit']}")
         self.temp_label.setProperty("role", "value")
         self.temp_label.setMinimumWidth(60)
         temp_row.addWidget(self.temp_slider, 1)
@@ -437,12 +468,57 @@ class MainWindow(QtWidgets.QMainWindow):
         return w
 
     # ------------------------------------------------------------ plotting
+    def _discover_quantities(self) -> list:
+        """Which (quantity, direction, offset) slices the current dataset
+        actually offers, restricted to the slice plane the app has always
+        rendered (DEFAULT_SLICE_KEY's direction/offset) so the combo box
+        only ever changes *what* is shown, not *where*. Demo mode has no
+        real .smv to inspect, so it falls back to a single TEMPERATURE
+        entry -- switching quantity is simply unavailable there."""
+        if self.sim_data.manifest:
+            try:
+                infos = available_slices(self.sim_data.manifest[0].path)
+                matching = [i for i in infos
+                            if i.key.direction == DEFAULT_SLICE_KEY.direction
+                            and i.key.offset == DEFAULT_SLICE_KEY.offset]
+                if matching:
+                    matching.sort(key=lambda i: i.key.quantity != DEFAULT_SLICE_KEY.quantity)
+                    return matching
+            except (FileNotFoundError, OSError) as e:
+                logger.warning("could not discover available quantities (%s); "
+                                "falling back to TEMPERATURE only", e)
+        return [SliceInfo(DEFAULT_SLICE_KEY, 'temp', QUANTITY_DISPLAY[DEFAULT_SLICE_KEY.quantity]['unit'])]
+
+    def _apply_quantity_display_defaults(self, quantity: str):
+        """Re-applies the colormap/clim/label defaults for `quantity`
+        (M2.1). Called right after self.current_quantity_key changes, so
+        the temp_slider.setValue() below -- via _on_temp_changed, which
+        reads self.current_quantity_key -- already computes the correct
+        vmin/unit for the new quantity."""
+        display = QUANTITY_DISPLAY.get(quantity, QUANTITY_DISPLAY[DEFAULT_SLICE_KEY.quantity])
+        self.current_colormap = display['cmap']
+        self.settings.setValue("colormap", display['cmap'])
+        for action, (_, cmap) in zip(self.colormap_action_group.actions(), COLORMAPS):
+            action.setChecked(cmap == display['cmap'])
+        self.heatmap.set_cmap(cm.get_cmap(display['cmap']))
+
+        self.temp_slider.setRange(display['slider_min'], display['slider_max'])
+        self.temp_slider.setAccessibleName(
+            f"Maximum {display['label'].lower()} scale, {display['unit']}")
+        self.temp_slider.setToolTip(
+            f"Adjust the maximum {display['label'].lower()} shown on the color scale")
+        self.temp_slider.setValue(display['slider_default'])
+
+        self.colorbar.set_label(f"{display['label']} ({display['unit']})")
+        self.canvas.capture_background()
+
     def _init_plot(self):
         self.ax = self.canvas.fig.add_subplot(111)
         # Use the controller's actual default parameters (candles/door/vod/voc
         # as set in __init__) so the first frame shown matches what the
         # control-panel toggles display as selected.
-        first_scenario = self.controller.store.get(self.controller.current_case_index())
+        first_scenario = self.controller.store.get(
+            self.controller.current_case_index(), self.current_quantity_key)
         self._current_n_frames = first_scenario.shape[0]
         first_frame = first_scenario[0, :, :]
         self.heatmap = self.ax.imshow(
@@ -455,10 +531,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ax.set_yticks([])
         self.canvas.fig.subplots_adjust(top=0.97, bottom=0.03, left=0.02, right=0.95)
         self.colorbar = self.canvas.fig.colorbar(self.heatmap, fraction=0.04, pad=0.02)
-        self.colorbar.set_label("Temperature (°C)")
-        # Explicit vmin so the color scale's lower bound is always ambient
-        # temperature, not whatever frame 0 happened to show (M1.3.2).
-        self.heatmap.set_clim(vmin=AMBIENT_C, vmax=self.temp_slider.value())
+        initial_display = QUANTITY_DISPLAY[self.current_quantity_key.quantity]
+        self.colorbar.set_label(f"{initial_display['label']} ({initial_display['unit']})")
+        # Explicit vmin so the color scale's lower bound is always the
+        # quantity's physical floor, not whatever frame 0 happened to show
+        # (M1.3.2; generalized per-quantity in M2.1).
+        self.heatmap.set_clim(vmin=initial_display['vmin'], vmax=self.temp_slider.value())
         self.canvas.capture_background()
         self.timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
         self.timeline.set_index(0)
@@ -479,7 +557,7 @@ class MainWindow(QtWidgets.QMainWindow):
         cache making an already-warm store.get() ~1-6ms -- cheap enough to
         call directly here without stalling the GUI thread on every tick."""
         case_idx = self.controller.current_case_index()
-        frame = self.controller.store.get(case_idx)[index]
+        frame = self.controller.store.get(case_idx, self.current_quantity_key)[index]
         self._redraw(frame)
         self.timeline.set_index(index)
         current_time = index / self.time_controller.timesteps_per_second
@@ -567,9 +645,19 @@ class MainWindow(QtWidgets.QMainWindow):
         prefetch matching the current selection is allowed to end the busy
         state (see _on_prefetch_finished) -- an earlier, now-superseded
         prefetch simply finishes in the background and is ignored.
+
+        Known gap (M2.1): `_pending_load_case` tracks case_idx only, not
+        (case_idx, key) -- a scenario toggle and a quantity switch that
+        both land on the same case_idx while both are cache misses can
+        race (whichever prefetch finishes first ends the busy state, even
+        if it wasn't for the currently-selected quantity). The visible
+        effect is bounded to one extra synchronous-parse hitch in
+        _sync_current_scenario, which self-corrects on the next frame --
+        not a crash. Not fixed here; would need prefetch_finished/error to
+        carry the key too.
         """
         case_idx = self.controller.current_case_index()
-        if self.controller.is_cached(case_idx):
+        if self.controller.is_cached(case_idx, self.current_quantity_key):
             self._pending_load_case = None
             if self._busy:
                 self._end_busy_state()
@@ -579,7 +667,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._pending_load_case = case_idx
         if not self._busy:
             self._begin_busy_state()
-        self.controller.prefetch(case_idx)
+        self.controller.prefetch(case_idx, self.current_quantity_key)
 
     def _begin_busy_state(self):
         self._busy = True
@@ -600,15 +688,41 @@ class MainWindow(QtWidgets.QMainWindow):
         scenario at case_idx, and redraw the currently displayed frame
         index against it. Only redraws (doesn't touch play state) -- the
         caller decides whether to resume playback."""
-        self._current_n_frames = self.controller.store.get(case_idx).shape[0]
+        self._current_n_frames = self.controller.store.get(case_idx, self.current_quantity_key).shape[0]
         self.timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
         if not self.time_controller.is_playing():
             self._on_time_changed(self.time_controller.index)
 
+    def _on_quantity_changed(self, combo_index: int):
+        """Quantity combo box changed (M2.1). Mirrors
+        _on_scenario_param_changed's cache-hit/cache-miss handling, but for
+        the quantity axis instead of a candles/door/vod/voc toggle -- same
+        busy-cursor/prefetch machinery, now keyed by SliceKey too."""
+        info = self.quantity_infos[combo_index]
+        if info.key == self.current_quantity_key:
+            return
+        self.current_quantity_key = info.key
+        self._apply_quantity_display_defaults(info.key.quantity)
+
+        case_idx = self.controller.current_case_index()
+        if self.controller.is_cached(case_idx, self.current_quantity_key):
+            self._pending_load_case = None
+            if self._busy:
+                self._end_busy_state()
+            self._sync_current_scenario(case_idx)
+            return
+
+        self._pending_load_case = case_idx
+        if not self._busy:
+            self._begin_busy_state()
+        self.controller.prefetch(case_idx, self.current_quantity_key)
+
     def _on_temp_changed(self, value):
-        self.temp_label.setText(f"{value} °C")
-        # vmin stays pinned at AMBIENT_C; only vmax moves with the slider.
-        self.heatmap.set_clim(vmin=AMBIENT_C, vmax=value)
+        display = QUANTITY_DISPLAY.get(self.current_quantity_key.quantity, QUANTITY_DISPLAY[DEFAULT_SLICE_KEY.quantity])
+        self.temp_label.setText(f"{value} {display['unit']}")
+        # vmin stays pinned at the quantity's physical floor; only vmax
+        # moves with the slider.
+        self.heatmap.set_clim(vmin=display['vmin'], vmax=value)
         # Full redraw (not blit): the colorbar's tick range depends on clim
         # and needs to actually repaint, and the cached blit background must
         # be recaptured so subsequent playback frames blit against it.
@@ -642,7 +756,10 @@ class MainWindow(QtWidgets.QMainWindow):
             "MP4 Video (*.mp4);;GIF Animation (*.gif)" if has_ffmpeg
             else "GIF Animation (*.gif)"
         )
-        default_name = f"scenario_{self.controller.current_case_index()}.{default_ext}"
+        default_name = (
+            f"scenario_{self.controller.current_case_index()}_"
+            f"{self.current_quantity_key.quantity.lower()}.{default_ext}"
+        )
         path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export Animation", default_name, filters)
         if not path:
             if was_playing:
@@ -657,7 +774,7 @@ class MainWindow(QtWidgets.QMainWindow):
             path = os.path.splitext(path)[0] + ".gif"
 
         case_idx = self.controller.current_case_index()
-        data = self.controller.store.get(case_idx)
+        data = self.controller.store.get(case_idx, self.current_quantity_key)
         n_frames = data.shape[0]
 
         range_dialog = ExportRangeDialog(self, n_frames, self.time_controller.timesteps_per_second)
@@ -667,8 +784,9 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         start, end, fps = range_dialog.values()
 
+        export_vmin = QUANTITY_DISPLAY[self.current_quantity_key.quantity]['vmin']
         self._exporter = AnimationExporter(
-            data, path, fps, self.current_colormap, AMBIENT_C, self.temp_slider.value(),
+            data, path, fps, self.current_colormap, export_vmin, self.temp_slider.value(),
             self.current_interpolation, start, end,
         )
         self._export_progress = QtWidgets.QProgressDialog(

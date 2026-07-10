@@ -22,3 +22,26 @@ SCENARIO_CACHE_SIZE = 4
 # Ambient (room) temperature, degrees Celsius -- the color scale's fixed lower
 # bound (M1.3.2), so vmin no longer freezes at whatever frame 0 happens to show.
 AMBIENT_C = 20.0
+
+# Per-quantity display defaults (M2.1): the colormap, color-scale bounds, and
+# plain-language label/unit shown when the user switches which quantity the
+# heatmap displays. VELOCITY's slider range/default (1-10, default 2 m/s) is
+# an engineering estimate from the on-disk dataset (observed magnitudes
+# ~0-4 m/s across sampled scenarios), not a physically-derived bound --
+# adjustable via the existing slider same as TEMPERATURE's.
+QUANTITY_DISPLAY = {
+    'TEMPERATURE': {
+        'label': 'Temperature',
+        'unit': '°C',
+        'cmap': 'gist_heat',
+        'vmin': AMBIENT_C,
+        'slider_min': 50, 'slider_max': 1000, 'slider_default': 300,
+    },
+    'VELOCITY': {
+        'label': 'Air speed',
+        'unit': 'm/s',
+        'cmap': 'viridis',
+        'vmin': 0.0,
+        'slider_min': 1, 'slider_max': 10, 'slider_default': 2,
+    },
+}

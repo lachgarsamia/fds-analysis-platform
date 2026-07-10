@@ -26,6 +26,7 @@ import numpy as np
 from config import N_CANDLES, N_DOORS, N_VOD, N_VOC, FRAMES_PER_SECOND, SCENARIO_CACHE_SIZE
 from load_data import check_scenario_count, SIM_ROOT
 from scenario_store import ScenarioStore, list_scenario_folders, build_data_matrix
+from manifest import get_manifest, data_matrix_from_manifest
 
 
 class DataLoadError(Exception):
@@ -44,7 +45,8 @@ class ScenarioSource(Protocol):
     FDS data or the synthetic fallback.
     """
 
-    def get(self, scenario_index: int) -> np.ndarray: ...
+    def get(self, scenario_index: int, key=None) -> np.ndarray: ...
+    def is_cached(self, scenario_index: int, key=None) -> bool: ...
 
 
 @dataclass
@@ -54,6 +56,10 @@ class SimulationData:
     data_matrix: np.ndarray     # shape: (candles, door, vod, voc) -> case index
     timesteps_per_second: int
     is_demo: bool = False
+    # Scenario manifest entries (M2.1), case_index-aligned with `store`'s
+    # folder list. None in demo mode -- there's no real .smv to scan, so
+    # there's nothing to build an entry from.
+    manifest: list = None
 
 
 class DemoScenarioStore:
@@ -72,7 +78,10 @@ class DemoScenarioStore:
         self.w = w
         self._cache = {}
 
-    def get(self, scenario_index: int) -> np.ndarray:
+    def get(self, scenario_index: int, key=None) -> np.ndarray:
+        # `key` is accepted (ignored) for interface parity with
+        # ScenarioStore.get() -- demo mode has no real quantities to switch
+        # between, it always returns the same synthetic heatmap.
         if scenario_index in self._cache:
             return self._cache[scenario_index]
 
@@ -91,6 +100,15 @@ class DemoScenarioStore:
 
         self._cache[scenario_index] = data
         return data
+
+    def is_cached(self, scenario_index: int, key=None) -> bool:
+        # Pre-existing gap: SimulationController.is_cached() has always
+        # called through to this, but DemoScenarioStore never implemented
+        # it -- any scenario-param toggle in demo mode would raise
+        # AttributeError. Fixed opportunistically (ROADMAP.md's standing
+        # "known defects" convention) while touching this Protocol for
+        # M2.1's key-aware interface.
+        return scenario_index in self._cache
 
 
 def load_simulation_data(cache_size: int = SCENARIO_CACHE_SIZE) -> SimulationData:
@@ -114,11 +132,19 @@ def load_simulation_data(cache_size: int = SCENARIO_CACHE_SIZE) -> SimulationDat
 
     try:
         check_scenario_count(len(folders), N_CANDLES, N_DOORS, N_VOD, N_VOC)
-        data_matrix = build_data_matrix(N_CANDLES, N_DOORS, N_VOD, N_VOC)
+        entries = get_manifest(SIM_ROOT)
+        # folders passed to ScenarioStore must be case_index-aligned with
+        # the manifest's data_matrix; deriving them from entries (rather
+        # than re-using the `folders` list above) keeps that alignment
+        # exact even if scan_scenarios() had to skip an unrecognized folder
+        # name that list_scenario_folders() still included.
+        manifest_folders = [e.path for e in entries]
+        data_matrix = data_matrix_from_manifest(entries)
         cache_dir = os.path.join(SIM_ROOT, '.cache')
-        store = ScenarioStore(folders, cache_size=cache_size, cache_dir=cache_dir)
+        store = ScenarioStore(manifest_folders, cache_size=cache_size, cache_dir=cache_dir)
         return SimulationData(store=store, data_matrix=data_matrix,
-                               timesteps_per_second=FRAMES_PER_SECOND, is_demo=False)
+                               timesteps_per_second=FRAMES_PER_SECOND, is_demo=False,
+                               manifest=entries)
     except Exception as e:
         raise DataLoadError(
             "Something went wrong while loading the simulation data.",
