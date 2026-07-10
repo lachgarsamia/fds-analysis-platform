@@ -414,10 +414,24 @@ class TestIntegration:
             time.sleep(0.005)
         assert not window._busy
         assert window.timeline.slider.isEnabled()
-        # let any straggler background thread(s) actually finish before
-        # the window (and its store) goes away
-        time.sleep(0.2)
-        qapp.processEvents()
+
+        # _busy only tracks the *latest* requested scenario -- the earlier,
+        # superseded toggles (candles=1, door=0) each started their own
+        # worker too, and those are still in flight in the background even
+        # though the UI has already moved on. Wait for *all* of them, then
+        # confirm SimulationController._prefetch_workers actually drains
+        # back to empty -- not just that the burst didn't crash, but that
+        # every worker's cleanup fired and nothing was left referenced
+        # forever (a leak that wouldn't crash a short-lived test process,
+        # but would accumulate QThread objects over a long-running session).
+        deadline = time.perf_counter() + 5.0
+        while window.controller._prefetch_workers and time.perf_counter() < deadline:
+            qapp.processEvents()
+            time.sleep(0.005)
+        assert window.controller._prefetch_workers == [], (
+            "prefetch worker list must drain to empty once every in-flight "
+            "load (including superseded ones) has actually finished"
+        )
         window.close()
 
     def test_loop_toggle_wired_to_time_controller(self, qapp):
