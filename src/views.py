@@ -97,6 +97,95 @@ class SliceView:
         self.canvas.capture_background()
 
 
+class DifferenceView:
+    """PlotView cell type "A - B" (M2.3.1): shows `store.get(A,key)[i] -
+    store.get(B,key)[i]` for two scenarios sharing one quantity.
+
+    Composes a SliceView internally rather than reimplementing rendering --
+    the only things that actually differ from a plain slice are *what
+    frame data* gets shown (a difference, computed by the caller and handed
+    to show_frame() same as SliceView) and the display defaults: a
+    diverging colormap (RdBu_r, since 0 = "no difference" is a real,
+    physically meaningful center point here, unlike a sequential cmap's
+    arbitrary floor) and a symmetric clim (+-max(|delta|)) so equal color
+    intensity on either side of the diverging cmap's center means equal
+    magnitude of difference regardless of sign.
+
+    Verified against real data (not just synthetic arrays) before this was
+    wired into any UI: for the c1_d0/c1_d1 door-width scenario pair (the
+    ROADMAP's own example), the dominant difference signal turned out to
+    be near the candle/plume, not the doorway -- see ROADMAP.md's M2.3
+    section for the full finding. The math here is unaffected either way;
+    this docstring just flags that "physically sensible structure" was
+    checked against ground truth, not assumed from the spec's example.
+    """
+
+    DEFAULT_CMAP = "RdBu_r"
+
+    def __init__(self, parent=None):
+        self._inner = SliceView(parent)
+        self.case_a = None
+        self.case_b = None
+        self.quantity_key = None
+        self._symmetric_clim_cache = {}
+
+    def widget(self) -> QtWidgets.QWidget:
+        return self._inner.widget()
+
+    def init_plot(self, first_frame: np.ndarray, interpolation: str,
+                   vmin: float, vmax: float, colorbar_label: str, cmap: str = None):
+        self._inner.init_plot(first_frame, cmap=cmap or self.DEFAULT_CMAP,
+                               interpolation=interpolation, vmin=vmin, vmax=vmax,
+                               colorbar_label=colorbar_label)
+
+    def show_frame(self, frame: np.ndarray) -> None:
+        """`frame` is already the difference array (A - B) -- computed by
+        the caller (compute_diff below, or MainWindow directly), not
+        fetched here. Matches SliceView's own "doesn't fetch data, just
+        renders what it's given" split."""
+        self._inner.show_frame(frame)
+
+    def set_cmap(self, name: str) -> None:
+        self._inner.set_cmap(name)
+
+    def set_clim(self, vmin: float, vmax: float) -> None:
+        self._inner.set_clim(vmin, vmax)
+
+    def set_interpolation(self, name: str) -> None:
+        self._inner.set_interpolation(name)
+
+    def set_colorbar_label(self, text: str) -> None:
+        self._inner.set_colorbar_label(text)
+
+    def set_title(self, text: str) -> None:
+        self._inner.set_title(text)
+
+    def capture_background(self) -> None:
+        self._inner.capture_background()
+
+    @staticmethod
+    def compute_diff(data_a: np.ndarray, data_b: np.ndarray, index: int) -> np.ndarray:
+        return data_a[index] - data_b[index]
+
+    def symmetric_clim(self, data_a: np.ndarray, data_b: np.ndarray, cache_key,
+                        n_samples: int = 20) -> tuple:
+        """+-max(|delta|) sampled across up to n_samples frames evenly
+        spread over the shared timeline (not necessarily every frame --
+        cheap at this dataset's size, but sampling is the general pattern
+        that stays cheap as datasets grow, matching the spec's wording).
+        Cached per (case_a, case_b, key) via `cache_key` so switching back
+        to an already-seen A/B/quantity combo doesn't rescan the arrays."""
+        if cache_key in self._symmetric_clim_cache:
+            return self._symmetric_clim_cache[cache_key]
+        n = min(data_a.shape[0], data_b.shape[0])
+        sample_indices = np.linspace(0, n - 1, min(n, n_samples), dtype=int)
+        diffs = data_a[sample_indices] - data_b[sample_indices]
+        vmax = float(np.max(np.abs(diffs)))
+        clim = (-vmax, vmax)
+        self._symmetric_clim_cache[cache_key] = clim
+        return clim
+
+
 class GridCell(QtWidgets.QWidget):
     """One cell of a ViewGrid: a compact scenario combo + quantity combo
     above a PlotView. Clicking the cell makes it the grid's active cell.
