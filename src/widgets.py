@@ -140,6 +140,81 @@ class ToggleGroup(QtWidgets.QWidget):
             b.setIconSize(QtCore.QSize(size, size))
 
 
+class TimelineWidget(QtWidgets.QWidget):
+    """Playback scrubber: play/pause + draggable position slider + time
+    label + loop toggle (M1.4.2). Replaces the old read-only QProgressBar --
+    this one is interactive, driven by/driving a TimeController.
+
+    Pure UI: emits signals on user interaction and exposes setters for the
+    controller to push state back in (`set_index`/`set_playing`/`set_loop`);
+    it holds no playback logic of its own.
+    """
+
+    play_pause_clicked = QtCore.pyqtSignal()
+    seek_requested = QtCore.pyqtSignal(int)   # user dragged/clicked to this frame index
+    loop_toggled = QtCore.pyqtSignal(bool)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        self.play_button = QtWidgets.QPushButton("▶")  # ▶
+        self.play_button.setFixedWidth(32)
+        self.play_button.setAccessibleName("Play or pause playback")
+        self.play_button.setToolTip("Play/pause (Space)")
+        self.play_button.clicked.connect(self.play_pause_clicked.emit)
+        layout.addWidget(self.play_button)
+
+        self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider.setAccessibleName("Playback position")
+        self.slider.setToolTip("Drag to seek to any point in the simulation")
+        self.slider.setRange(0, 0)
+        self.slider.sliderMoved.connect(self.seek_requested.emit)
+        layout.addWidget(self.slider, 1)
+
+        self.time_label = QtWidgets.QLabel("t = 0.0 s / 0.0 s")
+        self.time_label.setProperty("role", "value")
+        self.time_label.setMinimumWidth(130)
+        layout.addWidget(self.time_label)
+
+        self.loop_button = QtWidgets.QPushButton("Loop")
+        self.loop_button.setCheckable(True)
+        self.loop_button.setChecked(True)
+        self.loop_button.setAccessibleName("Loop playback")
+        self.loop_button.setToolTip("Restart from the beginning when playback reaches the end")
+        self.loop_button.toggled.connect(self.loop_toggled.emit)
+        layout.addWidget(self.loop_button)
+
+        self._n_frames = 0
+        self._fps = 4
+
+    def set_range(self, n_frames: int, fps: int):
+        self._n_frames = n_frames
+        self._fps = max(fps, 1)
+        self.slider.setRange(0, max(n_frames - 1, 0))
+
+    def set_index(self, index: int):
+        """Reflect the controller's current index -- skipped while the user
+        is actively dragging so we don't fight their gesture."""
+        if not self.slider.isSliderDown():
+            self.slider.blockSignals(True)
+            self.slider.setValue(index)
+            self.slider.blockSignals(False)
+        total_s = (self._n_frames - 1) / self._fps if self._n_frames > 0 else 0.0
+        cur_s = index / self._fps
+        self.time_label.setText(f"t = {cur_s:.1f} s / {total_s:.1f} s")
+
+    def set_playing(self, playing: bool):
+        self.play_button.setText("⏸" if playing else "▶")  # ⏸ / ▶
+
+    def set_loop(self, enabled: bool):
+        self.loop_button.blockSignals(True)
+        self.loop_button.setChecked(enabled)
+        self.loop_button.blockSignals(False)
+
+
 class CollapsibleSection(QtWidgets.QWidget):
     """A labeled section with a thin divider - used to group control-panel
     rows (Speed / Candles / Doors / Vents) so the panel reads as organized

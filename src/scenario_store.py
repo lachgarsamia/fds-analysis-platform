@@ -69,6 +69,16 @@ class ScenarioStore:
     def n_scenarios(self) -> int:
         return len(self.folders)
 
+    def is_cached(self, scenario_index: int) -> bool:
+        """Whether scenario_index is already resident in the in-memory LRU
+        cache -- a call to get() would return immediately with no disk I/O.
+        Read-only inspection of existing state under the existing lock;
+        doesn't change get()'s locking granularity or thread-safety (M1.4.4:
+        lets the caller decide whether a scenario switch needs a background
+        prefetch before it can redraw without blocking)."""
+        with self._lock:
+            return scenario_index in self._cache
+
     def get(self, scenario_index: int) -> np.ndarray:
         """Return the (n_times, n_y, n_x) temperature array for a scenario, loading it if needed."""
         with self._lock:
