@@ -24,17 +24,17 @@ import logging
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-from matplotlib import cm
 
 from config import DEFAULT_CANDLES, DEFAULT_DOOR, DEFAULT_VOD, DEFAULT_VOC, QUANTITY_DISPLAY
 from theme import THEMES, build_qss
-from widgets import MplCanvas, ToggleGroup, CollapsibleSection, TimelineWidget
+from widgets import ToggleGroup, CollapsibleSection, TimelineWidget
 from simulation_controller import SimulationController
 from time_controller import TimeController
 from data_provider import SimulationData
 from schematic import SchematicWidget, flame_icon, door_icon, vent_icon, resolve_room_extent
 from export import AnimationExporter, ffmpeg_available
 from slice_key import SliceInfo, DEFAULT_SLICE_KEY, available_slices
+from views import SliceView
 
 logger = logging.getLogger(__name__)
 
@@ -440,12 +440,12 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self.canvas = MplCanvas(panel)
-        self.toolbar = NavigationToolbar(self.canvas, panel)
+        self.slice_view = SliceView(panel)
+        self.toolbar = NavigationToolbar(self.slice_view.widget(), panel)
         self.toolbar.setAccessibleName("Plot navigation toolbar: pan, zoom, save")
 
         layout.addWidget(self.toolbar)
-        layout.addWidget(self.canvas, 1)  # canvas gets all extra vertical space
+        layout.addWidget(self.slice_view.widget(), 1)  # canvas gets all extra vertical space
 
         self._init_plot()
         return panel
@@ -468,6 +468,27 @@ class MainWindow(QtWidgets.QMainWindow):
         return w
 
     # ------------------------------------------------------------ plotting
+    # Thin delegating properties (M2.2): the actual matplotlib objects now
+    # live on self.slice_view (views.SliceView), not MainWindow directly --
+    # kept here so existing call sites/tests that read window.heatmap etc.
+    # (observable rendering state, legitimate to assert on) don't need to
+    # know about the SliceView indirection.
+    @property
+    def heatmap(self):
+        return self.slice_view.heatmap
+
+    @property
+    def colorbar(self):
+        return self.slice_view.colorbar
+
+    @property
+    def canvas(self):
+        return self.slice_view.canvas
+
+    @property
+    def ax(self):
+        return self.slice_view.ax
+
     def _discover_quantities(self) -> list:
         """Which (quantity, direction, offset) slices the current dataset
         actually offers, restricted to the slice plane the app has always
@@ -500,7 +521,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings.setValue("colormap", display['cmap'])
         for action, (_, cmap) in zip(self.colormap_action_group.actions(), COLORMAPS):
             action.setChecked(cmap == display['cmap'])
-        self.heatmap.set_cmap(cm.get_cmap(display['cmap']))
+        self.slice_view.set_cmap(display['cmap'])
 
         self.temp_slider.setRange(display['slider_min'], display['slider_max'])
         self.temp_slider.setAccessibleName(
@@ -509,11 +530,9 @@ class MainWindow(QtWidgets.QMainWindow):
             f"Adjust the maximum {display['label'].lower()} shown on the color scale")
         self.temp_slider.setValue(display['slider_default'])
 
-        self.colorbar.set_label(f"{display['label']} ({display['unit']})")
-        self.canvas.capture_background()
+        self.slice_view.set_colorbar_label(f"{display['label']} ({display['unit']})")
 
     def _init_plot(self):
-        self.ax = self.canvas.fig.add_subplot(111)
         # Use the controller's actual default parameters (candles/door/vod/voc
         # as set in __init__) so the first frame shown matches what the
         # control-panel toggles display as selected.
@@ -521,34 +540,29 @@ class MainWindow(QtWidgets.QMainWindow):
             self.controller.current_case_index(), self.current_quantity_key)
         self._current_n_frames = first_scenario.shape[0]
         first_frame = first_scenario[0, :, :]
-        self.heatmap = self.ax.imshow(
-            first_frame,
-            cmap=self.current_colormap,
-            interpolation=self.current_interpolation,
-            aspect="auto",
-        )
-        self.ax.set_xticks([])
-        self.ax.set_yticks([])
-        self.canvas.fig.subplots_adjust(top=0.97, bottom=0.03, left=0.02, right=0.95)
-        self.colorbar = self.canvas.fig.colorbar(self.heatmap, fraction=0.04, pad=0.02)
-        initial_display = QUANTITY_DISPLAY[self.current_quantity_key.quantity]
-        self.colorbar.set_label(f"{initial_display['label']} ({initial_display['unit']})")
         # Explicit vmin so the color scale's lower bound is always the
         # quantity's physical floor, not whatever frame 0 happened to show
         # (M1.3.2; generalized per-quantity in M2.1).
-        self.heatmap.set_clim(vmin=initial_display['vmin'], vmax=self.temp_slider.value())
-        self.canvas.capture_background()
+        initial_display = QUANTITY_DISPLAY[self.current_quantity_key.quantity]
+        self.slice_view.init_plot(
+            first_frame,
+            cmap=self.current_colormap,
+            interpolation=self.current_interpolation,
+            vmin=initial_display['vmin'],
+            vmax=self.temp_slider.value(),
+            colorbar_label=f"{initial_display['label']} ({initial_display['unit']})",
+        )
         self.timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
         self.timeline.set_index(0)
 
     def _redraw(self, frame):
-        """Per-frame playback path: blit instead of a full draw_idle() so
-        only the image artist's pixels are re-rendered (M1.3.3). Anything
-        that changes what's underneath the image (clim/colormap/theme/
-        interpolation/resize) goes through the dedicated setters below,
-        which do a full draw + recapture instead of calling this."""
-        self.heatmap.set_data(frame)
-        self.canvas.blit_update(self.heatmap)
+        """Per-frame playback path: SliceView.show_frame() blits instead of
+        a full draw_idle() so only the image artist's pixels are
+        re-rendered (M1.3.3). Anything that changes what's underneath the
+        image (clim/colormap/theme/interpolation/resize) goes through the
+        dedicated setters below, which do a full draw + recapture instead
+        of calling this."""
+        self.slice_view.show_frame(frame)
 
     # -------------------------------------------------------- signal slots
     def _on_time_changed(self, index: int):
@@ -721,12 +735,10 @@ class MainWindow(QtWidgets.QMainWindow):
         display = QUANTITY_DISPLAY.get(self.current_quantity_key.quantity, QUANTITY_DISPLAY[DEFAULT_SLICE_KEY.quantity])
         self.temp_label.setText(f"{value} {display['unit']}")
         # vmin stays pinned at the quantity's physical floor; only vmax
-        # moves with the slider.
-        self.heatmap.set_clim(vmin=display['vmin'], vmax=value)
-        # Full redraw (not blit): the colorbar's tick range depends on clim
-        # and needs to actually repaint, and the cached blit background must
-        # be recaptured so subsequent playback frames blit against it.
-        self.canvas.capture_background()
+        # moves with the slider. SliceView.set_clim does the full redraw
+        # (not blit) + recapture itself: the colorbar's tick range depends
+        # on clim and needs to actually repaint.
+        self.slice_view.set_clim(display['vmin'], value)
 
     # -------------------------------------------------------------- export
     def _export_animation(self):
@@ -848,14 +860,12 @@ class MainWindow(QtWidgets.QMainWindow):
     def _set_colormap(self, cmap: str):
         self.current_colormap = cmap
         self.settings.setValue("colormap", cmap)
-        self.heatmap.set_cmap(cm.get_cmap(cmap))
-        self.canvas.capture_background()
+        self.slice_view.set_cmap(cmap)
 
     def _set_interpolation(self, interpolation: str):
         self.current_interpolation = interpolation
         self.settings.setValue("interpolation", interpolation)
-        self.heatmap.set_interpolation(interpolation)
-        self.canvas.capture_background()
+        self.slice_view.set_interpolation(interpolation)
 
     def _apply_theme(self):
         palette = THEMES[self.current_theme_name]
@@ -866,7 +876,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # cached blit background is invalidated defensively per M1.3.3's spec
         # (resize/theme/colormap changes all recapture) in case the canvas
         # ever becomes theme-aware later.
-        self.canvas.capture_background()
+        self.slice_view.capture_background()
 
     def _refresh_toggle_icons(self, palette):
         """Icon color is redrawn per theme so it stays legible against both
