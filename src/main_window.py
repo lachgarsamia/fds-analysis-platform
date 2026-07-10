@@ -22,6 +22,7 @@ The rebuilt main window. Key differences from the original fixed-.ui version:
 import os
 import logging
 
+import numpy as np
 from PyQt5 import QtCore, QtGui, QtWidgets
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
@@ -34,7 +35,7 @@ from data_provider import SimulationData
 from schematic import SchematicWidget, flame_icon, door_icon, vent_icon, resolve_room_extent
 from export import AnimationExporter, ffmpeg_available
 from slice_key import SliceInfo, DEFAULT_SLICE_KEY, available_slices
-from views import SliceView
+from views import ViewGrid
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.controller.params.voc = DEFAULT_VOC
         self.controller.prefetch_finished.connect(self._on_prefetch_finished)
         self.controller.prefetch_error.connect(self._on_prefetch_error)
+        # M2.2.4: a second, independent pair of slots on the same signals,
+        # for non-active grid cells' own combo picks -- reuses the exact
+        # same prefetch()/worker-list machinery M1.4.4 built rather than
+        # any new threading code; see _load_cell/_on_grid_prefetch_finished.
+        self.controller.prefetch_finished.connect(self._on_grid_prefetch_finished)
+        self.controller.prefetch_error.connect(self._on_grid_prefetch_error)
+        self._pending_cell_prefetches = set()  # GridCells awaiting their own background load
 
         # M1.4: pull-based playback clock. frame_count_fn must never trigger
         # a load itself -- it just reports self._current_n_frames, which is
@@ -199,6 +207,23 @@ class MainWindow(QtWidgets.QMainWindow):
             action.triggered.connect(lambda _checked, i=interp: self._set_interpolation(i))
             self.interpolation_action_group.addAction(action)
             interpolation_menu.addAction(action)
+
+        grid_menu = view_menu.addMenu("Grid Layout")
+        self.grid_layout_action_group = QtWidgets.QActionGroup(self)
+        for label, layout_name in (("1 view", "1x1"), ("2 views (side by side)", "1x2"), ("4 views (2x2)", "2x2")):
+            action = QtWidgets.QAction(label, self, checkable=True)
+            action.setChecked(layout_name == "1x1")
+            action.triggered.connect(lambda _checked, l=layout_name: self._set_grid_layout(l))
+            self.grid_layout_action_group.addAction(action)
+            grid_menu.addAction(action)
+
+        self.link_clim_action = QtWidgets.QAction("Link color scales", self, checkable=True)
+        self.link_clim_action.setToolTip(
+            "When on, all visible cells share one color scale (the maximum "
+            "across them) instead of each keeping its own."
+        )
+        self.link_clim_action.triggered.connect(self._set_link_clim)
+        view_menu.addAction(self.link_clim_action)
 
         fullscreen_action = QtWidgets.QAction("Toggle Fullscreen\tF11", self)
         fullscreen_action.triggered.connect(self._toggle_fullscreen)
@@ -431,6 +456,25 @@ class MainWindow(QtWidgets.QMainWindow):
 
         return scroll
 
+    def _scenario_options(self) -> list:
+        """[(label, case_index), ...] for a grid cell's per-cell scenario
+        combo (M2.2.2), sourced from the manifest (M2.1). Empty in demo
+        mode -- there's no real manifest to pick scenarios from, same
+        convention as the quantity combo's demo-mode fallback."""
+        if not self.sim_data.manifest:
+            return []
+        return [(e.folder, e.case_index)
+                for e in sorted(self.sim_data.manifest, key=lambda e: e.case_index)]
+
+    def _quantity_options(self) -> list:
+        """[(label, SliceKey), ...] for a grid cell's per-cell quantity
+        combo -- same entries/labels as the control panel's own quantity
+        combo (self.quantity_infos, computed in _build_control_panel)."""
+        return [
+            (QUANTITY_DISPLAY.get(info.key.quantity, {}).get('label', info.key.quantity.title()), info.key)
+            for info in self.quantity_infos
+        ]
+
     def _build_plot_panel(self) -> QtWidgets.QWidget:
         panel = QtWidgets.QWidget()
         panel.setSizePolicy(
@@ -440,12 +484,26 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self.slice_view = SliceView(panel)
-        self.toolbar = NavigationToolbar(self.slice_view.widget(), panel)
+        # M2.2.2: single-view mode is just the grid at its 1x1 default --
+        # not a separately-maintained code path, so it's pixel-equivalent
+        # to pre-refactor by construction.
+        self.view_grid = ViewGrid(self._scenario_options(), self._quantity_options(), panel)
+        self.view_grid.cell_created.connect(self._on_cell_created)
+        self.view_grid.active_cell_changed.connect(self._on_active_cell_changed)
+        self.view_grid.cell_scenario_selected.connect(self._on_cell_scenario_selected)
+        self.view_grid.cell_quantity_selected.connect(self._on_cell_quantity_selected)
+
+        # The toolbar (pan/zoom/save) stays bound to the first cell's canvas
+        # for its whole lifetime -- matplotlib's NavigationToolbar2QT isn't
+        # designed to be rebound to a different canvas at runtime, and
+        # pan/zoom is ambiguous across an ensemble grid anyway (you want
+        # every cell showing the same framing, not independently panned
+        # views). Shown only in 1x1 mode; see _set_grid_layout.
+        self.toolbar = NavigationToolbar(self.view_grid.active_view().widget(), panel)
         self.toolbar.setAccessibleName("Plot navigation toolbar: pan, zoom, save")
 
         layout.addWidget(self.toolbar)
-        layout.addWidget(self.slice_view.widget(), 1)  # canvas gets all extra vertical space
+        layout.addWidget(self.view_grid, 1)  # grid gets all extra vertical space
 
         self._init_plot()
         return panel
@@ -469,25 +527,27 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ------------------------------------------------------------ plotting
     # Thin delegating properties (M2.2): the actual matplotlib objects now
-    # live on self.slice_view (views.SliceView), not MainWindow directly --
-    # kept here so existing call sites/tests that read window.heatmap etc.
-    # (observable rendering state, legitimate to assert on) don't need to
-    # know about the SliceView indirection.
+    # live on the *active* grid cell's SliceView (views.ViewGrid), not
+    # MainWindow directly -- kept here so existing call sites/tests that
+    # read window.heatmap etc. (observable rendering state, legitimate to
+    # assert on) don't need to know about the ViewGrid indirection. In the
+    # default 1x1 layout the active cell is the only cell, so this is
+    # exactly the pre-M2.2 single-view behavior.
     @property
     def heatmap(self):
-        return self.slice_view.heatmap
+        return self.view_grid.active_view().heatmap
 
     @property
     def colorbar(self):
-        return self.slice_view.colorbar
+        return self.view_grid.active_view().colorbar
 
     @property
     def canvas(self):
-        return self.slice_view.canvas
+        return self.view_grid.active_view().canvas
 
     @property
     def ax(self):
-        return self.slice_view.ax
+        return self.view_grid.active_view().ax
 
     def _discover_quantities(self) -> list:
         """Which (quantity, direction, offset) slices the current dataset
@@ -521,7 +581,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings.setValue("colormap", display['cmap'])
         for action, (_, cmap) in zip(self.colormap_action_group.actions(), COLORMAPS):
             action.setChecked(cmap == display['cmap'])
-        self.slice_view.set_cmap(display['cmap'])
+        self.view_grid.active_view().set_cmap(display['cmap'])
 
         self.temp_slider.setRange(display['slider_min'], display['slider_max'])
         self.temp_slider.setAccessibleName(
@@ -530,49 +590,84 @@ class MainWindow(QtWidgets.QMainWindow):
             f"Adjust the maximum {display['label'].lower()} shown on the color scale")
         self.temp_slider.setValue(display['slider_default'])
 
-        self.slice_view.set_colorbar_label(f"{display['label']} ({display['unit']})")
+        self.view_grid.active_view().set_colorbar_label(f"{display['label']} ({display['unit']})")
+        self._apply_link_clim()
+
+    def _init_cell_view(self, cell) -> int:
+        """Fetch data for `cell`'s current (case_index, quantity_key) and
+        run its SliceView's one-time init_plot() (M2.2.2) -- used both for
+        the very first cell (_init_plot below) and for cells created later
+        when the grid grows (_on_cell_created). The active cell picks up
+        the app's current display settings (colormap/vmax); any other
+        cell -- including the very first cell before it's ever been made
+        active by anything other than being cell 0 -- defaults from the
+        quantity's own QUANTITY_DISPLAY entry, so growing the grid doesn't
+        silently copy the active cell's possibly-customized clim onto a
+        brand-new cell showing a different scenario."""
+        data = self.controller.store.get(cell.case_index, cell.quantity_key)
+        display = QUANTITY_DISPLAY[cell.quantity_key.quantity]
+        is_active = cell is self.view_grid.active_cell()
+        cmap = self.current_colormap if is_active else display['cmap']
+        vmax = self.temp_slider.value() if is_active else display['slider_default']
+        index = min(self.time_controller.index, data.shape[0] - 1)
+        cell.view.init_plot(
+            data[index],
+            cmap=cmap,
+            interpolation=self.current_interpolation,
+            vmin=display['vmin'],
+            vmax=vmax,
+            colorbar_label=f"{display['label']} ({display['unit']})",
+        )
+        return data.shape[0]
 
     def _init_plot(self):
         # Use the controller's actual default parameters (candles/door/vod/voc
         # as set in __init__) so the first frame shown matches what the
-        # control-panel toggles display as selected.
-        first_scenario = self.controller.store.get(
-            self.controller.current_case_index(), self.current_quantity_key)
-        self._current_n_frames = first_scenario.shape[0]
-        first_frame = first_scenario[0, :, :]
-        # Explicit vmin so the color scale's lower bound is always the
-        # quantity's physical floor, not whatever frame 0 happened to show
-        # (M1.3.2; generalized per-quantity in M2.1).
-        initial_display = QUANTITY_DISPLAY[self.current_quantity_key.quantity]
-        self.slice_view.init_plot(
-            first_frame,
-            cmap=self.current_colormap,
-            interpolation=self.current_interpolation,
-            vmin=initial_display['vmin'],
-            vmax=self.temp_slider.value(),
-            colorbar_label=f"{initial_display['label']} ({initial_display['unit']})",
-        )
+        # control-panel toggles display as selected. ViewGrid always starts
+        # with exactly one (active) cell; sync it to the controller's
+        # defaults before initializing its plot (M2.2.2's cell_created
+        # signal isn't connected yet this early, so this cell is handled
+        # directly rather than through _on_cell_created).
+        cell = self.view_grid.active_cell()
+        cell.set_scenario_silently(self.controller.current_case_index())
+        cell.set_quantity_silently(self.current_quantity_key)
+        self._current_n_frames = self._init_cell_view(cell)
         self.timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
         self.timeline.set_index(0)
 
+    def _on_cell_created(self, cell):
+        """A new grid cell was instantiated because the grid grew (M2.2.2).
+        Give it real data before it's ever shown -- SliceView.show_frame()
+        assumes init_plot() already ran."""
+        self._init_cell_view(cell)
+
     def _redraw(self, frame):
-        """Per-frame playback path: SliceView.show_frame() blits instead of
-        a full draw_idle() so only the image artist's pixels are
-        re-rendered (M1.3.3). Anything that changes what's underneath the
-        image (clim/colormap/theme/interpolation/resize) goes through the
-        dedicated setters below, which do a full draw + recapture instead
-        of calling this."""
-        self.slice_view.show_frame(frame)
+        """Per-frame playback path for the *active* cell specifically:
+        SliceView.show_frame() blits instead of a full draw_idle() so only
+        the image artist's pixels are re-rendered (M1.3.3). Anything that
+        changes what's underneath the image (clim/colormap/theme/
+        interpolation/resize) goes through the dedicated setters below,
+        which do a full draw + recapture instead of calling this. Other
+        grid cells are redrawn directly in _on_time_changed, which loops
+        every visible cell rather than just the active one."""
+        self.view_grid.active_view().show_frame(frame)
 
     # -------------------------------------------------------- signal slots
     def _on_time_changed(self, index: int):
         """TimeController's tick/seek signal (M1.4.1): pull the frame for
-        the *current* scenario at `index` and redraw. Relies on M1.2's disk
-        cache making an already-warm store.get() ~1-6ms -- cheap enough to
-        call directly here without stalling the GUI thread on every tick."""
-        case_idx = self.controller.current_case_index()
-        frame = self.controller.store.get(case_idx, self.current_quantity_key)[index]
-        self._redraw(frame)
+        *every visible grid cell* at `index` and redraw each (M2.2.3 --
+        the pull model makes this a plain loop, no per-cell timers needed).
+        Relies on M1.2's disk cache making an already-warm store.get()
+        ~1-6ms -- cheap enough to call directly here without stalling the
+        GUI thread on every tick, for however many cells are visible."""
+        for cell in self.view_grid.visible_cells():
+            try:
+                frame = self.controller.store.get(cell.case_index, cell.quantity_key)[index]
+            except Exception as e:  # noqa: BLE001 - one bad cell must not blank the rest
+                logger.warning("failed to fetch frame for grid cell (case=%s, key=%s): %s",
+                                cell.case_index, cell.quantity_key, e)
+                continue
+            cell.view.show_frame(frame)
         self.timeline.set_index(index)
         current_time = index / self.time_controller.timesteps_per_second
         self.statusBar().showMessage(f"t = {current_time:.1f} s", 2000)
@@ -671,6 +766,7 @@ class MainWindow(QtWidgets.QMainWindow):
         carry the key too.
         """
         case_idx = self.controller.current_case_index()
+        self.view_grid.active_cell().set_scenario_silently(case_idx)
         if self.controller.is_cached(case_idx, self.current_quantity_key):
             self._pending_load_case = None
             if self._busy:
@@ -716,6 +812,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if info.key == self.current_quantity_key:
             return
         self.current_quantity_key = info.key
+        self.view_grid.active_cell().set_quantity_silently(info.key)
         self._apply_quantity_display_defaults(info.key.quantity)
 
         case_idx = self.controller.current_case_index()
@@ -731,14 +828,200 @@ class MainWindow(QtWidgets.QMainWindow):
             self._begin_busy_state()
         self.controller.prefetch(case_idx, self.current_quantity_key)
 
+    # ------------------------------------------------- grid cells (M2.2.2)
+    def _set_grid_layout(self, layout_name: str):
+        """View -> Grid Layout menu. Growing the grid creates new cells
+        (each initialized via _on_cell_created); shrinking just hides
+        cells, preserving their state for when the layout grows again."""
+        self.view_grid.set_layout(layout_name)
+        # Pan/zoom is ambiguous across multiple cells and
+        # NavigationToolbar2QT isn't meant to be rebound at runtime -- see
+        # _build_plot_panel's comment. Only meaningful (and only shown) in
+        # single-view mode.
+        self.toolbar.setVisible(layout_name == "1x1")
+        self._apply_link_clim()
+        if not self.time_controller.is_playing():
+            self._on_time_changed(self.time_controller.index)
+
+    def _set_link_clim(self, checked: bool):
+        """View -> Link color scales toggle (M2.2.3)."""
+        self._link_clim = checked
+        self._apply_link_clim()
+
+    def _apply_link_clim(self):
+        """When linked, every visible cell showing the *same quantity* as
+        at least one other visible cell shares that quantity's data max as
+        a common vmax (mixing vmax across different quantities wouldn't be
+        physically meaningful, since they're different units) -- computed
+        fresh each time this is called, not cached, since it only runs on
+        discrete structural changes (layout/scenario/quantity changes), not
+        every playback tick. A no-op if linking is off or nothing's visible."""
+        if not getattr(self, "_link_clim", False):
+            return
+        cells = self.view_grid.visible_cells()
+        if not cells:
+            return
+        by_quantity = {}
+        for cell in cells:
+            by_quantity.setdefault(cell.quantity_key.quantity, []).append(cell)
+        for quantity, group in by_quantity.items():
+            vmax = max(float(np.max(self.controller.store.get(c.case_index, c.quantity_key))) for c in group)
+            vmin = QUANTITY_DISPLAY[quantity]['vmin']
+            for c in group:
+                c.view.set_clim(vmin, vmax)
+
+    def _on_active_cell_changed(self, cell):
+        """A different grid cell became active (user clicked it). The
+        control panel now edits *this* cell's scenario/quantity/display
+        settings, so pull them from the cell instead of pushing
+        MainWindow's previous state onto it."""
+        entry = next((e for e in (self.sim_data.manifest or []) if e.case_index == cell.case_index), None)
+        if entry is not None:
+            self.controller.set_candles(entry.candles)
+            self.controller.set_door(entry.door)
+            self.controller.set_vod(entry.vod)
+            self.controller.set_voc(entry.voc)
+            self.candle_toggle.set_value(entry.candles)
+            self.door_toggle.set_value(entry.door)
+            self.vod_toggle.set_value(entry.vod)
+            self.voc_toggle.set_value(entry.voc)
+            self._refresh_schematic()
+
+        self.current_quantity_key = cell.quantity_key
+        quantity_idx = next((i for i, info in enumerate(self.quantity_infos) if info.key == cell.quantity_key), None)
+        if quantity_idx is not None:
+            self.quantity_combo.blockSignals(True)
+            self.quantity_combo.setCurrentIndex(quantity_idx)
+            self.quantity_combo.blockSignals(False)
+
+        # Pull this cell's own last-set colormap/clim into the shared
+        # controls rather than pushing MainWindow's previous state onto
+        # it -- matches "other cells keep their own last-set clim/colormap
+        # independently" when unlinked (M2.2 design decision).
+        cmap_name = cell.view.heatmap.get_cmap().name
+        self.current_colormap = cmap_name
+        self.settings.setValue("colormap", cmap_name)
+        for action, (_, cmap) in zip(self.colormap_action_group.actions(), COLORMAPS):
+            action.setChecked(cmap == cmap_name)
+
+        display = QUANTITY_DISPLAY[cell.quantity_key.quantity]
+        _vmin, vmax = cell.view.heatmap.get_clim()
+        self.temp_slider.blockSignals(True)
+        self.temp_slider.setRange(display['slider_min'], display['slider_max'])
+        self.temp_slider.setValue(int(vmax))
+        self.temp_slider.blockSignals(False)
+        self.temp_slider.setAccessibleName(f"Maximum {display['label'].lower()} scale, {display['unit']}")
+        self.temp_slider.setToolTip(f"Adjust the maximum {display['label'].lower()} shown on the color scale")
+        self.temp_label.setText(f"{int(vmax)} {display['unit']}")
+
+        self._current_n_frames = self.controller.store.get(cell.case_index, cell.quantity_key).shape[0]
+        self.timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
+
+    def _apply_manifest_case_to_controller(self, case_index: int):
+        """The active cell's own scenario combo picked a different
+        scenario -- equivalent to using the control-panel toggles, so route
+        through the same controller state + existing cache-hit/miss path
+        (_on_scenario_param_changed) rather than duplicating it."""
+        entry = next((e for e in (self.sim_data.manifest or []) if e.case_index == case_index), None)
+        if entry is None:
+            return
+        self.controller.set_candles(entry.candles)
+        self.controller.set_door(entry.door)
+        self.controller.set_vod(entry.vod)
+        self.controller.set_voc(entry.voc)
+        self.candle_toggle.set_value(entry.candles)
+        self.door_toggle.set_value(entry.door)
+        self.vod_toggle.set_value(entry.vod)
+        self.voc_toggle.set_value(entry.voc)
+        self._on_scenario_param_changed()
+        self._refresh_schematic()
+
+    def _load_cell(self, cell, case_index: int, quantity_key):
+        """A *non-active* cell's own combo picked a new (case, key)
+        (M2.2.2/2.2.4). A cache hit redraws immediately; a cache miss
+        prefetches in the background (reusing SimulationController's
+        existing worker-list-tracked machinery, see _on_grid_prefetch_finished)
+        instead of blocking the GUI thread -- unlike the *first* time a
+        brand-new grid cell is created (_on_cell_created/_init_cell_view),
+        which still does a synchronous init_plot(); making that path
+        prefetch-aware too would need a "loading" placeholder frame state,
+        deliberately out of scope here (D:Easy T:2h estimate for this
+        task) -- that cold-parse hitch stays the same bounded/self-
+        correcting shape already characterized in ROADMAP.md's M2.1
+        section, just for a cell's *first* ever view, not its combo
+        changes thereafter."""
+        cell.case_index = case_index
+        cell.quantity_key = quantity_key
+        if self.controller.is_cached(case_index, quantity_key):
+            self._redraw_cell_now(cell)
+            self._apply_link_clim()
+            return
+        self._pending_cell_prefetches.add(cell)
+        self.controller.prefetch(case_index, quantity_key)
+
+    def _redraw_cell_now(self, cell):
+        """Assumes cell.case_index/quantity_key are already cached."""
+        display = QUANTITY_DISPLAY[cell.quantity_key.quantity]
+        data = self.controller.store.get(cell.case_index, cell.quantity_key)
+        cell.view.set_cmap(display['cmap'])
+        cell.view.set_clim(display['vmin'], display['slider_default'])
+        cell.view.set_colorbar_label(f"{display['label']} ({display['unit']})")
+        index = min(self.time_controller.index, data.shape[0] - 1)
+        cell.view.show_frame(data[index])
+
+    def _on_grid_prefetch_finished(self, case_idx: int):
+        """A background prefetch completed -- check every grid cell
+        waiting on exactly this case_idx and redraw any that are now
+        actually cached (M2.2.4). Purely a "go check what's newly
+        available" notification: idempotent, and independent of
+        _on_prefetch_finished's own active-cell busy-state bookkeeping,
+        which this doesn't touch."""
+        ready = [cell for cell in list(self._pending_cell_prefetches)
+                 if cell.case_index == case_idx
+                 and self.controller.is_cached(cell.case_index, cell.quantity_key)]
+        for cell in ready:
+            self._pending_cell_prefetches.discard(cell)
+            self._redraw_cell_now(cell)
+        if ready:
+            self._apply_link_clim()
+
+    def _on_grid_prefetch_error(self, case_idx: int, message: str):
+        """A background prefetch failed. No per-cell error UI (out of
+        scope for M2.2.4) -- just stop waiting on it so
+        _pending_cell_prefetches doesn't grow stale entries forever. If
+        this same failure was also the active cell's load, the existing
+        _on_prefetch_error (connected to the same signal) still shows its
+        own modal error dialog independently."""
+        stale = [cell for cell in list(self._pending_cell_prefetches) if cell.case_index == case_idx]
+        for cell in stale:
+            self._pending_cell_prefetches.discard(cell)
+
+    def _on_cell_scenario_selected(self, cell, case_index: int):
+        if cell is self.view_grid.active_cell():
+            self._apply_manifest_case_to_controller(case_index)
+        else:
+            self._load_cell(cell, case_index, cell.quantity_key)
+
+    def _on_cell_quantity_selected(self, cell, key):
+        if cell is self.view_grid.active_cell():
+            idx = next((i for i, info in enumerate(self.quantity_infos) if info.key == key), None)
+            if idx is not None:
+                self.quantity_combo.setCurrentIndex(idx)  # triggers _on_quantity_changed
+        else:
+            self._load_cell(cell, cell.case_index, key)
+
     def _on_temp_changed(self, value):
         display = QUANTITY_DISPLAY.get(self.current_quantity_key.quantity, QUANTITY_DISPLAY[DEFAULT_SLICE_KEY.quantity])
         self.temp_label.setText(f"{value} {display['unit']}")
         # vmin stays pinned at the quantity's physical floor; only vmax
-        # moves with the slider. SliceView.set_clim does the full redraw
-        # (not blit) + recapture itself: the colorbar's tick range depends
-        # on clim and needs to actually repaint.
-        self.slice_view.set_clim(display['vmin'], value)
+        # moves with the slider. This -- like the colormap menu -- edits
+        # the active cell only (M2.2 design decision: other visible cells
+        # keep their own last-set clim/colormap independently unless
+        # "Link color scales" is on). SliceView.set_clim does the full
+        # redraw (not blit) + recapture itself: the colorbar's tick range
+        # depends on clim and needs to actually repaint.
+        self.view_grid.active_view().set_clim(display['vmin'], value)
+        self._apply_link_clim()
 
     # -------------------------------------------------------------- export
     def _export_animation(self):
@@ -858,25 +1141,34 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_theme()
 
     def _set_colormap(self, cmap: str):
+        # Active cell only, same M2.2 design decision as _on_temp_changed.
         self.current_colormap = cmap
         self.settings.setValue("colormap", cmap)
-        self.slice_view.set_cmap(cmap)
+        self.view_grid.active_view().set_cmap(cmap)
 
     def _set_interpolation(self, interpolation: str):
+        # Interpolation is treated as a global "look" setting (applies to
+        # every cell's initial display), but like colormap/clim, the View
+        # menu only edits the active cell live -- other cells keep
+        # whatever interpolation they were created with until re-activated
+        # or reloaded.
         self.current_interpolation = interpolation
         self.settings.setValue("interpolation", interpolation)
-        self.slice_view.set_interpolation(interpolation)
+        self.view_grid.active_view().set_interpolation(interpolation)
 
     def _apply_theme(self):
         palette = THEMES[self.current_theme_name]
         self.setStyleSheet(build_qss(palette, self.ui_scale))
         self.schematic.apply_palette(palette)
         self._refresh_toggle_icons(palette)
-        # The QSS restyle doesn't touch the matplotlib canvas itself, but the
-        # cached blit background is invalidated defensively per M1.3.3's spec
-        # (resize/theme/colormap changes all recapture) in case the canvas
-        # ever becomes theme-aware later.
-        self.slice_view.capture_background()
+        self.view_grid.apply_accent(palette.accent)
+        # The QSS restyle doesn't touch the matplotlib canvases themselves,
+        # but the cached blit backgrounds are invalidated defensively per
+        # M1.3.3's spec (resize/theme/colormap changes all recapture) in
+        # case the canvas ever becomes theme-aware later -- every visible
+        # cell, not just the active one.
+        for cell in self.view_grid.visible_cells():
+            cell.view.capture_background()
 
     def _refresh_toggle_icons(self, palette):
         """Icon color is redrawn per theme so it stays legible against both
