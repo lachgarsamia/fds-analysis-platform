@@ -686,3 +686,134 @@ class TestIntegration:
         qapp.processEvents()
         assert window.heatmap.get_array() is not None
         window.close()
+
+    def test_simultaneous_scenario_and_quantity_switch_cache_miss_race(self, qapp):
+        """Characterizes (does not fix) the race documented in ROADMAP.md's
+        M2.1 section: `_pending_load_case` tracks case_idx only, not
+        (case_idx, key), so a scenario toggle and a quantity switch that
+        both land on the same case_idx while both are cache misses can have
+        their background prefetches finish out of order.
+
+        Forces the specific interleaving the roadmap note is worried about
+        -- the STALE (pre-switch) key's prefetch finishing first -- via a
+        store wrapper that deliberately delays the NEW key's load. Confirms
+        two things: (1) the end state is fully correct (right quantity,
+        right scenario, right frame data, busy state settles, cursor
+        restored) -- not just "doesn't crash"; and (2) the mechanism named
+        in the roadmap note is real, not assumed: the cursor is provably
+        already restored (busy state already ended) at the moment the GUI
+        thread starts its own blocking synchronous fetch for the new key.
+        """
+        from slice_key import SliceKey
+
+        class OrderedRaceStoreWrapper:
+            """Wraps the real store; get() for `slow_key` sleeps before
+            delegating, but only while the underlying store doesn't have it
+            cached yet -- mirrors real ScenarioStore semantics (first load
+            slow, later calls for the same (case, key) are cache hits) so
+            _sync_current_scenario's *second* internal call for the new key
+            (via _on_time_changed, right after the first) isn't artificially
+            slowed too, which would misrepresent the real hitch's shape.
+            Records, per call, which thread called, whether it was actually
+            a fresh load, and whether the busy cursor had already been
+            restored by the time this call started -- the direct evidence
+            for where the "lie" happens."""
+
+            def __init__(self, inner, slow_key, delay=0.15):
+                self._inner = inner
+                self._slow_key = slow_key
+                self._delay = delay
+                self.completion_log = []  # (case_index, key, is_gui_thread, cursor_was_none_at_start, was_fresh_load)
+
+            def get(self, case_index, key=DEFAULT_SLICE_KEY):
+                is_gui_thread = QtCore.QThread.currentThread() is QtWidgets.QApplication.instance().thread()
+                cursor_was_none = QtWidgets.QApplication.overrideCursor() is None
+                was_fresh_load = not self._inner.is_cached(case_index, key)
+                if key == self._slow_key and was_fresh_load:
+                    time.sleep(self._delay)
+                result = self._inner.get(case_index, key)
+                self.completion_log.append((case_index, key, is_gui_thread, cursor_was_none, was_fresh_load))
+                return result
+
+            def is_cached(self, case_index, key=DEFAULT_SLICE_KEY):
+                return self._inner.is_cached(case_index, key)
+
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window.show()
+        qapp.processEvents()
+
+        other_candles = 1 - window.controller.params.candles
+        target_case = int(window.controller.data_matrix[
+            other_candles, window.controller.params.door,
+            window.controller.params.vod, window.controller.params.voc,
+        ])
+        velocity_key = SliceKey("VELOCITY", 1, 0)
+        assert not window.controller.is_cached(target_case, DEFAULT_SLICE_KEY)
+        assert not window.controller.is_cached(target_case, velocity_key)
+
+        # VELOCITY (the key we're about to switch TO) is made the slow one,
+        # so TEMPERATURE (the key active at the moment of the scenario
+        # toggle, about to become stale) finishes first -- exactly the
+        # interleaving the roadmap note names as the risk.
+        wrapper = OrderedRaceStoreWrapper(window.controller.store, slow_key=velocity_key, delay=0.15)
+        window.controller.store = wrapper
+
+        window.candle_toggle.set_value(other_candles)
+        window._on_candle_changed(other_candles)   # prefetch(target_case, TEMPERATURE) starts
+        assert window._pending_load_case == target_case
+        window.quantity_combo.setCurrentIndex(1)     # prefetch(target_case, VELOCITY) starts
+        assert window.current_quantity_key == velocity_key
+        assert window._pending_load_case == target_case, "both requests target the same case_idx"
+
+        deadline = time.perf_counter() + 3.0
+        while window._busy and time.perf_counter() < deadline:
+            qapp.processEvents()
+            time.sleep(0.005)
+
+        # -- 1. No crash, no hang, busy state actually settles. --
+        assert not window._busy, "busy state must eventually clear"
+        assert QtWidgets.QApplication.overrideCursor() is None
+
+        # -- 2. The intended interleaving actually happened: TEMPERATURE's
+        #    load completed before VELOCITY's first (real) load. --
+        completed_keys_in_order = [k for (_, k, _, _, _) in wrapper.completion_log]
+        assert completed_keys_in_order[0] == DEFAULT_SLICE_KEY
+        assert velocity_key in completed_keys_in_order
+
+        # -- 3. The mechanism itself: find the GUI-thread call(s) for the
+        #    new key that actually triggered a fresh (non-cached) load --
+        #    that's _sync_current_scenario's own blocking store.get(),
+        #    triggered from inside _on_prefetch_finished -- and confirm the
+        #    cursor had ALREADY been restored (busy state already ended)
+        #    before it started. This is the literal "busy indicator lies
+        #    for the hitch's duration" behavior, not an assumption. --
+        gui_thread_fresh_velocity_calls = [
+            entry for entry in wrapper.completion_log
+            if entry[1] == velocity_key and entry[2] and entry[4]
+        ]
+        assert len(gui_thread_fresh_velocity_calls) >= 1, (
+            "expected at least one GUI-thread fresh-load fetch for the new "
+            "key (_sync_current_scenario's synchronous get racing the "
+            "still-in-flight background prefetch)"
+        )
+        assert all(entry[3] for entry in gui_thread_fresh_velocity_calls), (
+            "cursor must already have been restored (busy state already "
+            "ended) before this synchronous, GUI-thread-blocking fetch "
+            "began -- confirming the busy indicator was inaccurate for "
+            "its duration, not just eventually consistent"
+        )
+
+        # -- 4. Despite the race, the FINAL state is fully correct: right
+        #    scenario, right quantity, right frame data, no silent loss. --
+        assert window.controller.current_case_index() == target_case
+        assert window.current_quantity_key == velocity_key
+        assert window._current_n_frames > 0
+        expected = wrapper._inner.get(target_case, velocity_key)
+        shown_index = window.time_controller.index
+        assert (window.heatmap.get_array() == expected[shown_index]).all(), \
+            "displayed frame must be the new quantity's real data, not stale/wrong data"
+
+        window.close()
