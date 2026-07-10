@@ -46,7 +46,7 @@ class _PrefetchWorker(QtCore.QThread):
     """
 
     finished_ok = QtCore.pyqtSignal(int)  # case_index that finished loading
-    error = QtCore.pyqtSignal(str)
+    error = QtCore.pyqtSignal(int, str)   # case_index that failed, message
 
     def __init__(self, store, case_index: int):
         super().__init__()
@@ -58,14 +58,14 @@ class _PrefetchWorker(QtCore.QThread):
             self._store.get(self._case_index)
             self.finished_ok.emit(self._case_index)
         except Exception as e:  # noqa: BLE001 - never let a worker crash silently
-            self.error.emit(f"Failed to load scenario: {e}")
+            self.error.emit(self._case_index, f"Failed to load scenario: {e}")
 
 
 class SimulationController(QtCore.QObject):
     """Public API the view talks to. No widget references live here."""
 
-    prefetch_finished = QtCore.pyqtSignal(int)  # case_index (M1.4.4)
-    prefetch_error = QtCore.pyqtSignal(str)
+    prefetch_finished = QtCore.pyqtSignal(int)       # case_index (M1.4.4)
+    prefetch_error = QtCore.pyqtSignal(int, str)      # case_index, message
 
     def __init__(self, store, data_matrix, timesteps_per_second: int = 4):
         super().__init__()

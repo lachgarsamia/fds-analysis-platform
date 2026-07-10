@@ -459,7 +459,18 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._was_playing_before_load:
             self.time_controller.play()
 
-    def _on_prefetch_error(self, message: str):
+    def _on_prefetch_error(self, case_idx: int, message: str):
+        """A background scenario load failed (M1.4.4). Same staleness guard
+        as _on_prefetch_finished: if a newer request has since superseded
+        this one, an older/now-irrelevant failure must not clear the busy
+        state or _pending_load_case out from under the still-in-flight
+        newer request -- doing so would (a) prematurely show the UI as
+        "ready" while a real load is still running, and (b) cause that
+        newer request's eventual success to be silently discarded, since
+        _on_prefetch_finished's own guard would then compare against a
+        _pending_load_case that was cleared by this unrelated failure."""
+        if case_idx != self._pending_load_case:
+            return
         self._pending_load_case = None
         self._end_busy_state()
         self._on_sim_error(message)

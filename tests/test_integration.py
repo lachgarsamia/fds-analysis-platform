@@ -434,6 +434,84 @@ class TestIntegration:
         )
         window.close()
 
+    def test_stale_prefetch_error_does_not_discard_newer_success(self, qapp):
+        """Regression test for a real bug found while verifying the leak
+        fix above: _on_prefetch_error didn't check case_idx against
+        _pending_load_case the way _on_prefetch_finished already did. If an
+        *older*, superseded load failed while a *newer* one was still in
+        flight, the error handler would clear _pending_load_case out from
+        under the newer request -- so when the newer request then
+        succeeded, _on_prefetch_finished's own staleness guard would
+        compare its case_idx against a _pending_load_case that had already
+        been wrongly cleared to None, and silently discard a load that
+        actually worked. This drives that exact interleaving: A fails,
+        B (requested after A, before A's failure arrives) must still
+        complete normally."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        window.show()
+        qapp.processEvents()
+
+        other_candles = 1 - window.controller.params.candles
+        other_door = 1 - window.controller.params.door
+        case_a = int(window.controller.data_matrix[
+            other_candles, window.controller.params.door,
+            window.controller.params.vod, window.controller.params.voc,
+        ])
+        # case_b as it will actually resolve once BOTH toggles below have
+        # applied (params.candles is already other_candles by the time the
+        # door toggle fires -- the two changes compound, not independent).
+        case_b = int(window.controller.data_matrix[
+            other_candles, other_door,
+            window.controller.params.vod, window.controller.params.voc,
+        ])
+        assert case_a != case_b
+        assert not window.controller.is_cached(case_a)
+        assert not window.controller.is_cached(case_b)
+
+        class FlakyStoreWrapper:
+            """Wraps the real store, forcing exactly one case_index to
+            raise, so the older-fails/newer-succeeds interleaving can be
+            driven deterministically without corrupting the shared fixture
+            data other tests in this run also read."""
+
+            def __init__(self, inner, fail_on):
+                self._inner = inner
+                self._fail_on = fail_on
+
+            def get(self, case_index):
+                if case_index == self._fail_on:
+                    raise RuntimeError("simulated load failure")
+                return self._inner.get(case_index)
+
+            def is_cached(self, case_index):
+                return self._inner.is_cached(case_index)
+
+        window.controller.store = FlakyStoreWrapper(window.controller.store, fail_on=case_a)
+
+        # Toggle to A (will fail) then immediately to B (will succeed),
+        # mirroring a user changing their mind before the first load lands.
+        window.candle_toggle.set_value(other_candles)
+        window._on_candle_changed(other_candles)
+        assert window._pending_load_case == case_a
+
+        window.door_toggle.set_value(other_door)
+        window._on_door_changed(other_door)
+        assert window._pending_load_case == case_b, "B must now be the tracked request, not A"
+
+        deadline = time.perf_counter() + 3.0
+        while window._busy and time.perf_counter() < deadline:
+            qapp.processEvents()
+            time.sleep(0.005)
+
+        # B's success -- not A's stale failure -- must be what ended the
+        # busy state, and B's frame data must actually be displayed.
+        assert not window._busy, "B's completion must have ended the busy state"
+        assert window.controller.current_case_index() == case_b
+        assert window._current_n_frames > 0, "B's frame count must have been synced, not discarded"
+        assert QtWidgets.QApplication.overrideCursor() is None
+        window.close()
+
     def test_loop_toggle_wired_to_time_controller(self, qapp):
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)

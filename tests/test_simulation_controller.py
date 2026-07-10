@@ -98,7 +98,7 @@ class TestSimulationController:
         data_matrix = np.zeros((2, 2, 3, 2), dtype=int)
         ctrl = SimulationController(store, data_matrix, 4)
         errors = []
-        ctrl.prefetch_error.connect(errors.append)
+        ctrl.prefetch_error.connect(lambda case_idx, msg: errors.append((case_idx, msg)))
 
         ctrl.prefetch(7)
         deadline = time.perf_counter() + 2.0
@@ -106,7 +106,9 @@ class TestSimulationController:
             qapp.processEvents()
             time.sleep(0.005)
         assert len(errors) == 1
-        assert "7" in errors[0] or "case" in errors[0].lower()
+        case_idx, msg = errors[0]
+        assert case_idx == 7
+        assert "case" in msg.lower()
 
     def test_prefetch_keeps_concurrent_workers_alive_until_each_finishes(self, qapp):
         """Regression test (unit level) for the QThread lifecycle bug found
