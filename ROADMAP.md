@@ -27,11 +27,13 @@ Do not plan against stale descriptions. The following is the verified current st
 | ✅ | M1.5: `AnimationExporter` (background `QThread`) exports MP4 (ffmpeg, not installed in this dev environment) or GIF (Pillow, verified end-to-end against real scenario data) via `Export → Animation…`; window-modal progress dialog + cooperative cancel leaves zero partial-file bytes at the destination (verified directly). Same double-start `QThread` guard pattern as M1.4's prefetch fix | `src/export.py`, `src/main_window.py`, merged to `main` |
 | ✅ | M1.6: `SchematicWidget` (room outline, door/vent/candle icons) wired live to the same toggle signals driving the control panel, in a collapsible "Room diagram" panel; room outline aspect ratio sourced from parsed `.smv` mesh extents (`resolve_room_extent`, fallback footprint 1.0×0.30 m when no real `.smv` present); door/vent/candle placement inside the outline is fixed-proportion pending M2.6's per-object extent mapping (documented as a known follow-on, not a defect); plain-language labels + per-control explainer tooltips for non-specialist audience | `src/schematic.py`, `src/main_window.py`, `tests/test_integration.py`, merged to `main` |
 | ✅ | M2.1: `manifest.py` (`manifest.json`, derived — not assumed — candles/door/vod/voc factor indices from actual `fds/sim/*` folder names; byte-for-byte identical to the old hardcoded `build_data_matrix(2,2,3,2)` on the real 24-scenario set, now unconditional on that assumption holding); `slice_key.py` (`SliceKey`, `available_slices()` — confirms VELOCITY is present at the same slice plane TEMPERATURE uses); `ScenarioStore`/`load_data` keyed by `(scenario, SliceKey)`, disk-cache filenames include the key; quantity combo box (Temperature / Air speed) with per-quantity colormap+clim+label defaults (`config.QUANTITY_DISPLAY`), wired through the same M1.4.4 busy-cursor/prefetch machinery, now key-aware | `src/manifest.py`, `src/slice_key.py`, `src/scenario_store.py`, `src/load_data.py`, `src/simulation_controller.py`, `src/main_window.py`, `src/config.py`, `tests/test_manifest.py`, `tests/test_slice_key.py`, merged to `main` |
+| ✅ | M2.2: `views.py` — `PlotView` protocol + `SliceView` (matplotlib, extracted whole from `MainWindow`) + `GridCell`/`ViewGrid` (1×1/1×2/2×2 via View→Grid Layout menu, per-cell scenario+quantity combos, one active cell driven by the control panel, others independent). Single-view mode is the grid at its 1×1 default, not a separate path — pixel-equivalent to pre-refactor by construction (confirmed: all ~30 pre-existing single-view tests pass unchanged). Playback loops every visible cell each tick; "Link color scales" shares a data-derived vmax per same-quantity group. Non-active cells' own combo picks prefetch via the existing M1.4.4 worker-list machinery (no new threading code); `SCENARIO_CACHE_SIZE` raised 4→6. Measured 2×2 synced-playback FPS (offscreen): ~247 fps, DoD target ≥15 fps | `src/views.py`, `src/main_window.py`, `src/config.py`, `tests/test_views.py`, `tests/bench_grid_fps.py`, `tests/test_integration.py`, merged to `main` |
 
 ### Current architecture
 ```
 main.py (bootstrap, splash)
    └─ main_window.py (MainWindow — view only)
+        └─ views.py (PlotView protocol, SliceView, GridCell, ViewGrid — M2.2)
         └─ simulation_controller.py (SimulationController + _Worker QThread)
              └─ data_provider.py (SimulationData / DataLoadError / demo fallback)
                   └─ manifest.py (ScenarioEntry list ← fds/sim/* folder names, manifest.json)
@@ -172,7 +174,7 @@ Time budget: **Phase 1 = 1 wk (+ M1.3s spike, timeboxed/parallel; +~0.5 d from M
 | # | Milestone | Why | Impact | Effort | Risk | Priority |
 |---|---|---|---|---|---|---|
 | M2.1 | Scenario manifest + quantity/slice generalization | Unlocks VELOCITY (already on disk) + all future quantities; kills triple-hardcoding | High | 3 d | Med | **High** — ✅ done |
-| M2.2 | PlotView abstraction + multi-view grid (1×1/1×2/2×2, synced time, linked clim) | The platform centerpiece; matches dataset's purpose | **Highest** | 5 d | Med | **High** |
+| M2.2 | PlotView abstraction + multi-view grid (1×1/1×2/2×2, synced time, linked clim) | The platform centerpiece; matches dataset's purpose | **Highest** | 5 d | Med | **High** — ✅ done |
 | M2.3 | Difference view + ensemble stats view | Core science; doubles as ML-eval harness | High | 3 d | Low (array ops on cached data) | **High** |
 | M2.4 | pyqtgraph spike — timeboxed decision gate (2 d max) | Only migrate if matplotlib-blit can't hold the 2×2 grid at target FPS | Med | 2 d | Contained by timebox | Med |
 | M2.5 | Experiment browser + summary-stats index (incl. HRR from CSV) | Workflow leap; makes 24 runs navigable | High | 3 d | Low | **High** |
@@ -319,40 +321,21 @@ Merged to `main`. **Objective met:** VELOCITY is reachable from the UI; the cand
 
 **DoD:** user switches TEMPERATURE↔VELOCITY live (✅) · correct units on colorbar (✅ "Temperature (°C)" / "Air speed (m/s)") · manifest is the only place factor structure lives for real data (✅ `data_provider.py`'s real-data path; demo-data path still uses `config.N_CANDLES` etc. by necessity — no real folders to derive a manifest from) · tests cover both quantities (✅ 21 new tests across `test_manifest.py`, `test_slice_key.py`, `test_scenario_store.py`, `test_disk_cache.py`, `test_simulation_controller.py`, `test_integration.py`) · pytest green (✅ 105/107; the 2 known-flaky, pre-existing, unrelated failures above).
 
-### M2.2 — PlotView abstraction + multi-view grid
-**Objective:** the comparison instrument.
-**Refactor first (required):** extract current plotting from `MainWindow` into a `SliceView` class implementing:
-
-```python
-class PlotView(Protocol):
-    def widget(self) -> QWidget: ...
-    def show_frame(self, frame: np.ndarray) -> None: ...
-    def set_cmap(self, name: str): ...
-    def set_clim(self, vmin: float, vmax: float): ...
-    def set_title(self, text: str): ...
-```
+### M2.2 — PlotView abstraction + multi-view grid ✅ DONE
+Merged to `main`. **Objective met:** the comparison instrument works — a 2×2 grid of 4 independently-selectable scenarios, synced playback, linked color scales, single-view mode unchanged.
 
 | Task | Detail |
 |---|---|
-| 2.2.1 Extract `SliceView` (matplotlib impl, blitting inside) | `MainWindow` shrinks to wiring. Files: new `views.py`; `main_window.py`. D:Med T:4h. Test: single-view behavior unchanged (integration test). |
-| 2.2.2 `ViewGrid` container | QGridLayout of PlotViews; layouts 1×1/1×2/2×2 via View menu; each cell has a compact scenario selector (combo listing manifest entries) + quantity selector; one cell is "active" (receives control-panel changes). D:Hard T:2d. |
-| 2.2.3 Synchronization | All cells driven by the single `TimeController` tick (pull model makes this trivial); "Link color scales" toggle (shared clim = global max across shown scenarios); per-cell overrides otherwise. D:Med T:3h. |
-| 2.2.4 Prefetch policy | On grid layout/scenario change, prefetch all visible (case, key) combos in background; raise `SCENARIO_CACHE_SIZE` to ≥ visible cells + 2 (manifest-aware default in `config.py`). D:Easy T:2h. |
+| 2.2.1 Extract `SliceView` ✅ | `PlotView` Protocol + matplotlib `SliceView` (axes/heatmap/colorbar/blitting) extracted whole from `MainWindow` into new `views.py`. `MainWindow` keeps thin `heatmap`/`colorbar`/`canvas`/`ax` properties delegating to the active cell's view, so ~30 pre-existing single-view tests (vmin pinning, blit playback, colormap/interpolation toggles, temperature slider, etc.) needed zero changes and all still pass — the actual, verified form of "single-view behavior unchanged." Files: `views.py`, `main_window.py`. |
+| 2.2.2 `ViewGrid` container ✅ | `GridCell` (compact scenario combo — manifest-backed, folder-name labels — + quantity combo, above a `SliceView`) + `ViewGrid` (QGridLayout, 1×1/1×2/2×2 via new View→Grid Layout menu). Growing the grid creates new cells (each initialized with real data via `cell_created`); shrinking hides cells without destroying them, so per-cell state survives a shrink/regrow cycle. Clicking a cell makes it "active"; **design decision confirmed with the user before implementing:** the control panel (candles/door/vod/voc toggles, quantity combo, colormap menu, display-scale slider) edits the active cell only — other visible cells keep their own last-set scenario/quantity/clim/colormap independently. Single-view mode *is* the grid at its 1×1 default (not a separate code path), which is what makes 2.2.1's pixel-parity claim automatic rather than something to separately re-verify. The pan/zoom/save toolbar stays bound to the first cell's canvas for its whole lifetime (`NavigationToolbar2QT` isn't meant to be rebound at runtime) and is shown only in 1×1 mode — pan/zoom is ambiguous across an ensemble grid where every cell should show the same framing. Files: `views.py`, `main_window.py`. |
+| 2.2.3 Synchronization ✅ | `_on_time_changed` loops every visible cell each tick instead of redrawing a single view (pull model, no per-cell timers). "Link color scales" (View menu checkbox) groups visible cells by quantity (mixing vmax across different quantities/units wouldn't be physically meaningful) and sets each group's vmax to the real data max across that group, recomputed on structural changes (layout/scenario/quantity change) — not every tick, which would be wasteful. Files: `main_window.py`. |
+| 2.2.4 Prefetch policy ✅ | A non-active cell's own combo picking an uncached (case, key) prefetches in the background instead of blocking the GUI thread — **reuses `SimulationController.prefetch()`/the M1.4.4 worker-list machinery as-is** (a second pair of slots on the same `prefetch_finished`/`prefetch_error` signals, independent of the active-cell busy-state bookkeeping) rather than writing new threading code, since that machinery already does exactly "warm a (case, key) in the background." **Deliberate scope line:** a *brand-new* cell's very first render (when the grid grows) still does a synchronous init — making that non-blocking too would need a "loading" placeholder frame state, judged out of scope for this task's D:Easy/T:2h sizing; that cold-parse hitch stays the same bounded/self-correcting shape already characterized for the M2.1 quantity-switch race. `SCENARIO_CACHE_SIZE` raised 4→6 (`config.py`) — the cache now keys on (scenario, quantity) pairs since M2.1, and a 2×2 grid can hold up to 4 distinct combos at once. Files: `config.py`, `main_window.py`. |
 
-**Wireframe:**
-```
-┌────────────┬──────────────────────────────────────────┐
-│ controls   │ ┌───────────────┐  ┌───────────────┐     │
-│ (existing  │ │ c1_d1 · TEMP  │  │ c2_d1 · TEMP  │     │
-│  panel +   │ └───────────────┘  └───────────────┘     │
-│  grid/     │ ┌───────────────┐  ┌───────────────┐     │
-│  quantity  │ │ c1_d1 · VELO  │  │ c2−c1 · ΔTEMP │     │
-│  pickers)  │ └───────────────┘  └───────────────┘     │
-│            │ ── timeline ▷ ────────────●────────── ⟲  │
-└────────────┴──────────────────────────────────────────┘
-```
-**Risk:** matplotlib FPS with 4 canvases → run M2.4 gate immediately after 2.2.2.
-**DoD:** 2×2 grid, 4 different scenarios, synced playback ≥15 fps on dev machine · linked clim works · single-view mode pixel-equivalent to pre-refactor.
+**Deviation from the spec's literal task list (not a gap, a design decision made explicit before coding):** the spec didn't say where the shared color-scale slider/colormap menu apply when unlinked; asked the user rather than guessing — confirmed "active cell only," which is what 2.2.2/2.2.3 above implement.
+
+**Tests:** 22 unit tests in `tests/test_views.py` (SliceView init/setters; GridCell combo signals + `set_*_silently` non-emitting updates + active-border styling; ViewGrid layout switching, cell creation/preservation across shrink-regrow, active-cell tracking, signal relay, accent propagation) · 10 integration tests in `tests/test_integration.py` (menu-driven layout switch incl. demo-mode fallback, toolbar visibility, control-panel-edits-active-cell-only, click-to-activate syncs the control panel from the clicked cell, linked vs unlinked clim, playback ticks every visible cell, non-active cell scenario change prefetches without blocking, grid state survives shrink/regrow) · `tests/bench_grid_fps.py` (new, not pytest-collected, matches the `bench_rendering.py`/`bench_loading.py` convention) measuring the real 2×2 synced-playback path.
+
+**DoD:** 2×2 grid, 4 different scenarios, synced playback ≥15 fps on dev machine (✅ measured ~247 fps offscreen — confirms §2.4's prediction that matplotlib-blit holds at this grid size; **M2.4's pyqtgraph gate is not urgent** based on this number, though the gate itself is still a separate, not-yet-run milestone) · linked clim works (✅ verified: same-quantity visible cells share an identical, data-derived vmax) · single-view mode pixel-equivalent to pre-refactor (✅ by construction — see 2.2.1 — and confirmed by the full pre-existing single-view test suite passing unchanged, 105/107 full-suite total; the 2 failures are the pre-existing, already-documented, unrelated cursor-stack flake).
 
 ### M2.3 — Difference + ensemble views
 | Task | Detail |

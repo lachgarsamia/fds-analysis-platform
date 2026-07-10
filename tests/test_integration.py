@@ -817,3 +817,198 @@ class TestIntegration:
             "displayed frame must be the new quantity's real data, not stale/wrong data"
 
         window.close()
+
+    # --------------------------------------------------------- M2.2 grid
+    def test_grid_layout_switch_changes_visible_cell_count(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        assert len(window.view_grid.visible_cells()) == 1
+
+        window._set_grid_layout("2x2")
+        assert len(window.view_grid.visible_cells()) == 4
+        for cell in window.view_grid.visible_cells():
+            assert cell.view.heatmap.get_array().shape == (49, 101)
+
+        window._set_grid_layout("1x2")
+        assert len(window.view_grid.visible_cells()) == 2
+
+        window._set_grid_layout("1x1")
+        assert len(window.view_grid.visible_cells()) == 1
+        window.close()
+
+    def test_grid_layout_switch_works_in_demo_mode(self, qapp, monkeypatch):
+        """Demo mode has no manifest -- grid cells default to case_index 0
+        with disabled scenario combos, but the grid itself must still work."""
+        monkeypatch.setattr("data_provider.list_scenario_folders", lambda *a, **kw: [])
+        sim_data = load_simulation_data()
+        assert sim_data.is_demo
+        window = MainWindow(sim_data)
+        window._set_grid_layout("2x2")
+        assert len(window.view_grid.visible_cells()) == 4
+        for cell in window.view_grid.visible_cells():
+            assert not cell.scenario_combo.isEnabled()
+        window.close()
+
+    def test_grid_toolbar_visible_only_in_1x1(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        window.show()
+        qapp.processEvents()
+        assert window.toolbar.isVisible()
+        window._set_grid_layout("2x2")
+        assert not window.toolbar.isVisible()
+        window._set_grid_layout("1x1")
+        assert window.toolbar.isVisible()
+        window.close()
+
+    def test_grid_control_panel_toggle_drives_active_cell_only(self, qapp):
+        """Toggling a scenario control while in a multi-cell grid must only
+        move the *active* cell -- other visible cells must be unaffected,
+        confirming the M2.2 design decision (control panel edits the
+        active cell only) actually holds, not just for clim/colormap."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window._set_grid_layout("2x2")
+        cells = window.view_grid.visible_cells()
+        other_case_indices_before = [c.case_index for c in cells[1:]]
+
+        other_candles = 1 - window.controller.params.candles
+        window.candle_toggle.set_value(other_candles)
+        window._on_candle_changed(other_candles)
+
+        assert cells[0] is window.view_grid.active_cell()
+        assert cells[0].case_index == window.controller.current_case_index()
+        assert [c.case_index for c in cells[1:]] == other_case_indices_before, \
+            "non-active cells must not move when the control panel changes"
+        window.close()
+
+    def test_grid_clicking_a_cell_makes_it_active_and_syncs_control_panel(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window._set_grid_layout("2x2")
+        cells = window.view_grid.visible_cells()
+        target = cells[2]
+        target.scenario_combo.setCurrentIndex(10)  # give it a distinct scenario first
+        qapp.processEvents()
+
+        target.activated.emit(target)
+
+        assert window.view_grid.active_cell() is target
+        entry = next(e for e in sim_data.manifest if e.case_index == target.case_index)
+        assert window.candle_toggle.value == entry.candles
+        assert window.door_toggle.value == entry.door
+        assert window.vod_toggle.value == entry.vod
+        assert window.voc_toggle.value == entry.voc
+        assert window.controller.current_case_index() == target.case_index
+        window.close()
+
+    def test_grid_link_clim_shares_max_within_quantity_group(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window._set_grid_layout("2x2")
+        cells = window.view_grid.visible_cells()
+        # Give each cell a different scenario so their data maxima differ.
+        for i, cell in enumerate(cells):
+            cell.scenario_combo.setCurrentIndex(i * 5)
+            qapp.processEvents()
+
+        expected_vmax = max(
+            float(window.controller.store.get(c.case_index, c.quantity_key).max()) for c in cells
+        )
+
+        window.link_clim_action.setChecked(True)
+        window._set_link_clim(True)
+
+        clims = [c.view.heatmap.get_clim() for c in cells]
+        assert all(vmax == pytest.approx(expected_vmax) for _vmin, vmax in clims), \
+            f"all cells should share the same vmax when linked: {clims}"
+        assert len({vmin for vmin, _vmax in clims}) == 1, "vmin should also match (same quantity, same floor)"
+        window.close()
+
+    def test_grid_unlinked_cells_keep_independent_clim(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window._set_grid_layout("1x2")
+        cells = window.view_grid.visible_cells()
+        assert not window.link_clim_action.isChecked()
+
+        cells[1].scenario_combo.setCurrentIndex(15)
+        qapp.processEvents()
+        window.temp_slider.setValue(777)  # active cell (cells[0]) only
+
+        assert cells[0].view.heatmap.get_clim()[1] == 777.0
+        assert cells[1].view.heatmap.get_clim()[1] != 777.0, \
+            "non-active cell's clim must not follow the active cell's slider when unlinked"
+        window.close()
+
+    def test_grid_playback_tick_updates_every_visible_cell(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window._set_grid_layout("2x2")
+        cells = window.view_grid.visible_cells()
+        for i, cell in enumerate(cells[1:], start=1):
+            cell.scenario_combo.setCurrentIndex(i * 3)
+            qapp.processEvents()
+
+        before = [c.view.heatmap.get_array().copy() for c in cells]
+        window.time_controller.seek(100)
+        qapp.processEvents()
+        after = [c.view.heatmap.get_array() for c in cells]
+
+        for b, a in zip(before, after):
+            assert not (b == a).all(), "every visible cell must redraw on a timeline seek, not just the active one"
+        window.close()
+
+    def test_grid_non_active_cell_scenario_change_does_not_block_and_ends_up_correct(self, qapp):
+        """M2.2.4: a non-active cell picking an uncached scenario must not
+        freeze the GUI thread -- it prefetches in the background, same
+        machinery as the active-cell cache-miss path, and ends up showing
+        the right data once ready."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window._set_grid_layout("1x2")
+        target = window.view_grid.visible_cells()[1]
+        assert not window.controller.is_cached(18, target.quantity_key)
+
+        target.scenario_combo.setCurrentIndex(18)
+        assert target in window._pending_cell_prefetches, "must be prefetching, not blocking synchronously"
+
+        deadline = time.perf_counter() + 3.0
+        while window._pending_cell_prefetches and time.perf_counter() < deadline:
+            qapp.processEvents()
+            time.sleep(0.005)
+
+        assert target not in window._pending_cell_prefetches
+        assert target.case_index == 18
+        expected = window.controller.store.get(18, target.quantity_key)
+        idx = window.time_controller.index
+        assert (target.view.heatmap.get_array() == expected[idx]).all()
+        window.close()
+
+    def test_grid_shrink_then_regrow_preserves_non_active_cell_state(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window._set_grid_layout("2x2")
+        cells = window.view_grid.visible_cells()
+        cells[3].scenario_combo.setCurrentIndex(7)
+        qapp.processEvents()
+
+        window._set_grid_layout("1x1")
+        window._set_grid_layout("2x2")
+
+        assert window.view_grid.visible_cells()[3].case_index == 7
+        window.close()

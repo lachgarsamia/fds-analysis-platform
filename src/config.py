@@ -16,8 +16,13 @@ DEFAULT_CANDLES, DEFAULT_DOOR, DEFAULT_VOD, DEFAULT_VOC = 0, 1, 0, 0
 # FDS writes one slice frame every DT_SLCF=0.25s in the source input deck, i.e. 4 frames/second.
 FRAMES_PER_SECOND = 4
 
-# Number of scenarios kept resident in memory at once by ScenarioStore.
-SCENARIO_CACHE_SIZE = 4
+# Number of (scenario, quantity) entries kept resident in memory at once by
+# ScenarioStore (M2.1 keys the cache on (scenario, SliceKey), not just
+# scenario). Sized for the largest grid layout M2.2 offers -- a 2x2 grid can
+# show up to 4 distinct (case, key) combos at once -- plus a small buffer so
+# switching the active cell's scenario/quantity doesn't immediately evict a
+# still-visible grid cell (was 4, single-view-only, pre-M2.2).
+SCENARIO_CACHE_SIZE = 6
 
 # Ambient (room) temperature, degrees Celsius -- the color scale's fixed lower
 # bound (M1.3.2), so vmin no longer freezes at whatever frame 0 happens to show.
