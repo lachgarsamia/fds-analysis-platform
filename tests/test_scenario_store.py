@@ -4,6 +4,7 @@ import pytest
 import numpy as np
 from unittest.mock import patch, MagicMock
 from scenario_store import ScenarioStore
+from slice_key import SliceKey, DEFAULT_SLICE_KEY
 
 
 class TestScenarioStore:
@@ -24,7 +25,7 @@ class TestScenarioStore:
         folders = [f"/fake/scenario/{i}" for i in range(3)]
         call_count = {}
 
-        def mock_load(folder_path):
+        def mock_load(folder_path, key=None):
             # Extract index from path to count loads per scenario
             idx = int(folder_path.split("/")[-1])
             call_count[idx] = call_count.get(idx, 0) + 1
@@ -47,7 +48,7 @@ class TestScenarioStore:
         folders = [f"/fake/scenario/{i}" for i in range(3)]
         call_count = {}
 
-        def mock_load(folder_path):
+        def mock_load(folder_path, key=None):
             idx = int(folder_path.split("/")[-1])
             call_count[idx] = call_count.get(idx, 0) + 1
             return np.ones((481, 49, 101), dtype=np.float32)
@@ -78,7 +79,7 @@ class TestScenarioStore:
         folders = [f"/fake/scenario/{i}" for i in range(4)]
         call_count = {}
 
-        def mock_load(folder_path):
+        def mock_load(folder_path, key=None):
             idx = int(folder_path.split("/")[-1])
             call_count[idx] = call_count.get(idx, 0) + 1
             return np.ones((481, 49, 101), dtype=np.float32)
@@ -101,3 +102,52 @@ class TestScenarioStore:
             # Each case should be loaded exactly once (lock protecting it)
             assert call_count[0] == 1, "thread-safe load should count exactly once"
             assert call_count[1] == 1, "thread-safe load should count exactly once"
+
+    # ------------------------------------------------------ SliceKey (M2.1)
+    def test_store_get_defaults_to_default_slice_key(self):
+        """A bare store.get(case) must behave exactly as before M2.1 --
+        equivalent to explicitly passing DEFAULT_SLICE_KEY."""
+        folders = [f"/fake/scenario/{i}" for i in range(2)]
+        with patch("scenario_store.load_data") as mock_load:
+            mock_load.return_value = np.ones((481, 49, 101), dtype=np.float32)
+            store = ScenarioStore(folders=folders, cache_size=2)
+            store.get(0)
+            mock_load.assert_called_once_with(folders[0], DEFAULT_SLICE_KEY)
+
+    def test_store_different_keys_cached_independently(self):
+        """The same scenario under two different SliceKeys must be two
+        distinct cache entries, each loaded on its own first access."""
+        folders = ["/fake/scenario/0"]
+        temp_key = SliceKey("TEMPERATURE", 1, 0)
+        vel_key = SliceKey("VELOCITY", 1, 0)
+        calls = []
+
+        def mock_load(folder_path, key):
+            calls.append(key)
+            return np.full((481, 49, 101), 1.0 if key.quantity == "TEMPERATURE" else 2.0, dtype=np.float32)
+
+        with patch("scenario_store.load_data", side_effect=mock_load):
+            store = ScenarioStore(folders=folders, cache_size=2)
+            temp_data = store.get(0, temp_key)
+            vel_data = store.get(0, vel_key)
+
+            assert len(calls) == 2, "each key should trigger its own load"
+            assert not np.array_equal(temp_data, vel_data)
+
+            # Both now cache hits -- no further loads.
+            store.get(0, temp_key)
+            store.get(0, vel_key)
+            assert len(calls) == 2, "cached keys must not be reloaded"
+
+    def test_is_cached_is_per_key(self):
+        folders = ["/fake/scenario/0"]
+        temp_key = SliceKey("TEMPERATURE", 1, 0)
+        vel_key = SliceKey("VELOCITY", 1, 0)
+        with patch("scenario_store.load_data") as mock_load:
+            mock_load.return_value = np.ones((481, 49, 101), dtype=np.float32)
+            store = ScenarioStore(folders=folders, cache_size=2)
+            assert not store.is_cached(0, temp_key)
+            assert not store.is_cached(0, vel_key)
+            store.get(0, temp_key)
+            assert store.is_cached(0, temp_key)
+            assert not store.is_cached(0, vel_key)

@@ -4,6 +4,7 @@ import logging
 import numpy as np
 
 import fds.slice.slice as fds
+from slice_key import SliceKey, DEFAULT_SLICE_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -12,20 +13,21 @@ logger = logging.getLogger(__name__)
 _SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 SIM_ROOT = os.path.join(_SRC_DIR, '..', 'fds', 'sim')
 
-# The single slice every scenario is loaded as today. Exposed as constants
-# (rather than inlined) so ScenarioStore's disk cache can build a matching
-# cache key without duplicating these values.
-QUANTITY = 'TEMPERATURE'
-DIRECTION = 1
-OFFSET = 0
+# Deprecated aliases for DEFAULT_SLICE_KEY's fields -- kept because
+# ScenarioStore's disk-cache filenames were already built from these names
+# before M2.1 (see git history); not worth a filename-format migration for
+# a purely-derived cache. Prefer slice_key.DEFAULT_SLICE_KEY in new code.
+QUANTITY = DEFAULT_SLICE_KEY.quantity
+DIRECTION = DEFAULT_SLICE_KEY.direction
+OFFSET = DEFAULT_SLICE_KEY.offset
 
 
-def load_data(root_dir: str) -> np.ndarray:
-    """Load the TEMPERATURE slice (normal to y, offset 0) for one scenario folder.
+def load_data(root_dir: str, key: SliceKey = DEFAULT_SLICE_KEY) -> np.ndarray:
+    """Load one (quantity, direction, offset) slice for one scenario folder.
 
     Returns an array of shape (n_times, n_y, n_x).
     """
-    data = fds.readDataOnly(root_dir, direction=DIRECTION, offset=OFFSET, quantity=QUANTITY)
+    data = fds.readDataOnly(root_dir, direction=key.direction, offset=key.offset, quantity=key.quantity)
     data = np.flip(data, axis=1)
     return data
 

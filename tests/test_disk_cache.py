@@ -3,12 +3,14 @@
 import os
 import shutil
 import time
+from unittest.mock import patch
 
 import numpy as np
 import pytest
 
 import scenario_store as ss_module
 from scenario_store import ScenarioStore
+from slice_key import SliceKey, DEFAULT_SLICE_KEY
 
 
 class TestDiskCache:
@@ -56,9 +58,9 @@ class TestDiskCache:
         real_load_data = ss_module.load_data
         calls = []
 
-        def counting_load_data(folder):
+        def counting_load_data(folder, key=DEFAULT_SLICE_KEY):
             calls.append(folder)
-            return real_load_data(folder)
+            return real_load_data(folder, key)
 
         ss_module.load_data = counting_load_data
         try:
@@ -94,3 +96,28 @@ class TestDiskCache:
         assert store.cache_dir is None
         data = store.get(0)
         assert data.shape == (481, 49, 101)
+
+    def test_disk_cache_filenames_differ_per_slice_key(self, tmp_path):
+        """M2.1: two different quantities for the same scenario must land in
+        two distinct .npy files, not overwrite each other."""
+        cache_dir = str(tmp_path / "cache")
+        folder = str(tmp_path / "scenario")
+        os.makedirs(folder)
+        open(os.path.join(folder, "dummy.sf"), "w").close()
+        open(os.path.join(folder, "dummy.smv"), "w").close()
+
+        temp_key = SliceKey("TEMPERATURE", 1, 0)
+        vel_key = SliceKey("VELOCITY", 1, 0)
+
+        def fake_load(folder_path, key):
+            return np.full((2, 2, 2), 1.0 if key.quantity == "TEMPERATURE" else 2.0, dtype=np.float32)
+
+        with patch("scenario_store.load_data", side_effect=fake_load):
+            store = ScenarioStore(folders=[folder], cache_size=2, cache_dir=cache_dir)
+            store.get(0, temp_key)
+            store.get(0, vel_key)
+
+        cache_files = sorted(os.listdir(cache_dir))
+        assert len(cache_files) == 2, f"expected 2 distinct cache files, got {cache_files}"
+        assert any("TEMPERATURE" in f for f in cache_files)
+        assert any("VELOCITY" in f for f in cache_files)

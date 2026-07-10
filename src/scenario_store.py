@@ -15,7 +15,8 @@ from collections import OrderedDict
 
 import numpy as np
 
-from load_data import load_data, SIM_ROOT, QUANTITY, DIRECTION, OFFSET
+from load_data import load_data, SIM_ROOT
+from slice_key import SliceKey, DEFAULT_SLICE_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -69,35 +70,40 @@ class ScenarioStore:
     def n_scenarios(self) -> int:
         return len(self.folders)
 
-    def is_cached(self, scenario_index: int) -> bool:
-        """Whether scenario_index is already resident in the in-memory LRU
-        cache -- a call to get() would return immediately with no disk I/O.
-        Read-only inspection of existing state under the existing lock;
-        doesn't change get()'s locking granularity or thread-safety (M1.4.4:
-        lets the caller decide whether a scenario switch needs a background
-        prefetch before it can redraw without blocking)."""
+    def is_cached(self, scenario_index: int, key: SliceKey = DEFAULT_SLICE_KEY) -> bool:
+        """Whether (scenario_index, key) is already resident in the
+        in-memory LRU cache -- a call to get() would return immediately
+        with no disk I/O. Read-only inspection of existing state under the
+        existing lock; doesn't change get()'s locking granularity or
+        thread-safety (M1.4.4: lets the caller decide whether a scenario
+        switch needs a background prefetch before it can redraw without
+        blocking)."""
         with self._lock:
-            return scenario_index in self._cache
+            return (scenario_index, key) in self._cache
 
-    def get(self, scenario_index: int) -> np.ndarray:
-        """Return the (n_times, n_y, n_x) temperature array for a scenario, loading it if needed."""
+    def get(self, scenario_index: int, key: SliceKey = DEFAULT_SLICE_KEY) -> np.ndarray:
+        """Return the (n_times, n_y, n_x) array for one scenario's slice,
+        loading it if needed. `key` defaults to the TEMPERATURE slice every
+        scenario was read as before M2.1, so existing single-arg callers
+        are unaffected."""
+        cache_key = (scenario_index, key)
         with self._lock:
-            cached = self._cache.get(scenario_index)
+            cached = self._cache.get(cache_key)
             if cached is not None:
-                self._cache.move_to_end(scenario_index)
+                self._cache.move_to_end(cache_key)
                 return cached
 
-            data = self._load_with_disk_cache(scenario_index)
-            self._cache[scenario_index] = data
-            self._cache.move_to_end(scenario_index)
+            data = self._load_with_disk_cache(scenario_index, key)
+            self._cache[cache_key] = data
+            self._cache.move_to_end(cache_key)
             while len(self._cache) > self.cache_size:
-                evicted_index, _ = self._cache.popitem(last=False)
-                logger.debug("evicting scenario %d from cache", evicted_index)
+                (evicted_index, evicted_key_slice), _ = self._cache.popitem(last=False)
+                logger.debug("evicting scenario %d (%s) from cache", evicted_index, evicted_key_slice)
             return data
 
-    def _cache_path(self, folder: str) -> str:
+    def _cache_path(self, folder: str, key: SliceKey) -> str:
         case = os.path.basename(os.path.normpath(folder))
-        return os.path.join(self.cache_dir, f"{case}_{QUANTITY}_dir{DIRECTION}_off{OFFSET}.npy")
+        return os.path.join(self.cache_dir, f"{case}_{key.quantity}_dir{key.direction}_off{key.offset}.npy")
 
     @staticmethod
     def _is_cache_fresh(folder: str, cache_path: str) -> bool:
@@ -110,19 +116,19 @@ class ScenarioStore:
         newest_source_mtime = max(os.path.getmtime(f) for f in source_files)
         return cache_mtime >= newest_source_mtime
 
-    def _load_with_disk_cache(self, scenario_index: int) -> np.ndarray:
+    def _load_with_disk_cache(self, scenario_index: int, key: SliceKey) -> np.ndarray:
         folder = self.folders[scenario_index]
         if self.cache_dir is None:
-            return load_data(folder)
+            return load_data(folder, key)
 
-        cache_path = self._cache_path(folder)
+        cache_path = self._cache_path(folder, key)
         if self._is_cache_fresh(folder, cache_path):
             try:
                 return np.load(cache_path, mmap_mode='r')
             except (OSError, ValueError) as e:
                 logger.warning("disk cache at %s is unreadable (%s); re-parsing", cache_path, e)
 
-        data = load_data(folder)
+        data = load_data(folder, key)
         try:
             os.makedirs(self.cache_dir, exist_ok=True)
             np.save(cache_path, data)
