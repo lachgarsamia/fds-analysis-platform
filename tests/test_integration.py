@@ -543,3 +543,82 @@ class TestIntegration:
         assert not hasattr(window, "_on_frame"), "old worker frame_ready slot must be gone"
         assert not hasattr(window, "_refresh_paused_frame"), "superseded by _on_scenario_param_changed"
         window.close()
+
+    # -------------------------------------------------------- M1.5 export
+    def test_export_finished_updates_status_and_resumes_playback(self, qapp):
+        """Drives the completion callback directly (bypassing the native
+        QFileDialog/ExportRangeDialog, which can't be driven headlessly) to
+        verify the UI reacts correctly: status message shown, and playback
+        that was running before the export resumes afterward (DoD: UI stays
+        responsive/usable around an export, not just during it)."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        window._start_simulation()
+        qapp.processEvents()
+        assert window.time_controller.is_playing()
+
+        window.time_controller.pause()  # what _export_animation does before exporting
+        window._export_progress = QtWidgets.QProgressDialog("x", "Cancel", 0, 1, window)
+        window._on_export_finished("/tmp/fake_output.gif", was_playing=True)
+        assert window.time_controller.is_playing(), "must resume playback that was running before export"
+        assert "fake_output.gif" in window.statusBar().currentMessage()
+        window._stop_simulation()
+        window.close()
+
+    def test_export_cancelled_does_not_resume_if_was_not_playing(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        assert not window.time_controller.is_playing()
+        window._export_progress = QtWidgets.QProgressDialog("x", "Cancel", 0, 1, window)
+        window._on_export_cancelled(was_playing=False)
+        assert not window.time_controller.is_playing()
+        assert "cancel" in window.statusBar().currentMessage().lower()
+        window.close()
+
+    def test_export_error_shows_message_and_does_not_crash(self, qapp, monkeypatch):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        window._export_progress = QtWidgets.QProgressDialog("x", "Cancel", 0, 1, window)
+        # avoid a real blocking QMessageBox in the test run
+        monkeypatch.setattr(QtWidgets.QMessageBox, "critical", lambda *a, **k: None)
+        window._on_export_error("simulated failure", was_playing=False)
+        window.close()
+
+    def test_export_menu_action_present_and_wired(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        export_menu = next(
+            (m for m in window.menuBar().findChildren(QtWidgets.QMenu) if m.title() == "&Export"),
+            None,
+        )
+        assert export_menu is not None, "Export menu must exist"
+        actions = [a.text() for a in export_menu.actions()]
+        assert any("Animation" in t for t in actions)
+        window.close()
+
+    def test_second_export_while_one_in_progress_is_refused(self, qapp, tmp_path):
+        """Defense-in-depth guard against the same QThread-lifecycle bug
+        class found in M1.4: a second _export_animation() call while one is
+        still running must not overwrite (and thus orphan) self._exporter."""
+        from export import AnimationExporter
+        import numpy as np
+
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        data = np.random.uniform(20, 300, size=(200, 49, 101)).astype(np.float32)
+        window._exporter = AnimationExporter(
+            data, str(tmp_path / "slow.gif"), fps=4, cmap="gist_heat",
+            vmin=20.0, vmax=300.0, interpolation="nearest", start=0, end=200,
+        )
+        window._exporter.start()
+        qapp.processEvents()
+        assert window._exporter.isRunning()
+
+        first_exporter = window._exporter
+        window._export_animation()  # must refuse, not replace _exporter
+        assert window._exporter is first_exporter, "a running export must not be replaced"
+
+        window._exporter.request_cancel()
+        window._exporter.wait(10000)
+        qapp.processEvents()
+        window.close()

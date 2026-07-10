@@ -19,6 +19,8 @@ The rebuilt main window. Key differences from the original fixed-.ui version:
    ScenarioStore.get() rather than indexing a single preloaded array.
 """
 
+import os
+
 from PyQt5 import QtCore, QtGui, QtWidgets
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib import cm
@@ -30,6 +32,7 @@ from simulation_controller import SimulationController
 from time_controller import TimeController
 from data_provider import SimulationData
 from schematic import SchematicWidget, flame_icon, door_icon, vent_icon, resolve_room_extent
+from export import AnimationExporter, ffmpeg_available
 
 ORG_NAME = "FZJuelich"
 APP_NAME = "FDSSLCFVisualizer"
@@ -51,6 +54,49 @@ INTERPOLATIONS = [
 
 MIN_WIDTH = 900
 MIN_HEIGHT = 600
+
+
+class ExportRangeDialog(QtWidgets.QDialog):
+    """Lets the user pick fps and a frame range before exporting (M1.5.1).
+    Defaults to the full scenario at the app's own playback fps, so
+    clicking OK immediately exports everything -- the dialog exists for
+    the "chosen fps/range" spec requirement, not to force a decision."""
+
+    def __init__(self, parent, n_frames: int, default_fps: int):
+        super().__init__(parent)
+        self.setWindowTitle("Export Animation")
+
+        layout = QtWidgets.QFormLayout(self)
+
+        self.fps_spin = QtWidgets.QSpinBox()
+        self.fps_spin.setRange(1, 60)
+        self.fps_spin.setValue(default_fps)
+        self.fps_spin.setAccessibleName("Export frame rate")
+        layout.addRow("Frames per second:", self.fps_spin)
+
+        self.start_spin = QtWidgets.QSpinBox()
+        self.start_spin.setRange(0, max(n_frames - 1, 0))
+        self.start_spin.setValue(0)
+        self.start_spin.setAccessibleName("Export start frame")
+        layout.addRow("Start frame:", self.start_spin)
+
+        self.end_spin = QtWidgets.QSpinBox()
+        self.end_spin.setRange(1, n_frames)
+        self.end_spin.setValue(n_frames)
+        self.end_spin.setAccessibleName("Export end frame (exclusive)")
+        layout.addRow("End frame:", self.end_spin)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+    def values(self):
+        start = self.start_spin.value()
+        end = max(self.end_spin.value(), start + 1)
+        return start, end, self.fps_spin.value()
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -150,6 +196,12 @@ class MainWindow(QtWidgets.QMainWindow):
         fullscreen_action = QtWidgets.QAction("Toggle Fullscreen\tF11", self)
         fullscreen_action.triggered.connect(self._toggle_fullscreen)
         view_menu.addAction(fullscreen_action)
+
+        export_menu = menu_bar.addMenu("&Export")
+        export_animation_action = QtWidgets.QAction("Animation (MP4/GIF)…", self)
+        export_animation_action.setToolTip("Export the current scenario's playback as a video or GIF")
+        export_animation_action.triggered.connect(self._export_animation)
+        export_menu.addAction(export_animation_action)
 
     def _build_central_widget(self):
         central = QtWidgets.QWidget()
@@ -561,6 +613,99 @@ class MainWindow(QtWidgets.QMainWindow):
         # and needs to actually repaint, and the cached blit background must
         # be recaptured so subsequent playback frames blit against it.
         self.canvas.capture_background()
+
+    # -------------------------------------------------------------- export
+    def _export_animation(self):
+        """Export → Animation (MP4/GIF)… (M1.5). Pauses playback for the
+        duration of the export (the exporter renders through its own
+        offscreen figure, not the live canvas, but sharing the same
+        underlying frame data while it's being read frame-by-frame on a
+        background thread is simpler to reason about than racing a live
+        QTimer against it) and resumes afterward if it was running."""
+        # Defense in depth against the same class of QThread-lifecycle bug
+        # found in M1.4.4's prefetch worker: the progress dialog below is
+        # window-modal (blocks the menu bar while open), which should
+        # already prevent re-entry, but guard explicitly rather than rely
+        # on that alone -- only one export is meant to run at a time, so
+        # refusing a second start is correct here (unlike prefetch, where
+        # concurrent workers are legitimate and get list-tracked instead).
+        if getattr(self, "_exporter", None) is not None and self._exporter.isRunning():
+            self.statusBar().showMessage("An export is already in progress.", 3000)
+            return
+
+        was_playing = self.time_controller.is_playing()
+        self.time_controller.pause()
+
+        has_ffmpeg = ffmpeg_available()
+        default_ext = "mp4" if has_ffmpeg else "gif"
+        filters = (
+            "MP4 Video (*.mp4);;GIF Animation (*.gif)" if has_ffmpeg
+            else "GIF Animation (*.gif)"
+        )
+        default_name = f"scenario_{self.controller.current_case_index()}.{default_ext}"
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export Animation", default_name, filters)
+        if not path:
+            if was_playing:
+                self.time_controller.play()
+            return
+
+        if not (path.lower().endswith(".mp4") or path.lower().endswith(".gif")):
+            path += f".{default_ext}"
+        if path.lower().endswith(".mp4") and not has_ffmpeg:
+            # Shouldn't happen (mp4 isn't offered in the filter without
+            # ffmpeg), but guard anyway rather than fail deep in the thread.
+            path = os.path.splitext(path)[0] + ".gif"
+
+        case_idx = self.controller.current_case_index()
+        data = self.controller.store.get(case_idx)
+        n_frames = data.shape[0]
+
+        range_dialog = ExportRangeDialog(self, n_frames, self.time_controller.timesteps_per_second)
+        if range_dialog.exec_() != QtWidgets.QDialog.Accepted:
+            if was_playing:
+                self.time_controller.play()
+            return
+        start, end, fps = range_dialog.values()
+
+        self._exporter = AnimationExporter(
+            data, path, fps, self.current_colormap, AMBIENT_C, self.temp_slider.value(),
+            self.current_interpolation, start, end,
+        )
+        self._export_progress = QtWidgets.QProgressDialog(
+            "Exporting animation…", "Cancel", 0, end - start, self
+        )
+        self._export_progress.setWindowModality(QtCore.Qt.WindowModal)
+        self._export_progress.setMinimumDuration(0)
+        self._export_progress.setValue(0)
+
+        self._exporter.progress.connect(self._on_export_progress)
+        self._exporter.finished_ok.connect(lambda p: self._on_export_finished(p, was_playing))
+        self._exporter.error.connect(lambda msg: self._on_export_error(msg, was_playing))
+        self._exporter.cancelled.connect(lambda: self._on_export_cancelled(was_playing))
+        self._export_progress.canceled.connect(self._exporter.request_cancel)
+
+        self._exporter.start()
+
+    def _on_export_progress(self, done: int, total: int):
+        self._export_progress.setValue(done)
+
+    def _on_export_finished(self, output_path: str, was_playing: bool):
+        self._export_progress.setValue(self._export_progress.maximum())
+        self.statusBar().showMessage(f"Exported animation to {output_path}", 5000)
+        if was_playing:
+            self.time_controller.play()
+
+    def _on_export_error(self, message: str, was_playing: bool):
+        self._export_progress.close()
+        self._on_sim_error(message)
+        if was_playing:
+            self.time_controller.play()
+
+    def _on_export_cancelled(self, was_playing: bool):
+        self._export_progress.close()
+        self.statusBar().showMessage("Export cancelled.", 3000)
+        if was_playing:
+            self.time_controller.play()
 
     def _start_simulation(self):
         self.time_controller.play()

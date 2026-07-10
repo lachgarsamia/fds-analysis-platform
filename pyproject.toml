@@ -24,12 +24,15 @@ packages = ["fds", "fds.slice"]
 py-modules = [
     "config",
     "data_provider",
+    "export",
     "load_data",
     "main",
     "main_window",
+    "schematic",
     "scenario_store",
     "simulation_controller",
     "theme",
+    "time_controller",
     "widgets",
 ]
 
