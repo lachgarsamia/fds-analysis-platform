@@ -1,16 +1,16 @@
-"""Unit tests for views.py: SliceView (M2.2.1), DifferenceView (M2.3.1),
-and GridCell/ViewGrid (M2.2.2/2.2.3). Pure widget-layer tests -- no
-ScenarioStore/controller involved, cells are handed synthetic frames
-directly, except TestDifferenceViewRealData which deliberately reads the
-real dataset to check the "physically sensible structure" DoD claim
-against ground truth rather than trusting it looks reasonable."""
+"""Unit tests for views.py: SliceView (M2.2.1), DifferenceView/EnsembleView
+(M2.3.1/2.3.2), and GridCell/ViewGrid (M2.2.2/2.2.3). Pure widget-layer
+tests -- no ScenarioStore/controller involved, cells are handed synthetic
+frames directly, except TestDifferenceViewRealData which deliberately
+reads the real dataset to check the "physically sensible structure" DoD
+claim against ground truth rather than trusting it looks reasonable."""
 
 import os
 
 import numpy as np
 import pytest
 
-from views import SliceView, DifferenceView, GridCell, ViewGrid
+from views import SliceView, DifferenceView, EnsembleView, GridCell, ViewGrid
 from slice_key import SliceKey
 from load_data import SIM_ROOT, load_data
 
@@ -245,6 +245,115 @@ class TestDifferenceViewRealData:
         door_tavg = np.abs(mean_diff[:, door_band]).mean()
         control_tavg = np.abs(mean_diff[:, control_band]).mean()
         assert door_tavg > control_tavg
+
+
+class TestEnsembleView:
+    def _arrays(self):
+        # 3 "scenarios", 4 timesteps, 2x2 frames -- distinct, hand-computable values.
+        a = np.full((4, 2, 2), 10.0, dtype=np.float32)
+        b = np.full((4, 2, 2), 20.0, dtype=np.float32)
+        c = np.full((4, 2, 2), 30.0, dtype=np.float32)
+        return [a, b, c]
+
+    def test_compute_composite_mean(self):
+        result = EnsembleView.compute_composite(self._arrays(), index=0, stat="mean")
+        assert np.allclose(result, 20.0)  # mean(10,20,30)
+
+    def test_compute_composite_min_max(self):
+        arrays = self._arrays()
+        assert np.allclose(EnsembleView.compute_composite(arrays, 0, "min"), 10.0)
+        assert np.allclose(EnsembleView.compute_composite(arrays, 0, "max"), 30.0)
+
+    def test_compute_composite_std(self):
+        arrays = self._arrays()
+        result = EnsembleView.compute_composite(arrays, 0, "std")
+        expected = np.std([10.0, 20.0, 30.0])
+        assert np.allclose(result, expected)
+
+    def test_compute_composite_varies_per_frame_index(self):
+        a = np.array([[[1.0]], [[100.0]]], dtype=np.float32)
+        b = np.array([[[3.0]], [[300.0]]], dtype=np.float32)
+        assert np.allclose(EnsembleView.compute_composite([a, b], 0, "mean"), 2.0)
+        assert np.allclose(EnsembleView.compute_composite([a, b], 1, "mean"), 200.0)
+
+    def test_compute_composite_rejects_unknown_stat(self):
+        with pytest.raises(ValueError):
+            EnsembleView.compute_composite(self._arrays(), 0, "median")
+
+    def test_cmap_for_std_is_always_viridis(self):
+        assert EnsembleView.cmap_for("std", quantity_cmap="gist_heat") == "viridis"
+        assert EnsembleView.cmap_for("std", quantity_cmap="viridis") == "viridis"
+
+    def test_cmap_for_mean_min_max_uses_quantity_cmap(self):
+        for stat in ("mean", "min", "max"):
+            assert EnsembleView.cmap_for(stat, quantity_cmap="gist_heat") == "gist_heat"
+
+    def test_label_for_std_uses_sigma_notation(self):
+        label = EnsembleView.label_for("std", quantity_label="Temperature", unit="°C")
+        assert label == "σ(Temperature) (°C)"
+
+    def test_label_for_mean_min_max(self):
+        assert EnsembleView.label_for("mean", "Temperature", "°C") == "Mean Temperature (°C)"
+        assert EnsembleView.label_for("min", "Temperature", "°C") == "Min Temperature (°C)"
+        assert EnsembleView.label_for("max", "Temperature", "°C") == "Max Temperature (°C)"
+
+    def test_std_vmax_matches_manual_computation(self):
+        view = EnsembleView()
+        arrays = self._arrays()
+        vmax = view.std_vmax(arrays, cache_key="grp1", n_samples=4)
+        expected = np.std([10.0, 20.0, 30.0])  # constant across all frames here
+        assert vmax == pytest.approx(expected)
+
+    def test_std_vmax_is_cached(self):
+        view = EnsembleView()
+        arrays = self._arrays()
+        first = view.std_vmax(arrays, cache_key="grp1")
+        arrays[0][:] = 9999.0  # mutate after caching
+        second = view.std_vmax(arrays, cache_key="grp1")
+        assert first == second
+
+    def test_init_plot_and_show_frame_delegate_to_inner_slice_view(self, qapp):
+        view = EnsembleView()
+        view.init_plot(FRAME, cmap="viridis", interpolation="nearest",
+                        vmin=0.0, vmax=5.0, colorbar_label="σ(Temperature) (°C)")
+        assert view._inner.heatmap.get_cmap().name == "viridis"
+        assert view._inner.heatmap.get_clim() == (0.0, 5.0)
+        composite = np.full((49, 101), 3.5, dtype=np.float32)
+        view.show_frame(composite)
+        assert (view._inner.heatmap.get_array() == 3.5).all()
+
+
+@requires_real_dataset
+class TestEnsembleViewRealData:
+    """Lighter-weight real-data smoke check than DifferenceView's (not
+    independently requested, but cheap and worth doing given the data is
+    already used elsewhere in this file): confirms the composite math
+    produces sane, finite, correctly-ordered results (min <= mean <= max,
+    std >= 0) across a real selection of scenarios, not just synthetic
+    constants."""
+
+    CASES = ["c1_d0_vod0_voc0", "c1_d1_vod0_voc0", "c2_d0_vod0_voc0", "c2_d1_vod0_voc0"]
+
+    @pytest.fixture(scope="class")
+    def arrays(self):
+        key = SliceKey("TEMPERATURE", 1, 0)
+        loaded = [load_data(os.path.join(SIM_ROOT, case), key) for case in self.CASES]
+        n = min(a.shape[0] for a in loaded)
+        return [a[:n] for a in loaded]
+
+    def test_min_mean_max_ordering_holds_at_a_real_frame(self, arrays):
+        index = 200
+        mean = EnsembleView.compute_composite(arrays, index, "mean")
+        mn = EnsembleView.compute_composite(arrays, index, "min")
+        mx = EnsembleView.compute_composite(arrays, index, "max")
+        assert (mn <= mean + 1e-4).all()
+        assert (mean <= mx + 1e-4).all()
+
+    def test_std_is_non_negative_and_finite(self, arrays):
+        std = EnsembleView.compute_composite(arrays, 200, "std")
+        assert np.isfinite(std).all()
+        assert (std >= 0).all()
+        assert std.max() > 0, "4 different real scenarios must not be bit-identical everywhere"
 
 
 class TestGridCell:

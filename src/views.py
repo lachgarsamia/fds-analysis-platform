@@ -186,6 +186,101 @@ class DifferenceView:
         return clim
 
 
+class EnsembleView:
+    """PlotView cell type showing a composite statistic (mean/std/min/max)
+    across a *selection* of scenarios sharing one quantity, at each
+    timeline index (M2.3.2). Composes a SliceView internally, same split
+    as DifferenceView: only what frame data means and the display
+    defaults differ, not how blitting/colorbar/axes work.
+
+    mean/min/max keep the quantity's own absolute-value display
+    conventions (same cmap/vmin as a plain SliceView of that quantity --
+    they're still readings of the quantity itself, just composited across
+    scenarios). std is different in kind -- always >= 0, with no natural
+    quantity-specific floor -- so it gets its own sequential colormap and
+    a data-derived vmax (std_vmax below), labeled "sigma(<quantity>)" per
+    spec rather than reusing the quantity's own unit-labeled cmap.
+    """
+
+    STATS = ("mean", "std", "min", "max")
+
+    def __init__(self, parent=None):
+        self._inner = SliceView(parent)
+        self.case_indices: list = []
+        self.quantity_key = None
+        self.stat = "mean"
+        self._std_vmax_cache = {}
+
+    def widget(self) -> QtWidgets.QWidget:
+        return self._inner.widget()
+
+    def init_plot(self, first_frame: np.ndarray, cmap: str, interpolation: str,
+                   vmin: float, vmax: float, colorbar_label: str):
+        self._inner.init_plot(first_frame, cmap=cmap, interpolation=interpolation,
+                               vmin=vmin, vmax=vmax, colorbar_label=colorbar_label)
+
+    def show_frame(self, frame: np.ndarray) -> None:
+        """`frame` is already the composite statistic array -- computed by
+        the caller (compute_composite below, or MainWindow directly), not
+        fetched here."""
+        self._inner.show_frame(frame)
+
+    def set_cmap(self, name: str) -> None:
+        self._inner.set_cmap(name)
+
+    def set_clim(self, vmin: float, vmax: float) -> None:
+        self._inner.set_clim(vmin, vmax)
+
+    def set_interpolation(self, name: str) -> None:
+        self._inner.set_interpolation(name)
+
+    def set_colorbar_label(self, text: str) -> None:
+        self._inner.set_colorbar_label(text)
+
+    def set_title(self, text: str) -> None:
+        self._inner.set_title(text)
+
+    def capture_background(self) -> None:
+        self._inner.capture_background()
+
+    @staticmethod
+    def compute_composite(arrays: list, index: int, stat: str) -> np.ndarray:
+        """arrays: one (n_times, n_z, n_x) array per selected scenario
+        (from ScenarioStore.get(), already loaded/mmap'd -- this is a pure
+        in-memory reduction, no I/O, microseconds-cheap per the spec).
+        Stacks frame `index` from each array along a new leading axis and
+        reduces along it."""
+        if stat not in EnsembleView.STATS:
+            raise ValueError(f"unknown ensemble stat {stat!r}, expected one of {EnsembleView.STATS}")
+        stacked = np.stack([a[index] for a in arrays], axis=0)
+        return getattr(np, stat)(stacked, axis=0)
+
+    @staticmethod
+    def cmap_for(stat: str, quantity_cmap: str) -> str:
+        return "viridis" if stat == "std" else quantity_cmap
+
+    @staticmethod
+    def label_for(stat: str, quantity_label: str, unit: str) -> str:
+        if stat == "std":
+            return f"σ({quantity_label}) ({unit})"
+        prefix = {"mean": "Mean", "min": "Min", "max": "Max"}[stat]
+        return f"{prefix} {quantity_label} ({unit})"
+
+    def std_vmax(self, arrays: list, cache_key, n_samples: int = 20) -> float:
+        """Data-derived vmax for the std statistic's colorbar (std has no
+        natural quantity-specific floor to borrow, unlike mean/min/max).
+        Sampled over up to n_samples frames and cached per cache_key, same
+        pattern as DifferenceView.symmetric_clim."""
+        if cache_key in self._std_vmax_cache:
+            return self._std_vmax_cache[cache_key]
+        n = min(a.shape[0] for a in arrays)
+        sample_indices = np.linspace(0, n - 1, min(n, n_samples), dtype=int)
+        stds = [self.compute_composite(arrays, i, "std") for i in sample_indices]
+        vmax = float(np.max(stds)) if stds else 0.0
+        self._std_vmax_cache[cache_key] = vmax
+        return vmax
+
+
 class GridCell(QtWidgets.QWidget):
     """One cell of a ViewGrid: a compact scenario combo + quantity combo
     above a PlotView. Clicking the cell makes it the grid's active cell.
