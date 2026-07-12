@@ -40,6 +40,21 @@ class SliceView:
     recapture -- see the setters below, all of which call
     canvas.capture_background() themselves so callers don't have to
     remember to.
+
+    Physical extent (M2.6): if `extent=(x0, x1, z0, z1)` is passed to
+    init_plot(), the image is drawn with matplotlib's own `extent=`
+    parameter instead of bare pixel-index axes -- matplotlib's default
+    `origin='upper'` then places array row 0 at z1 (top) and the last row
+    at z0 (bottom). This matters because load_data.py already flips the
+    array vertically (np.flip(axis=1)) before any view ever sees it, so
+    row 0 already *is* the physical ceiling -- extent + origin='upper'
+    lines up with that flip for free, both for what's drawn and for what
+    mouse events report back (event.xdata/event.ydata become true
+    physical coordinates, not pixel indices), without this class having
+    to duplicate the flip's own arithmetic anywhere. Verified against the
+    real dataset (not just reasoned about): the row/col of a known
+    peak-difference pixel from M2.3's investigation maps back to the same
+    physical (x, z) matplotlib itself reports via this convention.
     """
 
     def __init__(self, parent=None):
@@ -47,18 +62,28 @@ class SliceView:
         self.ax = None
         self.heatmap = None
         self.colorbar = None
+        self._extent = None
+        self._isotherm_levels: list = []
+        self._isotherms_enabled = False
+        self._contour_artist = None
+        self._probe_callback = None
+        self._motion_cid = None
 
     def widget(self) -> QtWidgets.QWidget:
         return self.canvas
 
     def init_plot(self, first_frame: np.ndarray, cmap: str, interpolation: str,
-                   vmin: float, vmax: float, colorbar_label: str):
+                   vmin: float, vmax: float, colorbar_label: str, extent: tuple = None):
         """One-time setup: axes, image artist, colorbar. Call once per
-        SliceView instance before show_frame()."""
+        SliceView instance before show_frame(). `extent`, if given, is
+        (x0, x1, z0, z1) in physical meters -- see the class docstring for
+        why this is the load-bearing piece for M2.6's probe/isotherms."""
+        self._extent = extent
         self.ax = self.canvas.fig.add_subplot(111)
-        self.heatmap = self.ax.imshow(
-            first_frame, cmap=cmap, interpolation=interpolation, aspect="auto",
-        )
+        imshow_kwargs = dict(cmap=cmap, interpolation=interpolation, aspect="auto")
+        if extent is not None:
+            imshow_kwargs["extent"] = extent
+        self.heatmap = self.ax.imshow(first_frame, **imshow_kwargs)
         self.ax.set_xticks([])
         self.ax.set_yticks([])
         self.canvas.fig.subplots_adjust(top=0.97, bottom=0.03, left=0.02, right=0.95)
@@ -69,7 +94,18 @@ class SliceView:
 
     def show_frame(self, frame: np.ndarray) -> None:
         self.heatmap.set_data(frame)
-        self.canvas.blit_update(self.heatmap)
+        if self._isotherms_enabled and self._isotherm_levels:
+            # Isotherms redrawn per frame, full draw (blit bypass while
+            # active) -- matplotlib has no cheap "update contour data"
+            # primitive the way set_data() gives the image artist, and
+            # ROADMAP.md's M2.6 spec explicitly accepts this cost at this
+            # grid size rather than asking for a fast-path that doesn't
+            # exist in matplotlib's contour API.
+            self._redraw_isotherms()
+            self.canvas.draw_idle()
+            self.canvas.capture_background()
+        else:
+            self.canvas.blit_update(self.heatmap)
 
     def set_cmap(self, name: str) -> None:
         self.heatmap.set_cmap(cm.get_cmap(name))
@@ -95,6 +131,95 @@ class SliceView:
         """Force a full redraw + recapture -- for changes that don't go
         through one of the setters above (e.g. a theme restyle)."""
         self.canvas.capture_background()
+
+    # -------------------------------------------------- isotherms (M2.6.2)
+    def set_isotherm_levels(self, levels: list) -> None:
+        self._isotherm_levels = list(levels)
+        if self._isotherms_enabled:
+            self._redraw_isotherms()
+            self.canvas.capture_background()
+
+    def set_isotherms_enabled(self, enabled: bool) -> None:
+        if enabled == self._isotherms_enabled:
+            return
+        self._isotherms_enabled = enabled
+        if enabled:
+            self._redraw_isotherms()
+        else:
+            self._clear_isotherms()
+        self.canvas.capture_background()
+
+    @property
+    def isotherms_enabled(self) -> bool:
+        return self._isotherms_enabled
+
+    def _clear_isotherms(self) -> None:
+        if self._contour_artist is not None:
+            self._contour_artist.remove()
+            self._contour_artist = None
+
+    def _redraw_isotherms(self) -> None:
+        self._clear_isotherms()
+        if not self._isotherm_levels or self.heatmap is None:
+            return
+        frame = self.heatmap.get_array()
+        levels = sorted(set(self._isotherm_levels))
+        if self._extent is not None:
+            x0, x1, z0, z1 = self._extent
+            n_z, n_x = frame.shape
+            xs = np.linspace(x0, x1, n_x)
+            zs = np.linspace(z1, z0, n_z)  # row 0 = z1 (top), matching origin='upper'
+            self._contour_artist = self.ax.contour(
+                xs, zs, frame, levels=levels, colors="white", linewidths=0.8)
+        else:
+            self._contour_artist = self.ax.contour(
+                frame, levels=levels, colors="white", linewidths=0.8)
+
+    # ------------------------------------------------------ probe (M2.6.1)
+    def enable_probe(self, callback) -> None:
+        """callback(x, z, value) is called on mouse move within the axes
+        with physical coordinates and the frame value at that point;
+        callback(None, None, None) when the mouse leaves the axes (or
+        isn't over data). Meaningful physical (x, z) requires extent to
+        have been set via init_plot(extent=...) -- without it, x/z fall
+        back to raw pixel indices (still functional, just not "meters")."""
+        self._probe_callback = callback
+        if self._motion_cid is None:
+            self._motion_cid = self.canvas.mpl_connect("motion_notify_event", self._on_mouse_move)
+
+    def disable_probe(self) -> None:
+        if self._motion_cid is not None:
+            self.canvas.mpl_disconnect(self._motion_cid)
+            self._motion_cid = None
+        self._probe_callback = None
+
+    def _on_mouse_move(self, event) -> None:
+        if self._probe_callback is None:
+            return
+        if event.inaxes != self.ax or event.xdata is None or event.ydata is None:
+            self._probe_callback(None, None, None)
+            return
+        value = self.value_at(event.xdata, event.ydata)
+        self._probe_callback(event.xdata, event.ydata, value)
+
+    def value_at(self, x: float, z: float):
+        """The frame value nearest physical (x, z), or None if out of
+        bounds / no extent set / nothing plotted yet. Inverse of the
+        row/col -> (x, z) mapping documented on the class -- verified
+        against the same M2.3 ground-truth pixel used to verify that
+        forward mapping (see the class docstring)."""
+        if self.heatmap is None or self._extent is None:
+            return None
+        x0, x1, z0, z1 = self._extent
+        frame = self.heatmap.get_array()
+        n_z, n_x = frame.shape
+        if x1 == x0 or z1 == z0:
+            return None
+        col = int(round((x - x0) / (x1 - x0) * (n_x - 1)))
+        row = int(round((z1 - z) / (z1 - z0) * (n_z - 1)))
+        if 0 <= row < n_z and 0 <= col < n_x:
+            return float(frame[row, col])
+        return None
 
 
 class DifferenceView:
@@ -154,10 +279,11 @@ class DifferenceView:
         return self._inner.widget()
 
     def init_plot(self, first_frame: np.ndarray, interpolation: str,
-                   vmin: float, vmax: float, colorbar_label: str, cmap: str = None):
+                   vmin: float, vmax: float, colorbar_label: str, cmap: str = None,
+                   extent: tuple = None):
         self._inner.init_plot(first_frame, cmap=cmap or self.DEFAULT_CMAP,
                                interpolation=interpolation, vmin=vmin, vmax=vmax,
-                               colorbar_label=colorbar_label)
+                               colorbar_label=colorbar_label, extent=extent)
 
     def show_frame(self, frame: np.ndarray) -> None:
         """`frame` is already the difference array (A - B) -- computed by
@@ -183,6 +309,29 @@ class DifferenceView:
 
     def capture_background(self) -> None:
         self._inner.capture_background()
+
+    # M2.6: probe/isotherms delegate straight through, same as the setters
+    # above -- a difference cell's "temperature" reading at a point is just
+    # its displayed delta value, and isotherms over a delta field are a
+    # legitimate (if unusual) way to see the zero-crossing boundary.
+    def set_isotherm_levels(self, levels: list) -> None:
+        self._inner.set_isotherm_levels(levels)
+
+    def set_isotherms_enabled(self, enabled: bool) -> None:
+        self._inner.set_isotherms_enabled(enabled)
+
+    @property
+    def isotherms_enabled(self) -> bool:
+        return self._inner.isotherms_enabled
+
+    def enable_probe(self, callback) -> None:
+        self._inner.enable_probe(callback)
+
+    def disable_probe(self) -> None:
+        self._inner.disable_probe()
+
+    def value_at(self, x: float, z: float):
+        return self._inner.value_at(x, z)
 
     @staticmethod
     def compute_diff(data_a: np.ndarray, data_b: np.ndarray, index: int) -> np.ndarray:
@@ -253,9 +402,10 @@ class EnsembleView:
         return self._inner.widget()
 
     def init_plot(self, first_frame: np.ndarray, cmap: str, interpolation: str,
-                   vmin: float, vmax: float, colorbar_label: str):
+                   vmin: float, vmax: float, colorbar_label: str, extent: tuple = None):
         self._inner.init_plot(first_frame, cmap=cmap, interpolation=interpolation,
-                               vmin=vmin, vmax=vmax, colorbar_label=colorbar_label)
+                               vmin=vmin, vmax=vmax, colorbar_label=colorbar_label,
+                               extent=extent)
 
     def show_frame(self, frame: np.ndarray) -> None:
         """`frame` is already the composite statistic array -- computed by
@@ -280,6 +430,27 @@ class EnsembleView:
 
     def capture_background(self) -> None:
         self._inner.capture_background()
+
+    # M2.6: probe/isotherms delegate straight through -- see DifferenceView's
+    # identical passthroughs for the reasoning.
+    def set_isotherm_levels(self, levels: list) -> None:
+        self._inner.set_isotherm_levels(levels)
+
+    def set_isotherms_enabled(self, enabled: bool) -> None:
+        self._inner.set_isotherms_enabled(enabled)
+
+    @property
+    def isotherms_enabled(self) -> bool:
+        return self._inner.isotherms_enabled
+
+    def enable_probe(self, callback) -> None:
+        self._inner.enable_probe(callback)
+
+    def disable_probe(self) -> None:
+        self._inner.disable_probe()
+
+    def value_at(self, x: float, z: float):
+        return self._inner.value_at(x, z)
 
     @staticmethod
     def compute_composite(arrays: list, index: int, stat: str) -> np.ndarray:

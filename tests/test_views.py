@@ -52,6 +52,194 @@ class TestSliceView:
         view.set_title("c1_d1 · TEMP")
         assert view.ax.get_title() == "c1_d1 · TEMP"
 
+    def test_init_plot_without_extent_still_works(self, qapp):
+        """extent is optional -- callers that don't have geometry (or
+        don't need physical coordinates) get the pre-M2.6 pixel-index
+        behavior, not a crash."""
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=0.0, vmax=10.0, colorbar_label="x")
+        assert view.value_at(5, 5) is None, "no extent means no meaningful physical-coordinate lookup"
+
+
+class TestSliceViewProbe:
+    """Corner/known-pixel accuracy for value_at() (M2.6.1's DoD: "probe
+    accurate at corners"), and the row<->physical-z flip-awareness the
+    class docstring documents (see SliceView's own docstring for the
+    reasoning verified against real data before this was written)."""
+
+    def _view_with_known_frame(self, extent=(0.0, 1.0, 0.0, 0.48)):
+        # 4x4 frame, every cell a distinct value so row/col mixups fail loudly.
+        frame = np.arange(16, dtype=np.float32).reshape(4, 4)
+        view = SliceView()
+        view.init_plot(frame, cmap="viridis", interpolation="nearest",
+                        vmin=0.0, vmax=15.0, colorbar_label="x", extent=extent)
+        return view, frame
+
+    def test_value_at_top_left_corner_is_row0_col0(self, qapp):
+        view, frame = self._view_with_known_frame()
+        # extent=(x0,x1,z0,z1): top-left of the *displayed image* is
+        # (x0, z1) -- row 0 is physically at the top (z1), per origin='upper'.
+        assert view.value_at(0.0, 0.48) == frame[0, 0]
+
+    def test_value_at_bottom_right_corner_is_last_row_last_col(self, qapp):
+        view, frame = self._view_with_known_frame()
+        assert view.value_at(1.0, 0.0) == frame[-1, -1]
+
+    def test_value_at_top_right_and_bottom_left(self, qapp):
+        view, frame = self._view_with_known_frame()
+        assert view.value_at(1.0, 0.48) == frame[0, -1]
+        assert view.value_at(0.0, 0.0) == frame[-1, 0]
+
+    def test_value_at_out_of_bounds_returns_none(self, qapp):
+        view, _frame = self._view_with_known_frame()
+        assert view.value_at(-0.5, 0.2) is None
+        assert view.value_at(1.5, 0.2) is None
+
+    def test_value_at_without_extent_returns_none(self, qapp):
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=0.0, vmax=10.0, colorbar_label="x")
+        assert view.value_at(0.5, 0.5) is None
+
+    def test_enable_probe_calls_back_on_synthetic_motion_event(self, qapp):
+        view, frame = self._view_with_known_frame()
+        received = []
+        view.enable_probe(lambda x, z, v: received.append((x, z, v)))
+
+        class FakeEvent:
+            inaxes = view.ax
+            xdata = 0.0
+            ydata = 0.48
+
+        view._on_mouse_move(FakeEvent())
+        assert received == [(0.0, 0.48, float(frame[0, 0]))]
+
+    def test_probe_callback_gets_none_when_mouse_leaves_axes(self, qapp):
+        view, _frame = self._view_with_known_frame()
+        received = []
+        view.enable_probe(lambda x, z, v: received.append((x, z, v)))
+
+        class FakeEventOutside:
+            inaxes = None
+            xdata = None
+            ydata = None
+
+        view._on_mouse_move(FakeEventOutside())
+        assert received == [(None, None, None)]
+
+    def test_disable_probe_disconnects(self, qapp):
+        view, _frame = self._view_with_known_frame()
+        received = []
+        view.enable_probe(lambda x, z, v: received.append((x, z, v)))
+        view.disable_probe()
+
+        class FakeEvent:
+            inaxes = view.ax
+            xdata = 0.0
+            ydata = 0.48
+
+        view._on_mouse_move(FakeEvent())
+        assert received == [], "no callback should fire after disable_probe()"
+
+
+@requires_real_dataset
+class TestSliceViewProbeRealData:
+    """The exact cross-check performed during development: a known
+    peak-difference pixel from M2.3's investigation (row=46, col=96 in the
+    flipped/displayed array, physically x=0.96, z=0.02) must round-trip
+    through value_at() to the same real TEMPERATURE value stored in the
+    array itself -- confirms the flip-aware extent convention is right on
+    real data, not just a hand-built 4x4 synthetic frame."""
+
+    def test_known_pixel_matches_real_data(self):
+        key = SliceKey("TEMPERATURE", 1, 0)
+        case_dir = os.path.join(SIM_ROOT, "c1_d0_vod0_voc0")
+        data = load_data(case_dir, key)
+        view = SliceView()
+        view.init_plot(data[300], cmap="gist_heat", interpolation="nearest",
+                        vmin=20.0, vmax=300.0, colorbar_label="x", extent=(0.0, 1.0, 0.0, 0.48))
+        assert view.value_at(0.96, 0.02) == pytest.approx(float(data[300][46, 96]))
+
+    def test_all_four_corners_match_real_data(self):
+        key = SliceKey("TEMPERATURE", 1, 0)
+        case_dir = os.path.join(SIM_ROOT, "c1_d0_vod0_voc0")
+        data = load_data(case_dir, key)
+        frame = data[300]
+        view = SliceView()
+        view.init_plot(frame, cmap="gist_heat", interpolation="nearest",
+                        vmin=20.0, vmax=300.0, colorbar_label="x", extent=(0.0, 1.0, 0.0, 0.48))
+        assert view.value_at(0.0, 0.48) == pytest.approx(float(frame[0, 0]))
+        assert view.value_at(1.0, 0.0) == pytest.approx(float(frame[-1, -1]))
+        assert view.value_at(1.0, 0.48) == pytest.approx(float(frame[0, -1]))
+        assert view.value_at(0.0, 0.0) == pytest.approx(float(frame[-1, 0]))
+
+
+class TestSliceViewIsotherms:
+    def test_disabled_by_default(self, qapp):
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=0.0, vmax=100.0, colorbar_label="x")
+        assert not view.isotherms_enabled
+
+    def test_enabling_with_levels_draws_a_contour(self, qapp):
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=0.0, vmax=100.0, colorbar_label="x", extent=(0.0, 1.0, 0.0, 0.48))
+        view.set_isotherm_levels([60, 100])
+        view.set_isotherms_enabled(True)
+        assert view.isotherms_enabled
+        assert view._contour_artist is not None
+
+    def test_disabling_clears_the_contour(self, qapp):
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=0.0, vmax=100.0, colorbar_label="x", extent=(0.0, 1.0, 0.0, 0.48))
+        view.set_isotherm_levels([60])
+        view.set_isotherms_enabled(True)
+        view.set_isotherms_enabled(False)
+        assert not view.isotherms_enabled
+        assert view._contour_artist is None
+
+    def test_show_frame_redraws_contour_each_call_while_enabled(self, qapp):
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=0.0, vmax=100.0, colorbar_label="x", extent=(0.0, 1.0, 0.0, 0.48))
+        view.set_isotherm_levels([50])
+        view.set_isotherms_enabled(True)
+        first_artist = view._contour_artist
+        new_frame = np.full((49, 101), 75.0, dtype=np.float32)
+        view.show_frame(new_frame)
+        assert view._contour_artist is not None
+        assert view._contour_artist is not first_artist, "contour must be a fresh artist each frame, not reused"
+
+    def test_show_frame_does_not_redraw_contour_when_disabled(self, qapp):
+        """Off-state must stay on the cheap blit path -- no contour work
+        at all, confirming M2.6's "off-state performance unchanged" DoD."""
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=0.0, vmax=100.0, colorbar_label="x", extent=(0.0, 1.0, 0.0, 0.48))
+        view.set_isotherm_levels([50])  # levels set, but never enabled
+        new_frame = np.full((49, 101), 75.0, dtype=np.float32)
+        view.show_frame(new_frame)
+        assert view._contour_artist is None
+
+    def test_no_levels_set_draws_no_contour_even_if_enabled(self, qapp):
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=0.0, vmax=100.0, colorbar_label="x", extent=(0.0, 1.0, 0.0, 0.48))
+        view.set_isotherms_enabled(True)
+        assert view._contour_artist is None
+
+    def test_setting_levels_while_enabled_redraws_immediately(self, qapp):
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=0.0, vmax=100.0, colorbar_label="x", extent=(0.0, 1.0, 0.0, 0.48))
+        view.set_isotherms_enabled(True)
+        assert view._contour_artist is None  # no levels yet
+        view.set_isotherm_levels([60, 100, 300])
+        assert view._contour_artist is not None
+
 
 class TestDifferenceView:
     def test_compute_diff(self):
