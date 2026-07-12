@@ -15,7 +15,7 @@ from collections import OrderedDict
 
 import numpy as np
 
-from load_data import load_data, SIM_ROOT
+from load_data import load_data, load_slice_geometry, SIM_ROOT
 from slice_key import SliceKey, DEFAULT_SLICE_KEY
 
 logger = logging.getLogger(__name__)
@@ -64,6 +64,7 @@ class ScenarioStore:
         # nonexistent folder paths don't touch the real filesystem.
         self.cache_dir = cache_dir
         self._cache = OrderedDict()  # scenario_index -> ndarray, ordered least- to most-recently used
+        self._geometry_cache = {}     # (scenario_index, SliceKey) -> (mesh, extent, mask)
         self._lock = threading.Lock()
 
     @property
@@ -100,6 +101,24 @@ class ScenarioStore:
                 (evicted_index, evicted_key_slice), _ = self._cache.popitem(last=False)
                 logger.debug("evicting scenario %d (%s) from cache", evicted_index, evicted_key_slice)
             return data
+
+    def get_extent(self, scenario_index: int, key: SliceKey = DEFAULT_SLICE_KEY) -> list:
+        """Return the physical slice extent [x0, x1, z0, z1] for a scenario/key.
+
+        Metadata is parsed from the .smv file and cached separately from the
+        frame data so probe coordinate mapping never has to force a cold .sf
+        read just to learn the axes.
+        """
+        cache_key = (scenario_index, key)
+        with self._lock:
+            geometry = self._geometry_cache.get(cache_key)
+            if geometry is None:
+                geometry = load_slice_geometry(self.folders[scenario_index], key)
+                self._geometry_cache[cache_key] = geometry
+            if geometry is None:
+                return None
+            _mesh, extent, _mask = geometry
+            return extent
 
     def _cache_path(self, folder: str, key: SliceKey) -> str:
         case = os.path.basename(os.path.normpath(folder))

@@ -32,6 +32,11 @@ def load_data(root_dir: str, key: SliceKey = DEFAULT_SLICE_KEY) -> np.ndarray:
     return data
 
 
+def load_slice_geometry(root_dir: str, key: SliceKey = DEFAULT_SLICE_KEY):
+    """Return (mesh, extent, mask) for one slice without reading frame data."""
+    return fds.readSliceGeometry(root_dir, direction=key.direction, offset=key.offset, quantity=key.quantity)
+
+
 def check_scenario_count(n_scenarios: int, c: int, d: int, vod: int, voc: int):
     """Warn if the folder count on disk doesn't match the assumed factor-level counts."""
     expected = c * d * vod * voc
