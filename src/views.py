@@ -515,6 +515,10 @@ class GridCell(QtWidgets.QWidget):
         self._swap_view(cell_type)
         self.type_changed.emit(self, cell_type)
 
+    def set_cell_type(self, cell_type: str):
+        """Programmatic counterpart to the context-menu action."""
+        self._set_cell_type(cell_type)
+
     def _swap_view(self, cell_type: str):
         old_widget = self.view.widget()
         self._outer_layout.removeWidget(old_widget)

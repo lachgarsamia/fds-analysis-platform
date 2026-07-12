@@ -30,6 +30,7 @@ Do not plan against stale descriptions. The following is the verified current st
 | ✅ | M2.2: `views.py` — `PlotView` protocol + `SliceView` (matplotlib, extracted whole from `MainWindow`) + `GridCell`/`ViewGrid` (1×1/1×2/2×2 via View→Grid Layout menu, per-cell scenario+quantity combos, one active cell driven by the control panel, others independent). Single-view mode is the grid at its 1×1 default, not a separate path — pixel-equivalent to pre-refactor by construction (confirmed: all ~30 pre-existing single-view tests pass unchanged). Playback loops every visible cell each tick; "Link color scales" shares a data-derived vmax per same-quantity group. Non-active cells' own combo picks prefetch via the existing M1.4.4 worker-list machinery (no new threading code); `SCENARIO_CACHE_SIZE` raised 4→6. Measured 2×2 synced-playback FPS: ~247 fps offscreen, **~57.7 fps on a real display** (M2.4 re-measured this on-screen, see below — real number is the one that matters), both well past the ≥15 fps DoD target | `src/views.py`, `src/main_window.py`, `src/config.py`, `tests/test_views.py`, `tests/bench_grid_fps.py`, `tests/test_integration.py`, merged to `main` |
 | ✅ | M2.4: pyqtgraph migration gate — **decision: no migration.** matplotlib-blit measured directly at ~247 fps offscreen / ~57.7 fps real-display (native `cocoa` backend, actual on-screen window) on the same 2×2/4-scenario grid, both clearing the ≥15 fps bar with wide margin; `PyQtGraphSliceView` deliberately not built (would be speculative work once the gate's own condition wasn't met). Real-display number confirms the offscreen figure alone would have overstated performance ~4×, same class of gap M1.3.3 first found | `docs/decisions.md`, `ROADMAP.md` §4 M2.4, no code changes |
 | ✅ | M2.3: `DifferenceView`/`EnsembleView` (both compose a `SliceView` internally) + a per-cell right-click context menu (Slice/Difference/Ensemble) with a new `EnsemblePickerDialog` (checklist + quick factor filters) for building an ensemble selection. Verified `DifferenceView` against real data before any UI wiring, per explicit instruction: for TEMPERATURE the door-width DoD example's dominant signal is actually near the candle/plume, not the doorway — VELOCITY shows the expected door effect instead; both findings pinned as permanent tests, not just a one-off check | `src/views.py`, `src/main_window.py`, `tests/test_views.py`, `tests/test_integration.py`, merged to `main` |
+| ✅ | M2.5: `summary_stats.py` builds a cached per-scenario summary index, including global/per-frame peak temperature, time-to-thresholds, mean upper-region temperature, and first use of `*_hrr.csv` for peak HRR + total energy; `browser.py` adds a docked sortable/filterable `QTableView` with factor filters, double-click-to-load active cell, and multi-select open-as-grid/open-as-ensemble actions. Real-data sanity check: 24 summary rows generated; first/last scenarios show nonzero HRR-derived stats (`c1_d0_vod0_voc0`: peak HRR 0.08 kW, 9.15 kJ; `c2_d1_vod2_voc1`: peak HRR 0.16 kW, 18.29 kJ) | `src/summary_stats.py`, `src/browser.py`, `src/main_window.py`, `tests/test_summary_stats.py`, `tests/test_integration.py`, branch `feat/m2.5-experiment-browser` |
 
 ### Current architecture
 ```
@@ -180,7 +181,7 @@ Time budget: **Phase 1 = 1 wk (+ M1.3s spike, timeboxed/parallel; +~0.5 d from M
 | M2.2 | PlotView abstraction + multi-view grid (1×1/1×2/2×2, synced time, linked clim) | The platform centerpiece; matches dataset's purpose | **Highest** | 5 d | Med | **High** — ✅ done |
 | M2.3 | Difference view + ensemble stats view | Core science; doubles as ML-eval harness | High | 3 d | Low (array ops on cached data) | **High** — ✅ done |
 | M2.4 | pyqtgraph spike — timeboxed decision gate (2 d max) | Only migrate if matplotlib-blit can't hold the 2×2 grid at target FPS | Med | 2 d | Contained by timebox | Med — ✅ done (no migration) |
-| M2.5 | Experiment browser + summary-stats index (incl. HRR from CSV) | Workflow leap; makes 24 runs navigable | High | 3 d | Low | **High** |
+| M2.5 | Experiment browser + summary-stats index (incl. HRR from CSV) | Workflow leap; makes 24 runs navigable | High | 3 d | Low | **High** — ✅ done |
 | M2.6 | Value probe + isotherm/contour overlays (thresholds informed by M1.3s) | Analysis affordances researchers expect | Med | 2 d | Low | Med |
 
 ### Phase 3 — Research Extensions (Aug 12 → Sep 2)
@@ -213,7 +214,7 @@ Time budget: **Phase 1 = 1 wk (+ M1.3s spike, timeboxed/parallel; +~0.5 d from M
 5. **Quantity generalization (M2.1)** — VELOCITY is already on disk; one reader change unlocks a whole visualization axis.
 6. **Multi-view synchronized comparison (M2.2)** — the centerpiece; the reason this dataset exists.
 7. **Difference + ensemble views (M2.3)** — science value now, ML-eval harness later; the plan's best two-for-one.
-8. **Experiment browser (M2.5)** — turns "24 folders" into "an experiment".
+8. **Experiment browser (M2.5)** — turns "24 folders" into "an experiment". ✅ done.
 9. **Ensemble analytics + auto-summaries (M3.1)** — certain-payoff research content.
 10. **Forecasting prototype (M3.2)** — the research bet, de-risked because its evaluation UI (#7) ships regardless of model quality.
 
@@ -367,13 +368,15 @@ Both clear the gate's "adopt only if matplotlib-blit < 15 fps" condition by a wi
 
 **Caveat carried into `docs/decisions.md` explicitly, not left implicit:** the offscreen number alone overstates real performance (~4× here, confirmed by comparing against the real-display run) — same class of gap M1.3.3's own benchmark first surfaced. The real-display figure came from a single spot-check in an environment that happened to have an actual attached display (verified via `QApplication.platformName() == "cocoa"`, not assumed); flagged in `docs/decisions.md` for a secondary spot-check on different hardware before the demo if the opportunity arises, though not because there's a specific reason to doubt the passing result.
 
-### M2.5 — Experiment browser + summary index
+### M2.5 — Experiment browser + summary index ✅ DONE
+Implemented on `feat/m2.5-experiment-browser`. **Objective met:** all 24 real scenarios are indexed in a docked browser with sortable/filterable factors + summary statistics; browser selections drive the existing active-cell/grid/ensemble paths.
+
 | Task | Detail |
 |---|---|
-| 2.5.1 `summary_stats.py` | Per scenario: max T (global & per-frame curve), time-to-T>{100,300,600 °C}, mean upper-region T, peak HRR + total energy from `*_hrr.csv` (first use of this data!). Cached to `fds/sim/.cache/summaries.json`, mtime-invalidated. D:Med T:4h. Unit-test against hand-computed values for one scenario. |
-| 2.5.2 Browser dock | QDockWidget table (QAbstractTableModel): factors + stats columns; sortable; text/factor filter; double-click → load into active cell; multi-select → "open as grid" / "open as ensemble". Files: new `browser.py`, `main_window.py`. D:Med T:1d. |
+| 2.5.1 `summary_stats.py` ✅ | Per scenario: max T (global & per-frame curve), time-to-T>{100,300,600 °C}, mean upper-region T (upper half of the displayed slice array), peak HRR + total energy from `*_hrr.csv` (first use of this data). Cached to `fds/sim/.cache/summaries.json`, mtime-invalidated against `.sf`, `.smv`, and `*_hrr.csv` sources, with manifest case-index validation before reuse. Unit tests cover hand-computed temperature thresholds, upper-region mean, trapezoidal HRR energy, cache reuse, and HRR-driven invalidation. |
+| 2.5.2 Browser dock ✅ | New `browser.py`: `ExperimentBrowserDock` (`QDockWidget`) with `SummaryTableModel` + `SummaryFilterProxyModel`, factor/text filters, sortable stats columns, double-click → active cell, multi-select → open as grid / open as ensemble. Demo mode omits the browser because there is no real manifest/HRR source. Integration tests cover the 24-row real browser, HRR columns, filtering/sorting, double-click load, grid open, and ensemble open. |
 
-**DoD:** all 24 rows with correct stats · sort/filter works · double-click loads · stats regeneration only when sources change.
+**DoD:** all 24 rows with correct stats (✅ real-data check generated 24 rows; spot-check: `c1_d0_vod0_voc0` peak HRR 0.08 kW / 9.15 kJ, `c2_d1_vod2_voc1` peak HRR 0.16 kW / 18.29 kJ) · sort/filter works (✅) · double-click loads (✅) · stats regeneration only when sources change (✅ unit-tested HRR mtime invalidation).
 
 ### M2.6 — Probe + isotherms
 2.6.1 Cursor probe: `motion_notify_event` → status bar "x=…m, z=…m, T=…°C" (physical coords via slice extent — start using `readSlice`'s mesh/extent return instead of `readDataOnly`). D:Med T:3h. 2.6.2 Isotherm overlay: contour lines at configurable levels (default thresholds informed by M1.3s.4's hazard-band proposal, e.g. 60/100/300 °C) redrawn per frame **only when enabled** (accept blit bypass while active; acceptable at this grid size). D:Med T:3h.

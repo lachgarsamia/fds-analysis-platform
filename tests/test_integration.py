@@ -309,6 +309,87 @@ class TestIntegration:
         assert window.candle_toggle.toolTip() != ""
         window.close()
 
+    # ------------------------------------------------------ M2.5 browser tests
+    def test_experiment_browser_lists_all_real_scenarios(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert window.experiment_browser is None
+            window.close()
+            return
+
+        browser = window.experiment_browser
+        assert browser is not None
+        assert browser.model.rowCount() == len(sim_data.manifest) == 24
+        headers = [
+            browser.model.headerData(i, QtCore.Qt.Horizontal)
+            for i in range(browser.model.columnCount())
+        ]
+        assert "Peak HRR (kW)" in headers
+        assert "Energy (kJ)" in headers
+        window.close()
+
+    def test_experiment_browser_filter_sort_and_double_click_loads(self, qapp):
+        sim_data = load_simulation_data()
+        if sim_data.is_demo:
+            pytest.skip("experiment browser is real-dataset only")
+        window = MainWindow(sim_data)
+        browser = window.experiment_browser
+
+        browser.search_edit.setText("c2_")
+        qapp.processEvents()
+        assert browser.proxy.rowCount() == 12
+
+        peak_col = next(
+            i for i, (key, _label) in enumerate(browser.model.COLUMNS)
+            if key == "peak_hrr_kw"
+        )
+        browser.table.sortByColumn(peak_col, QtCore.Qt.DescendingOrder)
+        qapp.processEvents()
+        assert browser.proxy.rowCount() == 12
+
+        proxy_index = browser.proxy.index(0, 0)
+        source_index = browser.proxy.mapToSource(proxy_index)
+        summary = browser.model.data(source_index, QtCore.Qt.UserRole)
+        browser._on_double_clicked(proxy_index)
+        qapp.processEvents()
+
+        deadline = time.perf_counter() + 3.0
+        while window._busy and time.perf_counter() < deadline:
+            qapp.processEvents()
+            time.sleep(0.005)
+        deadline = time.perf_counter() + 3.0
+        while window.controller._prefetch_workers and time.perf_counter() < deadline:
+            qapp.processEvents()
+            time.sleep(0.005)
+
+        assert window.view_grid.active_cell().case_index == summary.case_index
+        assert window.controller.current_case_index() == summary.case_index
+        window.close()
+
+    def test_experiment_browser_open_grid_and_ensemble_actions(self, qapp):
+        sim_data = load_simulation_data()
+        if sim_data.is_demo:
+            pytest.skip("experiment browser is real-dataset only")
+        window = MainWindow(sim_data)
+
+        window._open_browser_grid([0, 1, 2, 3])
+        qapp.processEvents()
+        deadline = time.perf_counter() + 3.0
+        while (window._busy or window.controller._prefetch_workers) and time.perf_counter() < deadline:
+            qapp.processEvents()
+            time.sleep(0.005)
+        assert window.view_grid.layout_name == "2x2"
+        assert [cell.case_index for cell in window.view_grid.visible_cells()] == [0, 1, 2, 3]
+
+        window._open_browser_ensemble([0, 1, 2])
+        qapp.processEvents()
+        cell = window.view_grid.active_cell()
+        assert cell.cell_type == "ensemble"
+        assert cell.ensemble_case_indices == [0, 1, 2]
+        assert cell.view.heatmap is not None
+        window.close()
+
     # ------------------------------------------------- M1.4 timeline tests
     def test_drag_seek_during_playback(self, qapp):
         """DoD: 'drag-seek works during playback'. Dragging the timeline
