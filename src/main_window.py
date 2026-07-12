@@ -34,8 +34,11 @@ from time_controller import TimeController
 from data_provider import SimulationData
 from schematic import SchematicWidget, flame_icon, door_icon, vent_icon, resolve_room_extent
 from export import AnimationExporter, ffmpeg_available
+from load_data import SIM_ROOT
 from slice_key import SliceInfo, DEFAULT_SLICE_KEY, available_slices
 from views import ViewGrid, DifferenceView, EnsembleView
+from summary_stats import build_summary_index
+from browser import ExperimentBrowserDock
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +161,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._build_menu()
         self._build_central_widget()
+        self._build_experiment_browser()
         self._build_status_bar()
         self._apply_theme()
         self._restore_window_state()
@@ -234,6 +238,29 @@ class MainWindow(QtWidgets.QMainWindow):
         export_animation_action.setToolTip("Export the current scenario's playback as a video or GIF")
         export_animation_action.triggered.connect(self._export_animation)
         export_menu.addAction(export_animation_action)
+
+    def _build_experiment_browser(self):
+        """M2.5: docked sortable/filterable index of all real scenarios.
+
+        Demo mode has no manifest/HRR CSVs, so the browser is simply absent
+        there rather than showing synthetic rows that cannot satisfy the
+        milestone's "all 24 scenarios" requirement.
+        """
+        if not self.sim_data.manifest:
+            self.experiment_browser = None
+            return
+        cache_path = os.path.join(SIM_ROOT, ".cache", "summaries.json")
+        summaries = build_summary_index(
+            self.sim_data.manifest,
+            self.controller.store,
+            self.sim_data.timesteps_per_second,
+            cache_path,
+        )
+        self.experiment_browser = ExperimentBrowserDock(summaries, self)
+        self.experiment_browser.scenario_activated.connect(self._open_browser_scenario)
+        self.experiment_browser.open_grid_requested.connect(self._open_browser_grid)
+        self.experiment_browser.open_ensemble_requested.connect(self._open_browser_ensemble)
+        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.experiment_browser)
 
     def _build_central_widget(self):
         central = QtWidgets.QWidget()
@@ -970,6 +997,49 @@ class MainWindow(QtWidgets.QMainWindow):
         self.voc_toggle.set_value(entry.voc)
         self._on_scenario_param_changed()
         self._refresh_schematic()
+
+    def _open_browser_scenario(self, case_index: int):
+        """Double-click in the experiment browser: load into active cell."""
+        cell = self.view_grid.active_cell()
+        if cell.cell_type != "slice":
+            cell.set_cell_type("slice")
+        self._apply_manifest_case_to_controller(case_index)
+
+    def _open_browser_grid(self, case_indices: list):
+        """Open up to four browser-selected scenarios in the grid."""
+        if not case_indices:
+            return
+        selected = case_indices[:4]
+        layout_name = "1x1" if len(selected) == 1 else ("1x2" if len(selected) == 2 else "2x2")
+        self.view_grid.set_layout(layout_name)
+        self.toolbar.setVisible(layout_name == "1x1")
+        for cell, case_index in zip(self.view_grid.visible_cells(), selected):
+            if cell.cell_type != "slice":
+                cell.set_cell_type("slice")
+            cell.set_scenario_silently(case_index)
+            if cell is self.view_grid.active_cell():
+                self._apply_manifest_case_to_controller(case_index)
+            else:
+                self._load_cell(cell, case_index, cell.quantity_key)
+        self._apply_link_clim()
+
+    def _open_browser_ensemble(self, case_indices: list):
+        """Open browser-selected scenarios as an ensemble in the active cell."""
+        if not case_indices:
+            return
+        cell = self.view_grid.active_cell()
+        if cell.cell_type != "ensemble":
+            cell.set_cell_type("ensemble")
+        cell.ensemble_case_indices = sorted(case_indices)
+        cell.ensemble_stat = "mean"
+        if hasattr(cell, "ensemble_select_button"):
+            cell.ensemble_select_button.setText(cell._ensemble_button_text())
+        if hasattr(cell, "stat_combo"):
+            cell.stat_combo.blockSignals(True)
+            cell.stat_combo.setCurrentIndex(0)
+            cell.stat_combo.blockSignals(False)
+        self._render_ensemble_cell(cell)
+        self._apply_link_clim()
 
     def _load_cell(self, cell, case_index: int, quantity_key):
         """A *non-active* cell's own combo picked a new (case, key)
