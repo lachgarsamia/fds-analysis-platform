@@ -129,6 +129,27 @@ class DifferenceView:
         self.quantity_key = None
         self._symmetric_clim_cache = {}
 
+    # Read-only passthroughs so this duck-types as SliceView-shaped for
+    # MainWindow's `heatmap`/`colorbar`/`canvas`/`ax` delegating properties
+    # (M2.2.1) if a cell showing this view type ever becomes the grid's
+    # active cell -- those properties assume that shape regardless of
+    # which PlotView implementation the active cell currently holds.
+    @property
+    def heatmap(self):
+        return self._inner.heatmap
+
+    @property
+    def colorbar(self):
+        return self._inner.colorbar
+
+    @property
+    def canvas(self):
+        return self._inner.canvas
+
+    @property
+    def ax(self):
+        return self._inner.ax
+
     def widget(self) -> QtWidgets.QWidget:
         return self._inner.widget()
 
@@ -211,6 +232,23 @@ class EnsembleView:
         self.stat = "mean"
         self._std_vmax_cache = {}
 
+    # See DifferenceView's identical passthroughs for why these exist.
+    @property
+    def heatmap(self):
+        return self._inner.heatmap
+
+    @property
+    def colorbar(self):
+        return self._inner.colorbar
+
+    @property
+    def canvas(self):
+        return self._inner.canvas
+
+    @property
+    def ax(self):
+        return self._inner.ax
+
     def widget(self) -> QtWidgets.QWidget:
         return self._inner.widget()
 
@@ -281,65 +319,159 @@ class EnsembleView:
         return vmax
 
 
-class GridCell(QtWidgets.QWidget):
-    """One cell of a ViewGrid: a compact scenario combo + quantity combo
-    above a PlotView. Clicking the cell makes it the grid's active cell.
+class EnsemblePickerDialog(QtWidgets.QDialog):
+    """Modal checklist of manifest entries for building an EnsembleView
+    selection (M2.3.3), with quick factor-filter buttons ("2 candles",
+    "Wide door", ...) that bulk-check every matching scenario instead of
+    requiring individual clicks through all 24 -- the "checklist ... with
+    factor filters ('all vod=open')" the spec asks for.
 
-    Doesn't know about SimulationController/ScenarioStore/manifest
-    semantics beyond "a list of (label, case_index) options" and "a list
-    of (label, SliceKey) options" -- MainWindow supplies both and reacts to
-    this cell's signals, keeping data-fetching out of the view layer (same
-    split as SliceView: this widget only knows how to display a frame it's
-    handed, not how to load one).
+    `manifest_entries` is duck-typed: anything with .case_index/.folder/
+    .candles/.door/.vod/.voc (manifest.ScenarioEntry satisfies this) --
+    views.py doesn't import manifest.py to avoid a view-layer -> data-layer
+    dependency, same boundary SliceView/DifferenceView/EnsembleView keep.
     """
 
-    activated = QtCore.pyqtSignal(object)                # self
-    scenario_selected = QtCore.pyqtSignal(object, int)    # self, case_index
-    quantity_selected = QtCore.pyqtSignal(object, object)  # self, SliceKey
+    FACTOR_LABELS = {
+        'candles': {0: '1 candle', 1: '2 candles'},
+        'door': {0: 'Narrow door', 1: 'Wide door'},
+        'vod': {0: 'Vent 1 open', 1: 'Vent 1 closed', 2: 'Vent 1 HVAC'},
+        'voc': {0: 'Vent 2 open', 1: 'Vent 2 closed'},
+    }
+    FACTORS = ('candles', 'door', 'vod', 'voc')
 
-    def __init__(self, scenario_options: list, quantity_options: list, parent=None):
-        """scenario_options: [(label, case_index), ...]: quantity_options:
-        [(label, SliceKey), ...]. Both may be empty/single-item (demo mode
-        has no manifest) -- the combo disables itself in that case, same
-        convention as MainWindow's own quantity combo (M2.1)."""
+    def __init__(self, manifest_entries: list, initial_selection: list, parent=None):
         super().__init__(parent)
-        self.view = SliceView(self)
+        self.setWindowTitle("Select scenarios for ensemble")
+        self._entries = list(manifest_entries)
+        self._by_case_index = {e.case_index: e for e in self._entries}
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        if self._entries:
+            filter_row = QtWidgets.QHBoxLayout()
+            filter_row.addWidget(QtWidgets.QLabel("Quick filters:"))
+            for factor in self.FACTORS:
+                values = sorted({getattr(e, factor) for e in self._entries})
+                for v in values:
+                    label = self.FACTOR_LABELS.get(factor, {}).get(v, f"{factor}={v}")
+                    btn = QtWidgets.QPushButton(label)
+                    btn.setToolTip(f"Check every scenario with {factor}={v}")
+                    btn.clicked.connect(lambda _checked, f=factor, val=v: self._apply_filter(f, val))
+                    filter_row.addWidget(btn)
+            filter_row.addStretch(1)
+            layout.addLayout(filter_row)
+
+        self.list_widget = QtWidgets.QListWidget()
+        self.list_widget.setAccessibleName("Ensemble scenario checklist")
+        initial = set(initial_selection)
+        for entry in self._entries:
+            item = QtWidgets.QListWidgetItem(entry.folder)
+            item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
+            item.setCheckState(QtCore.Qt.Checked if entry.case_index in initial else QtCore.Qt.Unchecked)
+            item.setData(QtCore.Qt.UserRole, entry.case_index)
+            self.list_widget.addItem(item)
+        layout.addWidget(self.list_widget, 1)
+
+        select_row = QtWidgets.QHBoxLayout()
+        select_all_btn = QtWidgets.QPushButton("Select all")
+        select_all_btn.clicked.connect(lambda: self._set_all(QtCore.Qt.Checked))
+        select_none_btn = QtWidgets.QPushButton("Select none")
+        select_none_btn.clicked.connect(lambda: self._set_all(QtCore.Qt.Unchecked))
+        select_row.addWidget(select_all_btn)
+        select_row.addWidget(select_none_btn)
+        select_row.addStretch(1)
+        layout.addLayout(select_row)
+
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _apply_filter(self, factor: str, value):
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            entry = self._by_case_index[item.data(QtCore.Qt.UserRole)]
+            if getattr(entry, factor) == value:
+                item.setCheckState(QtCore.Qt.Checked)
+
+    def _set_all(self, state):
+        for i in range(self.list_widget.count()):
+            self.list_widget.item(i).setCheckState(state)
+
+    def selected_case_indices(self) -> list:
+        return [
+            self.list_widget.item(i).data(QtCore.Qt.UserRole)
+            for i in range(self.list_widget.count())
+            if self.list_widget.item(i).checkState() == QtCore.Qt.Checked
+        ]
+
+
+class GridCell(QtWidgets.QWidget):
+    """One cell of a ViewGrid: a type-dependent header (scenario/quantity
+    pickers) above a PlotView. Clicking the cell makes it the grid's
+    active cell; right-clicking opens a context menu to change its type
+    (M2.3.3): "Slice" (one scenario), "Difference" (two scenarios, A-B),
+    or "Ensemble" (a selection of scenarios, mean/std/min/max composite).
+
+    Doesn't know about SimulationController/ScenarioStore semantics beyond
+    "a list of (label, case_index) options", "a list of (label, SliceKey)
+    options", and (for the ensemble picker only) manifest entries with
+    .candles/.door/.vod/.voc -- MainWindow supplies all of that and reacts
+    to this cell's signals, keeping data-fetching out of the view layer
+    (same split as SliceView: this widget only knows how to display a
+    frame it's handed, not how to load or compute one).
+    """
+
+    CELL_TYPES = ("slice", "difference", "ensemble")
+    TYPE_LABELS = {"slice": "Slice", "difference": "Difference (A − B)", "ensemble": "Ensemble (statistic)"}
+
+    activated = QtCore.pyqtSignal(object)                       # self
+    scenario_selected = QtCore.pyqtSignal(object, int)          # self, case_index (slice type)
+    quantity_selected = QtCore.pyqtSignal(object, object)        # self, SliceKey (any type)
+    type_changed = QtCore.pyqtSignal(object, str)                # self, new cell_type
+    difference_scenarios_changed = QtCore.pyqtSignal(object, int, int)  # self, case_a, case_b
+    ensemble_changed = QtCore.pyqtSignal(object, list, str)       # self, case_indices, stat
+
+    def __init__(self, scenario_options: list, quantity_options: list,
+                 manifest_entries: list = None, parent=None):
+        """scenario_options: [(label, case_index), ...]; quantity_options:
+        [(label, SliceKey), ...]. Both may be empty/single-item (demo mode
+        has no manifest) -- combos disable themselves in that case, same
+        convention as MainWindow's own quantity combo (M2.1).
+        manifest_entries: full manifest.ScenarioEntry-shaped list, needed
+        only for the ensemble picker's factor filters -- [] in demo mode."""
+        super().__init__(parent)
         self._scenario_options = list(scenario_options)
         self._quantity_options = list(quantity_options)
+        self._manifest_entries = list(manifest_entries) if manifest_entries else []
+
+        self.cell_type = "slice"
+        self.view = SliceView(self)
         self.case_index = self._scenario_options[0][1] if self._scenario_options else 0
+        self.case_index_a = self.case_index
+        self.case_index_b = (self._scenario_options[1][1] if len(self._scenario_options) > 1
+                              else self.case_index)
+        self.ensemble_case_indices: list = []
+        self.ensemble_stat = "mean"
         self.quantity_key = self._quantity_options[0][1] if self._quantity_options else None
         self._is_active = False
         self._accent = "#0B5FA5"
 
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(2)
+        self._outer_layout = QtWidgets.QVBoxLayout(self)
+        self._outer_layout.setContentsMargins(2, 2, 2, 2)
+        self._outer_layout.setSpacing(2)
 
-        header = QtWidgets.QHBoxLayout()
-        header.setSpacing(4)
+        self._header_layout = QtWidgets.QHBoxLayout()
+        self._header_layout.setSpacing(4)
+        self._outer_layout.addLayout(self._header_layout)
+        self._outer_layout.addWidget(self.view.widget(), 1)
 
-        self.scenario_combo = QtWidgets.QComboBox()
-        self.scenario_combo.setAccessibleName("Cell scenario")
-        self.scenario_combo.setToolTip("Which scenario this cell displays")
-        for label, _case_index in self._scenario_options:
-            self.scenario_combo.addItem(label)
-        self.scenario_combo.setEnabled(len(self._scenario_options) > 1)
-        self.scenario_combo.currentIndexChanged.connect(self._on_scenario_combo_changed)
-
-        self.quantity_combo = QtWidgets.QComboBox()
-        self.quantity_combo.setAccessibleName("Cell quantity")
-        self.quantity_combo.setToolTip("Which quantity this cell displays")
-        for label, _key in self._quantity_options:
-            self.quantity_combo.addItem(label)
-        self.quantity_combo.setEnabled(len(self._quantity_options) > 1)
-        self.quantity_combo.currentIndexChanged.connect(self._on_quantity_combo_changed)
-
-        header.addWidget(self.scenario_combo, 1)
-        header.addWidget(self.quantity_combo, 1)
-        layout.addLayout(header)
-        layout.addWidget(self.view.widget(), 1)
-
+        self._build_slice_header()
         self._restyle()
+
+        self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
 
     def mousePressEvent(self, event):
         self.activated.emit(self)
@@ -357,11 +489,165 @@ class GridCell(QtWidgets.QWidget):
         border = f"2px solid {self._accent}" if self._is_active else "2px solid transparent"
         self.setStyleSheet(f"GridCell {{ border: {border}; border-radius: 3px; }}")
 
+    # -------------------------------------------------- type switching (M2.3.3)
+    def _show_context_menu(self, pos):
+        menu = QtWidgets.QMenu(self)
+        group = QtWidgets.QActionGroup(self)
+        for type_key in self.CELL_TYPES:
+            action = menu.addAction(self.TYPE_LABELS[type_key])
+            action.setCheckable(True)
+            action.setChecked(self.cell_type == type_key)
+            group.addAction(action)
+            action.triggered.connect(lambda _checked, t=type_key: self._set_cell_type(t))
+        menu.exec_(self.mapToGlobal(pos))
+
+    def _set_cell_type(self, cell_type: str):
+        if cell_type == self.cell_type:
+            return
+        self.cell_type = cell_type
+        self._clear_header()
+        if cell_type == "slice":
+            self._build_slice_header()
+        elif cell_type == "difference":
+            self._build_difference_header()
+        elif cell_type == "ensemble":
+            self._build_ensemble_header()
+        self._swap_view(cell_type)
+        self.type_changed.emit(self, cell_type)
+
+    def _swap_view(self, cell_type: str):
+        old_widget = self.view.widget()
+        self._outer_layout.removeWidget(old_widget)
+        old_widget.setParent(None)
+        if cell_type == "slice":
+            self.view = SliceView(self)
+        elif cell_type == "difference":
+            self.view = DifferenceView(self)
+        elif cell_type == "ensemble":
+            self.view = EnsembleView(self)
+        self._outer_layout.addWidget(self.view.widget(), 1)
+
+    # Header widget attribute names per type, dropped in _clear_header so a
+    # stale reference to a torn-down widget can't linger (and so
+    # hasattr(cell, "scenario_combo") reliably reflects "is this cell
+    # currently slice-typed", not "has it ever been").
+    _HEADER_ATTRS = ("scenario_combo", "scenario_combo_a", "scenario_combo_b",
+                      "quantity_combo", "ensemble_select_button", "stat_combo")
+
+    def _clear_header(self):
+        while self._header_layout.count():
+            item = self._header_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+        for attr in self._HEADER_ATTRS:
+            if hasattr(self, attr):
+                delattr(self, attr)
+
+    def _make_quantity_combo(self) -> QtWidgets.QComboBox:
+        combo = QtWidgets.QComboBox()
+        combo.setAccessibleName("Cell quantity")
+        combo.setToolTip("Which quantity this cell displays")
+        for label, _key in self._quantity_options:
+            combo.addItem(label)
+        combo.setEnabled(len(self._quantity_options) > 1)
+        idx = next((i for i, (_l, k) in enumerate(self._quantity_options) if k == self.quantity_key), 0)
+        combo.setCurrentIndex(idx)
+        combo.currentIndexChanged.connect(self._on_quantity_combo_changed)
+        return combo
+
+    def _build_slice_header(self):
+        self.scenario_combo = QtWidgets.QComboBox()
+        self.scenario_combo.setAccessibleName("Cell scenario")
+        self.scenario_combo.setToolTip("Which scenario this cell displays")
+        for label, _case_index in self._scenario_options:
+            self.scenario_combo.addItem(label)
+        self.scenario_combo.setEnabled(len(self._scenario_options) > 1)
+        idx = next((i for i, (_l, c) in enumerate(self._scenario_options) if c == self.case_index), 0)
+        self.scenario_combo.setCurrentIndex(idx)
+        self.scenario_combo.currentIndexChanged.connect(self._on_scenario_combo_changed)
+
+        self.quantity_combo = self._make_quantity_combo()
+        self._header_layout.addWidget(self.scenario_combo, 1)
+        self._header_layout.addWidget(self.quantity_combo, 1)
+
+    def _build_difference_header(self):
+        self.scenario_combo_a = QtWidgets.QComboBox()
+        self.scenario_combo_a.setAccessibleName("Cell scenario A")
+        self.scenario_combo_a.setToolTip("First scenario (A) -- the minuend of A minus B")
+        self.scenario_combo_b = QtWidgets.QComboBox()
+        self.scenario_combo_b.setAccessibleName("Cell scenario B")
+        self.scenario_combo_b.setToolTip("Second scenario (B) -- the subtrahend of A minus B")
+        for label, _case_index in self._scenario_options:
+            self.scenario_combo_a.addItem(label)
+            self.scenario_combo_b.addItem(label)
+        enabled = len(self._scenario_options) > 1
+        self.scenario_combo_a.setEnabled(enabled)
+        self.scenario_combo_b.setEnabled(enabled)
+        idx_a = next((i for i, (_l, c) in enumerate(self._scenario_options) if c == self.case_index_a), 0)
+        idx_b = next((i for i, (_l, c) in enumerate(self._scenario_options) if c == self.case_index_b), 0)
+        self.scenario_combo_a.setCurrentIndex(idx_a)
+        self.scenario_combo_b.setCurrentIndex(idx_b)
+        self.scenario_combo_a.currentIndexChanged.connect(self._on_difference_combo_changed)
+        self.scenario_combo_b.currentIndexChanged.connect(self._on_difference_combo_changed)
+
+        self.quantity_combo = self._make_quantity_combo()
+        self._header_layout.addWidget(self.scenario_combo_a, 1)
+        self._header_layout.addWidget(QtWidgets.QLabel("−"))
+        self._header_layout.addWidget(self.scenario_combo_b, 1)
+        self._header_layout.addWidget(self.quantity_combo, 1)
+
+    def _build_ensemble_header(self):
+        self.ensemble_select_button = QtWidgets.QPushButton(self._ensemble_button_text())
+        self.ensemble_select_button.setAccessibleName("Select ensemble scenarios")
+        self.ensemble_select_button.setToolTip("Choose which scenarios this cell's statistic is computed over")
+        self.ensemble_select_button.clicked.connect(self._open_ensemble_picker)
+
+        self.stat_combo = QtWidgets.QComboBox()
+        self.stat_combo.setAccessibleName("Ensemble statistic")
+        for stat in EnsembleView.STATS:
+            self.stat_combo.addItem(stat.capitalize())
+        self.stat_combo.setCurrentIndex(EnsembleView.STATS.index(self.ensemble_stat))
+        self.stat_combo.currentIndexChanged.connect(self._on_stat_combo_changed)
+
+        self.quantity_combo = self._make_quantity_combo()
+        self._header_layout.addWidget(self.ensemble_select_button, 1)
+        self._header_layout.addWidget(self.stat_combo)
+        self._header_layout.addWidget(self.quantity_combo, 1)
+
+    def _ensemble_button_text(self) -> str:
+        n = len(self.ensemble_case_indices)
+        return f"{n} scenario{'s' if n != 1 else ''} selected…"
+
+    def _open_ensemble_picker(self):
+        dialog = EnsemblePickerDialog(self._manifest_entries, self.ensemble_case_indices, self)
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            self.ensemble_case_indices = dialog.selected_case_indices()
+            self.ensemble_select_button.setText(self._ensemble_button_text())
+            self.ensemble_changed.emit(self, self.ensemble_case_indices, self.ensemble_stat)
+
+    def _on_stat_combo_changed(self, idx: int):
+        if idx < 0 or idx >= len(EnsembleView.STATS):
+            return
+        self.ensemble_stat = EnsembleView.STATS[idx]
+        self.ensemble_changed.emit(self, self.ensemble_case_indices, self.ensemble_stat)
+
+    def _on_difference_combo_changed(self, _idx: int):
+        if not self._scenario_options:
+            return
+        self.case_index_a = self._scenario_options[self.scenario_combo_a.currentIndex()][1]
+        self.case_index_b = self._scenario_options[self.scenario_combo_b.currentIndex()][1]
+        self.difference_scenarios_changed.emit(self, self.case_index_a, self.case_index_b)
+
+    # -------------------------------------------------- external state sync
     def set_scenario_silently(self, case_index: int):
         """Update case_index/combo without emitting scenario_selected --
         for when this cell's state is being *driven* (e.g. the active cell
-        mirroring control-panel changes) rather than user-selected here."""
+        mirroring control-panel changes) rather than user-selected here.
+        Only meaningful for "slice"-type cells."""
         self.case_index = case_index
+        if self.cell_type != "slice":
+            return
         idx = next((i for i, (_l, c) in enumerate(self._scenario_options) if c == case_index), None)
         if idx is not None and idx != self.scenario_combo.currentIndex():
             self.scenario_combo.blockSignals(True)
@@ -415,11 +701,16 @@ class ViewGrid(QtWidgets.QWidget):
     active_cell_changed = QtCore.pyqtSignal(object)       # the new active GridCell
     cell_scenario_selected = QtCore.pyqtSignal(object, int)      # non-active-or-active cell, case_index
     cell_quantity_selected = QtCore.pyqtSignal(object, object)   # non-active-or-active cell, SliceKey
+    cell_type_changed = QtCore.pyqtSignal(object, str)            # cell, new cell_type (M2.3.3)
+    cell_difference_scenarios_changed = QtCore.pyqtSignal(object, int, int)  # cell, case_a, case_b
+    cell_ensemble_changed = QtCore.pyqtSignal(object, list, str)   # cell, case_indices, stat
 
-    def __init__(self, scenario_options: list, quantity_options: list, parent=None):
+    def __init__(self, scenario_options: list, quantity_options: list,
+                 manifest_entries: list = None, parent=None):
         super().__init__(parent)
         self._scenario_options = scenario_options
         self._quantity_options = quantity_options
+        self._manifest_entries = manifest_entries or []
         self._layout_name = "1x1"
         self._cells: list = []
         self._active_index = 0
@@ -433,13 +724,18 @@ class ViewGrid(QtWidgets.QWidget):
 
     def _grow_to(self, n_cells: int):
         while len(self._cells) < n_cells:
-            cell = GridCell(self._scenario_options, self._quantity_options, self)
+            cell = GridCell(self._scenario_options, self._quantity_options,
+                             self._manifest_entries, self)
             cell.activated.connect(self._on_cell_activated)
-            # Both signals already carry the emitting cell as their first
-            # arg, so this is a straight re-emit -- Qt supports connecting
-            # a signal directly to another signal with a matching shape.
+            # All these signals already carry the emitting cell as their
+            # first arg, so this is a straight re-emit -- Qt supports
+            # connecting a signal directly to another signal with a
+            # matching shape.
             cell.scenario_selected.connect(self.cell_scenario_selected)
             cell.quantity_selected.connect(self.cell_quantity_selected)
+            cell.type_changed.connect(self.cell_type_changed)
+            cell.difference_scenarios_changed.connect(self.cell_difference_scenarios_changed)
+            cell.ensemble_changed.connect(self.cell_ensemble_changed)
             self._cells.append(cell)
             self.cell_created.emit(cell)
 

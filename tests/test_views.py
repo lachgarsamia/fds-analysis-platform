@@ -9,6 +9,7 @@ import os
 
 import numpy as np
 import pytest
+from PyQt5 import QtCore, QtWidgets
 
 from views import SliceView, DifferenceView, EnsembleView, GridCell, ViewGrid
 from slice_key import SliceKey
@@ -419,6 +420,171 @@ class TestGridCell:
         cell.set_active(True)
         active_style = cell.styleSheet()
         assert active_style != inactive_style
+
+
+class FakeEntry:
+    """Duck-types manifest.ScenarioEntry's shape (case_index/folder/
+    candles/door/vod/voc) without importing manifest.py, matching
+    views.py's own deliberate lack of a data-layer dependency."""
+
+    def __init__(self, case_index, folder, candles, door, vod, voc):
+        self.case_index = case_index
+        self.folder = folder
+        self.candles = candles
+        self.door = door
+        self.vod = vod
+        self.voc = voc
+
+
+class TestGridCellTypeSwitching:
+    SCENARIOS = [("c1_d0_vod0_voc0", 0), ("c1_d0_vod0_voc1", 1), ("c2_d1_vod2_voc1", 23)]
+    QUANTITIES = [("Temperature", SliceKey("TEMPERATURE", 1, 0)), ("Air speed", SliceKey("VELOCITY", 1, 0))]
+
+    def test_starts_as_slice_type(self, qapp):
+        cell = GridCell(self.SCENARIOS, self.QUANTITIES)
+        assert cell.cell_type == "slice"
+        assert isinstance(cell.view, SliceView)
+        assert hasattr(cell, "scenario_combo")
+
+    def test_switch_to_difference_replaces_view_and_header(self, qapp):
+        cell = GridCell(self.SCENARIOS, self.QUANTITIES)
+        cell._set_cell_type("difference")
+        assert cell.cell_type == "difference"
+        assert isinstance(cell.view, DifferenceView)
+        assert hasattr(cell, "scenario_combo_a")
+        assert hasattr(cell, "scenario_combo_b")
+        assert not hasattr(cell, "scenario_combo")
+
+    def test_switch_to_ensemble_replaces_view_and_header(self, qapp):
+        cell = GridCell(self.SCENARIOS, self.QUANTITIES)
+        cell._set_cell_type("ensemble")
+        assert cell.cell_type == "ensemble"
+        assert isinstance(cell.view, EnsembleView)
+        assert hasattr(cell, "ensemble_select_button")
+        assert hasattr(cell, "stat_combo")
+
+    def test_switch_back_to_slice_rebuilds_scenario_combo(self, qapp):
+        cell = GridCell(self.SCENARIOS, self.QUANTITIES)
+        cell._set_cell_type("difference")
+        cell._set_cell_type("slice")
+        assert cell.cell_type == "slice"
+        assert isinstance(cell.view, SliceView)
+        assert hasattr(cell, "scenario_combo")
+
+    def test_switching_to_same_type_is_a_no_op(self, qapp):
+        cell = GridCell(self.SCENARIOS, self.QUANTITIES)
+        view_before = cell.view
+        cell._set_cell_type("slice")
+        assert cell.view is view_before
+
+    def test_type_changed_signal_emits_new_type(self, qapp):
+        cell = GridCell(self.SCENARIOS, self.QUANTITIES)
+        received = []
+        cell.type_changed.connect(lambda c, t: received.append(t))
+        cell._set_cell_type("ensemble")
+        assert received == ["ensemble"]
+
+    def test_difference_combo_defaults_to_first_two_scenarios(self, qapp):
+        cell = GridCell(self.SCENARIOS, self.QUANTITIES)
+        cell._set_cell_type("difference")
+        assert cell.case_index_a == 0
+        assert cell.case_index_b == 1
+
+    def test_difference_combo_change_emits_signal(self, qapp):
+        cell = GridCell(self.SCENARIOS, self.QUANTITIES)
+        cell._set_cell_type("difference")
+        received = []
+        cell.difference_scenarios_changed.connect(lambda c, a, b: received.append((a, b)))
+        cell.scenario_combo_a.setCurrentIndex(2)
+        assert received == [(23, 1)]
+        assert cell.case_index_a == 23
+
+    def test_ensemble_starts_with_no_scenarios_selected(self, qapp):
+        cell = GridCell(self.SCENARIOS, self.QUANTITIES)
+        cell._set_cell_type("ensemble")
+        assert cell.ensemble_case_indices == []
+        assert cell.ensemble_select_button.text() == "0 scenarios selected…"
+
+    def test_ensemble_stat_combo_change_emits_signal(self, qapp):
+        cell = GridCell(self.SCENARIOS, self.QUANTITIES)
+        cell._set_cell_type("ensemble")
+        cell.ensemble_case_indices = [0, 1]
+        received = []
+        cell.ensemble_changed.connect(lambda c, indices, stat: received.append((indices, stat)))
+        cell.stat_combo.setCurrentIndex(EnsembleView.STATS.index("std"))
+        assert received == [([0, 1], "std")]
+        assert cell.ensemble_stat == "std"
+
+    def test_ensemble_picker_updates_selection_and_button(self, qapp, monkeypatch):
+        cell = GridCell(self.SCENARIOS, self.QUANTITIES,
+                         manifest_entries=[FakeEntry(0, "c1_d0_vod0_voc0", 0, 0, 0, 0),
+                                           FakeEntry(1, "c1_d0_vod0_voc1", 0, 0, 0, 1)])
+        cell._set_cell_type("ensemble")
+        received = []
+        cell.ensemble_changed.connect(lambda c, indices, stat: received.append(indices))
+
+        monkeypatch.setattr(
+            "views.EnsemblePickerDialog.exec_",
+            lambda self: (self.list_widget.item(0).setCheckState(QtCore.Qt.Checked),
+                          QtWidgets.QDialog.Accepted)[1],
+        )
+        cell._open_ensemble_picker()
+        assert received == [[0]]
+        assert cell.ensemble_select_button.text() == "1 scenario selected…"
+
+    def test_ensemble_picker_cancel_does_not_change_selection(self, qapp, monkeypatch):
+        cell = GridCell(self.SCENARIOS, self.QUANTITIES,
+                         manifest_entries=[FakeEntry(0, "c1_d0_vod0_voc0", 0, 0, 0, 0)])
+        cell._set_cell_type("ensemble")
+        received = []
+        cell.ensemble_changed.connect(lambda c, indices, stat: received.append(indices))
+        monkeypatch.setattr("views.EnsemblePickerDialog.exec_", lambda self: QtWidgets.QDialog.Rejected)
+        cell._open_ensemble_picker()
+        assert received == []
+        assert cell.ensemble_case_indices == []
+
+
+class TestEnsemblePickerDialog:
+    ENTRIES = [
+        FakeEntry(0, "c1_d0_vod0_voc0", candles=0, door=0, vod=0, voc=0),
+        FakeEntry(1, "c1_d0_vod0_voc1", candles=0, door=0, vod=0, voc=1),
+        FakeEntry(2, "c1_d1_vod0_voc0", candles=0, door=1, vod=0, voc=0),
+        FakeEntry(3, "c2_d0_vod1_voc0", candles=1, door=0, vod=1, voc=0),
+    ]
+
+    def test_initial_selection_is_pre_checked(self, qapp):
+        from views import EnsemblePickerDialog
+        dialog = EnsemblePickerDialog(self.ENTRIES, initial_selection=[1, 3])
+        assert sorted(dialog.selected_case_indices()) == [1, 3]
+
+    def test_select_all_and_none(self, qapp):
+        from views import EnsemblePickerDialog
+        dialog = EnsemblePickerDialog(self.ENTRIES, initial_selection=[])
+        dialog._set_all(QtCore.Qt.Checked)
+        assert sorted(dialog.selected_case_indices()) == [0, 1, 2, 3]
+        dialog._set_all(QtCore.Qt.Unchecked)
+        assert dialog.selected_case_indices() == []
+
+    def test_factor_filter_checks_only_matching_entries(self, qapp):
+        from views import EnsemblePickerDialog
+        dialog = EnsemblePickerDialog(self.ENTRIES, initial_selection=[])
+        dialog._apply_filter("door", 1)
+        assert dialog.selected_case_indices() == [2]
+
+    def test_factor_filter_is_additive_not_exclusive(self, qapp):
+        """Applying a second filter should add to, not replace, the first
+        filter's checked entries -- a user building "all vod=open OR
+        candles=2" incrementally, not just the last filter clicked."""
+        from views import EnsemblePickerDialog
+        dialog = EnsemblePickerDialog(self.ENTRIES, initial_selection=[])
+        dialog._apply_filter("door", 1)   # -> {2}
+        dialog._apply_filter("candles", 1)  # -> {2, 3}
+        assert sorted(dialog.selected_case_indices()) == [2, 3]
+
+    def test_empty_manifest_entries_produces_no_crash(self, qapp):
+        from views import EnsemblePickerDialog
+        dialog = EnsemblePickerDialog([], initial_selection=[])
+        assert dialog.selected_case_indices() == []
 
 
 class TestViewGrid:
