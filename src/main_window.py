@@ -26,7 +26,7 @@ import numpy as np
 from PyQt5 import QtCore, QtGui, QtWidgets
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
-from config import DEFAULT_CANDLES, DEFAULT_DOOR, DEFAULT_VOD, DEFAULT_VOC, QUANTITY_DISPLAY
+from config import DEFAULT_CANDLES, DEFAULT_DOOR, DEFAULT_VOD, DEFAULT_VOC, QUANTITY_DISPLAY, ISOTHERM_LEVELS
 from theme import THEMES, build_qss
 from widgets import ToggleGroup, CollapsibleSection, TimelineWidget
 from simulation_controller import SimulationController
@@ -228,6 +228,15 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.link_clim_action.triggered.connect(self._set_link_clim)
         view_menu.addAction(self.link_clim_action)
+
+        self.isotherms_action = QtWidgets.QAction("Isotherm overlay", self, checkable=True)
+        self.isotherms_action.setToolTip(
+            "Draw contour lines at fixed hazard-band thresholds (60/100/300 °C) "
+            "on every visible cell. Redraws each frame instead of blitting while "
+            "on, so playback is slightly heavier with this enabled."
+        )
+        self.isotherms_action.triggered.connect(self._set_isotherms_enabled)
+        view_menu.addAction(self.isotherms_action)
 
         fullscreen_action = QtWidgets.QAction("Toggle Fullscreen\tF11", self)
         fullscreen_action.triggered.connect(self._toggle_fullscreen)
@@ -623,7 +632,60 @@ class MainWindow(QtWidgets.QMainWindow):
         self.temp_slider.setValue(display['slider_default'])
 
         self.view_grid.active_view().set_colorbar_label(f"{display['label']} ({display['unit']})")
+        self._apply_isotherm_state(self.view_grid.active_cell())  # levels are quantity-specific
         self._apply_link_clim()
+
+    def _extent_for(self, case_index: int, quantity_key) -> tuple:
+        """Physical (x0, x1, z0, z1) for a (scenario, quantity), or None if
+        unavailable (e.g. a demo-mode store with no real .smv, or a
+        genuine parse failure) -- init_plot()/imshow() both accept None
+        and fall back to pixel-index axes, so this never has to be a hard
+        error for the probe/isotherm features to at least not crash.
+        Fixed at cell-view-creation time (M2.6): a slice-type cell's later
+        scenario changes don't re-fetch/rebind extent, since matplotlib
+        has no in-place way to change an already-plotted image's extent
+        without recreating the artist, and every scenario in this dataset
+        shares one fixed room footprint (verified in M2.1/M2.3's work) --
+        documented simplification, not an oversight, for the case a future
+        dataset has per-scenario geometry."""
+        try:
+            extent = self.controller.store.get_extent(case_index, quantity_key)
+        except Exception as e:  # noqa: BLE001 - geometry is a nice-to-have, never fatal
+            logger.warning("could not fetch extent for case=%s key=%s: %s", case_index, quantity_key, e)
+            return None
+        return tuple(extent) if extent is not None else None
+
+    def _setup_cell_probe_and_isotherms(self, cell):
+        """Wire the cursor probe and sync isotherm state (M2.6) -- call
+        once per view *instance*, right after its one-time init_plot(),
+        not on every scenario/quantity redraw (the callback/levels don't
+        need re-registering just because the displayed data changed)."""
+        cell.view.enable_probe(lambda x, z, v, c=cell: self._on_cell_probe(c, x, z, v))
+        self._apply_isotherm_state(cell)
+
+    def _on_cell_probe(self, cell, x, z, value):
+        """Cursor probe callback (M2.6.1): x/z are physical meters, value
+        is the displayed quantity's reading at that point -- shown in the
+        status bar rather than a floating tooltip, consistent with how
+        _on_time_changed already reports "t = …s" there."""
+        if x is None:
+            if not self.time_controller.is_playing():
+                self.statusBar().showMessage("Ready.")
+            return
+        display = QUANTITY_DISPLAY.get(cell.quantity_key.quantity if cell.quantity_key else None)
+        unit = display['unit'] if display else ""
+        value_text = f"{value:.1f}{unit}" if value is not None else "—"
+        self.statusBar().showMessage(f"x = {x:.3f} m, z = {z:.3f} m, value = {value_text}")
+
+    def _apply_isotherm_state(self, cell):
+        """Sync one cell's isotherm overlay to the global View-menu toggle
+        and its own quantity's default levels (config.ISOTHERM_LEVELS) --
+        called for every cell whenever the toggle changes, and once for
+        each cell right after its view is first initialized."""
+        quantity = cell.quantity_key.quantity if cell.quantity_key else None
+        levels = ISOTHERM_LEVELS.get(quantity, [])
+        cell.view.set_isotherm_levels(levels)
+        cell.view.set_isotherms_enabled(getattr(self, "_isotherms_enabled", False))
 
     def _init_cell_view(self, cell) -> int:
         """Fetch data for `cell`'s current (case_index, quantity_key) and
@@ -649,7 +711,9 @@ class MainWindow(QtWidgets.QMainWindow):
             vmin=display['vmin'],
             vmax=vmax,
             colorbar_label=f"{display['label']} ({display['unit']})",
+            extent=self._extent_for(cell.case_index, cell.quantity_key),
         )
+        self._setup_cell_probe_and_isotherms(cell)
         return data.shape[0]
 
     def _init_plot(self):
@@ -900,6 +964,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self._link_clim = checked
         self._apply_link_clim()
 
+    def _set_isotherms_enabled(self, checked: bool):
+        """View -> Isotherm overlay toggle (M2.6.2). Applies to every
+        visible cell, not just the active one -- unlike clim/colormap
+        (M2.2's "active cell only" design decision), an isotherm overlay
+        is a read-aid a user comparing several cells would want
+        consistently applied across all of them, not a per-cell data-scale
+        choice tied to one cell's own range."""
+        self._isotherms_enabled = checked
+        for cell in self.view_grid.visible_cells():
+            self._apply_isotherm_state(cell)
+        if not self.time_controller.is_playing():
+            self._on_time_changed(self.time_controller.index)
+
     def _apply_link_clim(self):
         """When linked, every visible *slice-type* cell showing the same
         quantity as at least one other visible slice-type cell shares that
@@ -1071,6 +1148,7 @@ class MainWindow(QtWidgets.QMainWindow):
         cell.view.set_cmap(display['cmap'])
         cell.view.set_clim(display['vmin'], display['slider_default'])
         cell.view.set_colorbar_label(f"{display['label']} ({display['unit']})")
+        self._apply_isotherm_state(cell)  # levels are quantity-specific; quantity may have just changed
         index = min(self.time_controller.index, data.shape[0] - 1)
         cell.view.show_frame(data[index])
 
@@ -1165,10 +1243,13 @@ class MainWindow(QtWidgets.QMainWindow):
         frame = DifferenceView.compute_diff(data_a, data_b, index)
         if cell.view.heatmap is None:
             cell.view.init_plot(frame, interpolation=self.current_interpolation,
-                                 vmin=vmin, vmax=vmax, colorbar_label=colorbar_label)
+                                 vmin=vmin, vmax=vmax, colorbar_label=colorbar_label,
+                                 extent=self._extent_for(cell.case_index_a, key))
+            self._setup_cell_probe_and_isotherms(cell)
         else:
             cell.view.set_clim(vmin, vmax)
             cell.view.set_colorbar_label(colorbar_label)
+            self._apply_isotherm_state(cell)  # quantity may have just changed
             cell.view.show_frame(frame)
 
     def _render_ensemble_cell(self, cell):
@@ -1192,11 +1273,14 @@ class MainWindow(QtWidgets.QMainWindow):
         frame = EnsembleView.compute_composite(arrays, index, stat)
         if cell.view.heatmap is None:
             cell.view.init_plot(frame, cmap=cmap, interpolation=self.current_interpolation,
-                                 vmin=vmin, vmax=vmax, colorbar_label=colorbar_label)
+                                 vmin=vmin, vmax=vmax, colorbar_label=colorbar_label,
+                                 extent=self._extent_for(cell.ensemble_case_indices[0], key))
+            self._setup_cell_probe_and_isotherms(cell)
         else:
             cell.view.set_cmap(cmap)
             cell.view.set_clim(vmin, vmax)
             cell.view.set_colorbar_label(colorbar_label)
+            self._apply_isotherm_state(cell)  # quantity may have just changed
             cell.view.show_frame(frame)
 
     def _on_cell_difference_scenarios_changed(self, cell, case_a: int, case_b: int):

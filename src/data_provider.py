@@ -47,6 +47,7 @@ class ScenarioSource(Protocol):
 
     def get(self, scenario_index: int, key=None) -> np.ndarray: ...
     def is_cached(self, scenario_index: int, key=None) -> bool: ...
+    def get_extent(self, scenario_index: int, key=None) -> list: ...
 
 
 @dataclass
@@ -109,6 +110,11 @@ class DemoScenarioStore:
         # "known defects" convention) while touching this Protocol for
         # M2.1's key-aware interface.
         return scenario_index in self._cache
+
+    def get_extent(self, scenario_index: int, key=None) -> list:
+        # Synthetic demo heatmaps are unitless; expose a stable room-like
+        # footprint so cursor probing still produces readable coordinates.
+        return [0.0, 1.0, 0.0, 0.48]
 
 
 def load_simulation_data(cache_size: int = SCENARIO_CACHE_SIZE) -> SimulationData:

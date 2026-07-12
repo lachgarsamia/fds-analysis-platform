@@ -354,8 +354,7 @@ class Slice:
 
     def mapData(self, meshes: MeshCollection):
 
-        cm = meshes.meshes[self.mesh_id]
-        self.sm = cm.extractSliceMesh(self.norm_direction, self.norm_offset)
+        self.mapMesh(meshes)
 
         # print(self.norm_direction, self.norm_offset)
 
@@ -372,6 +371,10 @@ class Slice:
                 self.sd[i] = np.reshape(self.data_raw[i], (self.sm.n[1], self.sm.n[0]))[1:,1:]
             else:
                 self.sd[i] = np.reshape(self.data_raw[i], (self.sm.n[1], self.sm.n[0]))
+
+    def mapMesh(self, meshes: MeshCollection):
+        cm = meshes.meshes[self.mesh_id]
+        self.sm = cm.extractSliceMesh(self.norm_direction, self.norm_offset)
 
 
     def infoString(self):
@@ -454,6 +457,46 @@ def combineSlices(slices):
         mask[  off2:off2+cn2, off1:off1+cn1] = False
 
     return mesh, [min_x1, max_x1, min_x2, max_x2], data, mask, slices[0].times
+
+
+def combineSliceGeometry(slices):
+    """Combine only the coordinate mesh/extent/mask for already-mapped slices."""
+    min_x1 = +1e18
+    max_x1 = -1e18
+    min_x2 = +1e18
+    max_x2 = -1e18
+
+    for s in slices:
+        min_x1 = min(s.sm.extent[0], min_x1)
+        max_x1 = max(s.sm.extent[1], max_x1)
+        min_x2 = min(s.sm.extent[2], min_x2)
+        max_x2 = max(s.sm.extent[3], max_x2)
+
+    dx1 = (slices[0].sm.extent[1] - slices[0].sm.extent[0]) / (slices[0].sm.n[0] - 1)
+    dx2 = (slices[0].sm.extent[3] - slices[0].sm.extent[2]) / (slices[0].sm.n[1] - 1)
+
+    n1 = int((max_x1 - min_x1) / dx1)
+    n2 = int((max_x2 - min_x2) / dx2)
+
+    if not slices[0].centered:
+        n1 += 1
+        n2 += 1
+
+    x1 = np.linspace(min_x1, max_x1, n1)
+    x2 = np.linspace(min_x2, max_x2, n2)
+
+    mesh = np.meshgrid(x2, x1)
+    mask = np.zeros((n2, n1))
+    mask[:] = True
+
+    for s in slices:
+        off1 = int((s.sm.extent[0] - min_x1) / dx1)
+        off2 = int((s.sm.extent[2] - min_x2) / dx2)
+        cn1 = s.sm.n[0] - 1 if s.centered else s.sm.n[0]
+        cn2 = s.sm.n[1] - 1 if s.centered else s.sm.n[1]
+        mask[off2:off2 + cn2, off1:off1 + cn1] = False
+
+    return mesh, [min_x1, max_x1, min_x2, max_x2], mask
 
 def readSliceInfos(filename):
     import mmap
@@ -549,6 +592,32 @@ def readSlice(root_dir, direction, offset, quantity, data_only=False):
     if data_only:
         return data
     return mesh, extent, data, mask, times
+
+
+def readSliceGeometry(root_dir, direction, offset, quantity):
+    """Read only the coordinate mesh/extent/mask for a slice.
+
+    This parses the .smv mesh/slice metadata but deliberately avoids reading
+    the binary .sf time-series payload. Used by the UI probe/isotherm features
+    to map array pixels back to physical coordinates without paying a second
+    full data-parse cost.
+    """
+    smv_fn = scanDirectory(root_dir)
+    sc = readSliceInfos(os.path.join(root_dir, smv_fn))
+    meshes = readMeshes(os.path.join(root_dir, smv_fn))
+    sids = findSlices(sc.slices, meshes, quantity, direction, offset)
+
+    slices = []
+    for sid in sids:
+        sid.mapMesh(meshes)
+        slices.append(sid)
+
+    if len(slices) == 0:
+        logger.warning("no matching slice geometry found for quantity=%s, direction=%s, offset=%s in %s",
+                        quantity, direction, offset, root_dir)
+        return None
+
+    return combineSliceGeometry(slices)
 
 
 def readDataOnly(root_dir, direction, offset, quantity):

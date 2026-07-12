@@ -1225,3 +1225,150 @@ class TestIntegration:
         assert cells[1].view.heatmap.get_clim() == diff_clim_before, \
             "linking must not touch a difference cell's own symmetric clim"
         window.close()
+
+    # ------------------------------------------------ M2.6 probe/isotherms
+    def test_active_cell_gets_a_real_extent(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        assert window.view_grid.active_view()._extent == (0.0, 1.0, 0.0, 0.48)
+        window.close()
+
+    def test_demo_mode_still_gets_a_stable_extent(self, qapp, monkeypatch):
+        monkeypatch.setattr("data_provider.list_scenario_folders", lambda *a, **kw: [])
+        sim_data = load_simulation_data()
+        assert sim_data.is_demo
+        window = MainWindow(sim_data)
+        assert window.view_grid.active_view()._extent is not None
+        window.close()
+
+    def test_probe_reports_physical_coordinates_and_value_in_status_bar(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        cell = window.view_grid.active_cell()
+
+        class FakeEvent:
+            inaxes = cell.view.ax
+            xdata = 0.5
+            ydata = 0.24
+
+        cell.view._on_mouse_move(FakeEvent())
+        message = window.statusBar().currentMessage()
+        assert "x = 0.500 m" in message
+        assert "z = 0.240 m" in message
+        assert "°C" in message
+        window.close()
+
+    def test_probe_resets_status_bar_when_mouse_leaves(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        cell = window.view_grid.active_cell()
+
+        class FakeEventOutside:
+            inaxes = None
+            xdata = None
+            ydata = None
+
+        cell.view._on_mouse_move(FakeEventOutside())
+        assert window.statusBar().currentMessage() == "Ready."
+        window.close()
+
+    def test_probe_wired_for_every_visible_cell_including_newly_grown_ones(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window._set_grid_layout("2x2")
+        for cell in window.view_grid.visible_cells():
+            assert cell.view._motion_cid is not None
+            assert cell.view._extent == (0.0, 1.0, 0.0, 0.48)
+        window.close()
+
+    def test_isotherm_toggle_applies_to_every_visible_cell(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window._set_grid_layout("2x2")
+        cells = window.view_grid.visible_cells()
+
+        window.isotherms_action.setChecked(True)
+        window._set_isotherms_enabled(True)
+
+        for cell in cells:
+            assert cell.view.isotherms_enabled
+        window.close()
+
+    def test_isotherm_toggle_off_clears_every_cell(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window._set_grid_layout("1x2")
+        window.isotherms_action.setChecked(True)
+        window._set_isotherms_enabled(True)
+
+        window.isotherms_action.setChecked(False)
+        window._set_isotherms_enabled(False)
+
+        for cell in window.view_grid.visible_cells():
+            assert not cell.view.isotherms_enabled
+            assert cell.view._contour_artist is None
+        window.close()
+
+    def test_isotherm_redraws_on_playback_tick(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window.isotherms_action.setChecked(True)
+        window._set_isotherms_enabled(True)
+        cell = window.view_grid.active_cell()
+        first_artist = cell.view._contour_artist
+
+        window.time_controller.seek(200)
+        qapp.processEvents()
+
+        assert cell.view._contour_artist is not None
+        assert cell.view._contour_artist is not first_artist
+        window.close()
+
+    def test_isotherm_off_state_does_not_touch_contour_artist(self, qapp):
+        """DoD: off-state performance/behavior unchanged -- confirms no
+        contour work happens at all while the toggle is off, not just that
+        it's invisible."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        assert not window.isotherms_action.isChecked()
+        cell = window.view_grid.active_cell()
+
+        window.time_controller.seek(150)
+        qapp.processEvents()
+
+        assert cell.view._contour_artist is None
+        window.close()
+
+    def test_switching_quantity_updates_isotherm_levels(self, qapp):
+        """TEMPERATURE has default hazard-band levels; VELOCITY doesn't
+        (config.ISOTHERM_LEVELS) -- switching quantity on an isotherm-
+        enabled active cell must pick that up, not keep stale levels."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window.isotherms_action.setChecked(True)
+        window._set_isotherms_enabled(True)
+        cell = window.view_grid.active_cell()
+        assert cell.view._isotherm_levels == [60, 100, 300]
+
+        window.quantity_combo.setCurrentIndex(1)  # switch to Air speed (VELOCITY)
+
+        assert cell.view._isotherm_levels == []
+        window.close()
