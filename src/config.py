@@ -50,3 +50,15 @@ QUANTITY_DISPLAY = {
         'slider_min': 1, 'slider_max': 10, 'slider_default': 2,
     },
 }
+
+# Default isotherm/contour levels per quantity (M2.6.2), keyed the same way
+# as QUANTITY_DISPLAY. TEMPERATURE's are the M1.3s.4 hazard-band proposal
+# (docs/spike-parser-validation.md §4: <60°C / 60-300°C / >300°C as general
+# fire-safety reference points, not derived from this study's own data --
+# pending domain-expert review per that spike's own caveat). No default is
+# defined for VELOCITY -- the roadmap's hazard-band example is a
+# temperature concept; toggling the overlay on for a VELOCITY-quantity
+# cell enables the mechanism but has no levels to draw until one is added.
+ISOTHERM_LEVELS = {
+    'TEMPERATURE': [60, 100, 300],
+}
