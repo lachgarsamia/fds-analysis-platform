@@ -35,7 +35,7 @@ from data_provider import SimulationData
 from schematic import SchematicWidget, flame_icon, door_icon, vent_icon, resolve_room_extent
 from export import AnimationExporter, ffmpeg_available
 from slice_key import SliceInfo, DEFAULT_SLICE_KEY, available_slices
-from views import ViewGrid
+from views import ViewGrid, DifferenceView, EnsembleView
 
 logger = logging.getLogger(__name__)
 
@@ -487,11 +487,16 @@ class MainWindow(QtWidgets.QMainWindow):
         # M2.2.2: single-view mode is just the grid at its 1x1 default --
         # not a separately-maintained code path, so it's pixel-equivalent
         # to pre-refactor by construction.
-        self.view_grid = ViewGrid(self._scenario_options(), self._quantity_options(), panel)
+        self.view_grid = ViewGrid(self._scenario_options(), self._quantity_options(),
+                                   self.sim_data.manifest, panel)
         self.view_grid.cell_created.connect(self._on_cell_created)
         self.view_grid.active_cell_changed.connect(self._on_active_cell_changed)
         self.view_grid.cell_scenario_selected.connect(self._on_cell_scenario_selected)
         self.view_grid.cell_quantity_selected.connect(self._on_cell_quantity_selected)
+        # M2.3.3: cell-type switching (slice/difference/ensemble).
+        self.view_grid.cell_type_changed.connect(self._on_cell_type_changed)
+        self.view_grid.cell_difference_scenarios_changed.connect(self._on_cell_difference_scenarios_changed)
+        self.view_grid.cell_ensemble_changed.connect(self._on_cell_ensemble_changed)
 
         # The toolbar (pan/zoom/save) stays bound to the first cell's canvas
         # for its whole lifetime -- matplotlib's NavigationToolbar2QT isn't
@@ -653,6 +658,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self.view_grid.active_view().show_frame(frame)
 
     # -------------------------------------------------------- signal slots
+    def _frame_for_cell(self, cell, index: int):
+        """The frame `cell` should show at timeline `index`, dispatched by
+        cell_type (M2.3.3): a plain slice, an A-B difference, or an
+        ensemble composite. Returns None for an ensemble cell with no
+        scenarios selected yet (nothing to show)."""
+        if cell.cell_type == "slice":
+            return self.controller.store.get(cell.case_index, cell.quantity_key)[index]
+        if cell.cell_type == "difference":
+            data_a = self.controller.store.get(cell.case_index_a, cell.quantity_key)
+            data_b = self.controller.store.get(cell.case_index_b, cell.quantity_key)
+            idx = min(index, data_a.shape[0] - 1, data_b.shape[0] - 1)
+            return DifferenceView.compute_diff(data_a, data_b, idx)
+        if cell.cell_type == "ensemble":
+            if not cell.ensemble_case_indices:
+                return None
+            arrays = [self.controller.store.get(ci, cell.quantity_key) for ci in cell.ensemble_case_indices]
+            idx = min(index, min(a.shape[0] for a in arrays) - 1)
+            return EnsembleView.compute_composite(arrays, idx, cell.ensemble_stat)
+        return None
+
     def _on_time_changed(self, index: int):
         """TimeController's tick/seek signal (M1.4.1): pull the frame for
         *every visible grid cell* at `index` and redraw each (M2.2.3 --
@@ -662,12 +687,12 @@ class MainWindow(QtWidgets.QMainWindow):
         GUI thread on every tick, for however many cells are visible."""
         for cell in self.view_grid.visible_cells():
             try:
-                frame = self.controller.store.get(cell.case_index, cell.quantity_key)[index]
+                frame = self._frame_for_cell(cell, index)
             except Exception as e:  # noqa: BLE001 - one bad cell must not blank the rest
-                logger.warning("failed to fetch frame for grid cell (case=%s, key=%s): %s",
-                                cell.case_index, cell.quantity_key, e)
+                logger.warning("failed to fetch frame for grid cell (type=%s): %s", cell.cell_type, e)
                 continue
-            cell.view.show_frame(frame)
+            if frame is not None:
+                cell.view.show_frame(frame)
         self.timeline.set_index(index)
         current_time = index / self.time_controller.timesteps_per_second
         self.statusBar().showMessage(f"t = {current_time:.1f} s", 2000)
@@ -849,16 +874,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_link_clim()
 
     def _apply_link_clim(self):
-        """When linked, every visible cell showing the *same quantity* as
-        at least one other visible cell shares that quantity's data max as
-        a common vmax (mixing vmax across different quantities wouldn't be
-        physically meaningful, since they're different units) -- computed
-        fresh each time this is called, not cached, since it only runs on
-        discrete structural changes (layout/scenario/quantity changes), not
-        every playback tick. A no-op if linking is off or nothing's visible."""
+        """When linked, every visible *slice-type* cell showing the same
+        quantity as at least one other visible slice-type cell shares that
+        quantity's data max as a common vmax (mixing vmax across different
+        quantities wouldn't be physically meaningful, since they're
+        different units) -- computed fresh each time this is called, not
+        cached, since it only runs on discrete structural changes (layout/
+        scenario/quantity changes), not every playback tick. A no-op if
+        linking is off or nothing's visible.
+
+        Difference/ensemble cells (M2.3.3) are deliberately excluded: their
+        own clim conventions (symmetric-around-zero for a diff, sigma-scale
+        for an ensemble std) don't share "biggest absolute value across
+        cells" as a meaningful notion the way two slice-type cells of the
+        same quantity do -- linking was designed and asked for in the
+        context of comparing scenarios of one quantity, not comparing a
+        diff/ensemble cell's fundamentally different scale to a plain
+        slice's."""
         if not getattr(self, "_link_clim", False):
             return
-        cells = self.view_grid.visible_cells()
+        cells = [c for c in self.view_grid.visible_cells() if c.cell_type == "slice"]
         if not cells:
             return
         by_quantity = {}
@@ -1003,12 +1038,104 @@ class MainWindow(QtWidgets.QMainWindow):
             self._load_cell(cell, case_index, cell.quantity_key)
 
     def _on_cell_quantity_selected(self, cell, key):
-        if cell is self.view_grid.active_cell():
-            idx = next((i for i, info in enumerate(self.quantity_infos) if info.key == key), None)
-            if idx is not None:
-                self.quantity_combo.setCurrentIndex(idx)  # triggers _on_quantity_changed
-        else:
+        """A cell's own quantity combo changed. For a slice-type *active*
+        cell this still routes through the control panel's own quantity
+        combo (unchanged M2.1 behavior). For difference/ensemble cells,
+        or any non-active slice cell, the cell's own combo directly
+        controls its own quantity_key regardless of active status -- the
+        control panel's quantity combo isn't a meaningful "the" quantity
+        for a two-scenario diff or N-scenario ensemble, so it's left
+        decoupled from those cell types rather than overloading it."""
+        if cell.cell_type == "slice":
+            if cell is self.view_grid.active_cell():
+                idx = next((i for i, info in enumerate(self.quantity_infos) if info.key == key), None)
+                if idx is not None:
+                    self.quantity_combo.setCurrentIndex(idx)  # triggers _on_quantity_changed
+                return
             self._load_cell(cell, cell.case_index, key)
+        elif cell.cell_type == "difference":
+            cell.quantity_key = key
+            self._render_difference_cell(cell)
+            self._apply_link_clim()
+        elif cell.cell_type == "ensemble":
+            cell.quantity_key = key
+            self._render_ensemble_cell(cell)
+            self._apply_link_clim()
+
+    # ---------------------------------------------- difference/ensemble (M2.3)
+    def _on_cell_type_changed(self, cell, new_type: str):
+        """A grid cell's type changed via its right-click context menu
+        (M2.3.3). Renders the cell's new view immediately from whatever
+        state it already carries (GridCell.__init__ defaults
+        case_index_a/case_index_b to sensible scenarios; a fresh ensemble
+        cell starts with an empty selection and stays blank until the user
+        picks scenarios via the picker dialog -- see _on_cell_ensemble_changed)."""
+        if new_type == "slice":
+            self._init_cell_view(cell)
+        elif new_type == "difference":
+            self._render_difference_cell(cell)
+        elif new_type == "ensemble" and cell.ensemble_case_indices:
+            self._render_ensemble_cell(cell)
+        self._apply_link_clim()
+
+    def _render_difference_cell(self, cell):
+        """(Re)renders a difference-type cell for its current
+        case_index_a/case_index_b/quantity_key. Synchronous -- same
+        deliberate scope decision as _load_cell's non-active-cell combo
+        changes (no prefetch orchestration for the two-scenario case; see
+        _load_cell's docstring, which applies equally here)."""
+        key = cell.quantity_key
+        data_a = self.controller.store.get(cell.case_index_a, key)
+        data_b = self.controller.store.get(cell.case_index_b, key)
+        vmin, vmax = cell.view.symmetric_clim(
+            data_a, data_b, cache_key=(cell.case_index_a, cell.case_index_b, key))
+        display = QUANTITY_DISPLAY[key.quantity]
+        colorbar_label = f"Δ{display['label']} ({display['unit']})"
+        index = min(self.time_controller.index, data_a.shape[0] - 1, data_b.shape[0] - 1)
+        frame = DifferenceView.compute_diff(data_a, data_b, index)
+        if cell.view.heatmap is None:
+            cell.view.init_plot(frame, interpolation=self.current_interpolation,
+                                 vmin=vmin, vmax=vmax, colorbar_label=colorbar_label)
+        else:
+            cell.view.set_clim(vmin, vmax)
+            cell.view.set_colorbar_label(colorbar_label)
+            cell.view.show_frame(frame)
+
+    def _render_ensemble_cell(self, cell):
+        """(Re)renders an ensemble-type cell for its current
+        ensemble_case_indices/ensemble_stat/quantity_key. No-op if nothing
+        is selected yet."""
+        if not cell.ensemble_case_indices:
+            return
+        key = cell.quantity_key
+        arrays = [self.controller.store.get(ci, key) for ci in cell.ensemble_case_indices]
+        display = QUANTITY_DISPLAY[key.quantity]
+        stat = cell.ensemble_stat
+        cmap = EnsembleView.cmap_for(stat, display['cmap'])
+        colorbar_label = EnsembleView.label_for(stat, display['label'], display['unit'])
+        if stat == "std":
+            vmin = 0.0
+            vmax = cell.view.std_vmax(arrays, cache_key=(tuple(cell.ensemble_case_indices), key))
+        else:
+            vmin, vmax = display['vmin'], display['slider_default']
+        index = min(self.time_controller.index, min(a.shape[0] for a in arrays) - 1)
+        frame = EnsembleView.compute_composite(arrays, index, stat)
+        if cell.view.heatmap is None:
+            cell.view.init_plot(frame, cmap=cmap, interpolation=self.current_interpolation,
+                                 vmin=vmin, vmax=vmax, colorbar_label=colorbar_label)
+        else:
+            cell.view.set_cmap(cmap)
+            cell.view.set_clim(vmin, vmax)
+            cell.view.set_colorbar_label(colorbar_label)
+            cell.view.show_frame(frame)
+
+    def _on_cell_difference_scenarios_changed(self, cell, case_a: int, case_b: int):
+        self._render_difference_cell(cell)
+        self._apply_link_clim()
+
+    def _on_cell_ensemble_changed(self, cell, case_indices: list, stat: str):
+        self._render_ensemble_cell(cell)
+        self._apply_link_clim()
 
     def _on_temp_changed(self, value):
         display = QUANTITY_DISPLAY.get(self.current_quantity_key.quantity, QUANTITY_DISPLAY[DEFAULT_SLICE_KEY.quantity])

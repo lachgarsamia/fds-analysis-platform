@@ -1012,3 +1012,135 @@ class TestIntegration:
 
         assert window.view_grid.visible_cells()[3].case_index == 7
         window.close()
+
+    # ------------------------------------------ M2.3 difference/ensemble
+    def test_cell_switched_to_difference_renders_immediately(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window._set_grid_layout("1x2")
+        cell = window.view_grid.visible_cells()[1]
+
+        cell._set_cell_type("difference")
+
+        from views import DifferenceView
+        assert isinstance(cell.view, DifferenceView)
+        assert cell.view.heatmap is not None
+        vmin, vmax = cell.view.heatmap.get_clim()
+        assert vmin == -vmax, "difference cell must render with a symmetric clim immediately"
+        window.close()
+
+    def test_difference_cell_scenario_change_recomputes_diff(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window._set_grid_layout("1x2")
+        cell = window.view_grid.visible_cells()[1]
+        cell._set_cell_type("difference")
+        window.time_controller.seek(150)  # away from t=0, where scenarios start near-identical
+        qapp.processEvents()
+
+        before = cell.view.heatmap.get_array().copy()
+        cell.scenario_combo_a.setCurrentIndex(2)
+        after = cell.view.heatmap.get_array()
+
+        assert not (before == after).all(), "changing scenario A must recompute and redraw the diff"
+        expected = window.controller.store.get(cell.case_index_a, cell.quantity_key)[150] - \
+            window.controller.store.get(cell.case_index_b, cell.quantity_key)[150]
+        assert (after == expected).all()
+        window.close()
+
+    def test_cell_switched_to_ensemble_stays_blank_until_scenarios_picked(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window._set_grid_layout("1x2")
+        cell = window.view_grid.visible_cells()[1]
+
+        cell._set_cell_type("ensemble")
+
+        from views import EnsembleView
+        assert isinstance(cell.view, EnsembleView)
+        assert cell.view.heatmap is None, "an ensemble cell with nothing selected must not render yet"
+        window.close()
+
+    def test_ensemble_selection_renders_composite(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window._set_grid_layout("1x2")
+        cell = window.view_grid.visible_cells()[1]
+        cell._set_cell_type("ensemble")
+
+        cell.ensemble_case_indices = [0, 6, 12, 18]
+        cell.ensemble_changed.emit(cell, cell.ensemble_case_indices, cell.ensemble_stat)
+
+        assert cell.view.heatmap is not None
+        vmin, vmax = cell.view.heatmap.get_clim()
+        assert vmin == 20.0, "mean-stat ensemble should keep TEMPERATURE's own vmin (ambient)"
+        window.close()
+
+    def test_ensemble_std_stat_uses_zero_floor_and_sigma_label(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window._set_grid_layout("1x2")
+        cell = window.view_grid.visible_cells()[1]
+        cell._set_cell_type("ensemble")
+        cell.ensemble_case_indices = [0, 6, 12, 18]
+        cell.ensemble_changed.emit(cell, cell.ensemble_case_indices, "mean")
+
+        cell.ensemble_stat = "std"
+        cell.stat_combo.setCurrentIndex(cell.stat_combo.findText("Std"))
+
+        vmin, vmax = cell.view.heatmap.get_clim()
+        assert vmin == 0.0
+        assert vmax > 0.0
+        assert "σ" in cell.view.colorbar.ax.get_ylabel()
+        window.close()
+
+    def test_playback_tick_updates_difference_and_ensemble_cells(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window._set_grid_layout("2x2")
+        cells = window.view_grid.visible_cells()
+        cells[1]._set_cell_type("difference")
+        cells[2]._set_cell_type("ensemble")
+        cells[2].ensemble_case_indices = [0, 6, 12, 18]
+        cells[2].ensemble_changed.emit(cells[2], cells[2].ensemble_case_indices, "mean")
+
+        before = [c.view.heatmap.get_array().copy() for c in cells]
+        window.time_controller.seek(200)
+        qapp.processEvents()
+        after = [c.view.heatmap.get_array() for c in cells]
+
+        for i, (b, a) in enumerate(zip(before, after)):
+            assert not (b == a).all(), f"cell {i} (type={cells[i].cell_type}) must redraw on seek"
+        window.close()
+
+    def test_link_clim_ignores_difference_and_ensemble_cells(self, qapp):
+        """Linking is defined for slice-type cells sharing a quantity;
+        difference/ensemble cells have their own clim conventions (see
+        _apply_link_clim's docstring) and must be left alone."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window._set_grid_layout("1x2")
+        cells = window.view_grid.visible_cells()
+        cells[1]._set_cell_type("difference")
+        diff_clim_before = cells[1].view.heatmap.get_clim()
+
+        window.link_clim_action.setChecked(True)
+        window._set_link_clim(True)
+
+        assert cells[1].view.heatmap.get_clim() == diff_clim_before, \
+            "linking must not touch a difference cell's own symmetric clim"
+        window.close()
