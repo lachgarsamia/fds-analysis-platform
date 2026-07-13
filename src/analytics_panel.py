@@ -1,10 +1,22 @@
 """Ensemble analytics dock: PCA scatter + clustering (M3.1.2).
 
-Static matplotlib -- computed once at construction from the already-loaded
-feature index, no per-frame redraw, so it never touches the playback tick
-path (_on_time_changed) at all. That's the actual mechanism behind the
-DoD's "panel doesn't degrade playback" claim, not just an assumption: this
-widget has no connection to TimeController whatsoever.
+Static matplotlib -- computed once from a feature index, no per-frame
+redraw, so it never touches the playback tick path (_on_time_changed) at
+all. That's the actual mechanism behind the DoD's "panel doesn't degrade
+playback" claim, not just an assumption: this widget has no connection to
+TimeController whatsoever.
+
+The feature index itself (build_feature_index() over all 24 scenarios) is
+NOT computed here -- it's supplied later via load_features(), computed by
+MainWindow on a background thread (_AnalyticsFeatureWorker below) and only
+once the panel is actually shown. That split exists because of a real bug
+(fixed post-3fd87cf, see main_window.py's _build_analytics_panel): building
+the feature index touches ScenarioStore for every scenario, so doing it
+eagerly at MainWindow construction silently warmed the cache for all 24
+scenarios before the window was even visible -- a startup-latency
+regression, and also the reason two prefetch/cache-miss race-condition
+regression tests started failing (their premise that a specific scenario
+starts uncached no longer held).
 """
 
 from __future__ import annotations
@@ -13,7 +25,7 @@ import matplotlib.cm as mpl_cm
 from PyQt5 import QtCore, QtWidgets
 
 from analytics.clustering import DEFAULT_N_CLUSTERS, cluster_alignment, run_clustering, run_pca
-from analytics.features import build_feature_matrix
+from analytics.features import build_feature_index, build_feature_matrix
 from widgets import MplCanvas
 
 # Cycled by a scenario's `candles` factor index so an unexpected extra
@@ -26,12 +38,18 @@ CLUSTER_CMAP_NAME = "tab10"
 class AnalyticsPanelDock(QtWidgets.QDockWidget):
     scenario_activated = QtCore.pyqtSignal(int)  # case_index, same convention as ExperimentBrowserDock
 
-    def __init__(self, features: list, parent=None):
+    def __init__(self, features: list = None, parent=None):
+        """features=None (the lazy-load path used by MainWindow) shows a
+        "Loading..." placeholder instead of plotting -- call load_features()
+        once the real feature index is ready. Passing a list plots it
+        immediately, unchanged from before (existing tests construct this
+        widget with a ready-made feature list and expect the plot done
+        synchronously; that contract is preserved)."""
         super().__init__("Ensemble Analytics", parent)
         self.setObjectName("analyticsPanelDock")
         self.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
 
-        self._features = sorted(features, key=lambda f: f.case_index)
+        self._features = sorted(features, key=lambda f: f.case_index) if features is not None else []
         self._case_indices: list = []
         self._coords = None
 
@@ -57,10 +75,20 @@ class AnalyticsPanelDock(QtWidgets.QDockWidget):
         self.setWidget(root)
 
         self.ax = self.canvas.fig.add_subplot(111)
-        self._plot()
+        if features is None:
+            self.status_label.setText("Loading ensemble analytics...")
+        else:
+            self._plot()
 
         self.canvas.mpl_connect("motion_notify_event", self._on_hover)
         self.canvas.mpl_connect("button_press_event", self._on_click)
+
+    def load_features(self, features: list):
+        """Populates a panel constructed with features=None -- MainWindow's
+        deferred/background load calls this once _AnalyticsFeatureWorker
+        finishes. Clears the "Loading..." placeholder and plots for real."""
+        self._features = sorted(features, key=lambda f: f.case_index)
+        self._plot()
 
     def _plot(self):
         matrix, case_indices = build_feature_matrix(self._features)
@@ -128,3 +156,29 @@ class AnalyticsPanelDock(QtWidgets.QDockWidget):
         case_index = self._nearest_case_index(event)
         if case_index is not None:
             self.scenario_activated.emit(case_index)
+
+
+class _AnalyticsFeatureWorker(QtCore.QThread):
+    """One-shot background computation of the ensemble feature index for
+    the analytics panel. Mirrors simulation_controller.py's
+    _PrefetchWorker: fire-and-forget, kept alive by the owner (MainWindow)
+    until its own finished_ok/error signal fires. Lives here rather than
+    in simulation_controller.py because it's UI-adjacent analytics
+    plumbing, not SimulationController's scenario-parameter/prefetch
+    domain -- see that module's own "zero Qt-widget knowledge" framing."""
+
+    finished_ok = QtCore.pyqtSignal(list)  # ScenarioFeatures list
+    error = QtCore.pyqtSignal(str)
+
+    def __init__(self, manifest, store, fps):
+        super().__init__()
+        self._manifest = manifest
+        self._store = store
+        self._fps = fps
+
+    def run(self):
+        try:
+            features = build_feature_index(self._manifest, self._store, self._fps)
+            self.finished_ok.emit(features)
+        except Exception as e:  # noqa: BLE001 - never let a worker crash silently
+            self.error.emit(f"Failed to build ensemble analytics: {e}")

@@ -8,6 +8,18 @@ from main_window import MainWindow
 from slice_key import DEFAULT_SLICE_KEY
 
 
+def _drain_workers(qapp, workers: list, timeout: float = 5.0):
+    """Pumps the event loop until a QThread worker list drains to empty
+    (or `timeout` seconds pass) -- shared by every "fire-and-forget
+    background load" path (prefetch, analytics feature index, auto-summary
+    text) so tests that need the real result, not just the fact that a
+    worker was started, can wait for it deterministically."""
+    deadline = time.perf_counter() + timeout
+    while workers and time.perf_counter() < deadline:
+        qapp.processEvents()
+        time.sleep(0.005)
+
+
 class TestIntegration:
     """Offscreen integration tests."""
 
@@ -1380,6 +1392,14 @@ class TestIntegration:
         if sim_data.is_demo:
             pytest.skip("real dataset not present")
         assert window.analytics_panel is not None
+        # Feature index is lazy-loaded on first show (see
+        # _build_analytics_panel) -- drive that trigger before asserting
+        # on the loaded content. visibilityChanged only fires meaningfully
+        # once the top-level window itself is shown.
+        window.show()
+        window.analytics_panel.raise_()
+        qapp.processEvents()
+        _drain_workers(qapp, window._analytics_workers)
         assert len(window.analytics_panel._features) == 24
         window.close()
 
@@ -1406,6 +1426,12 @@ class TestIntegration:
         if sim_data.is_demo:
             pytest.skip("real dataset not present")
         panel = window.analytics_panel
+        # Feature index is lazy-loaded on first show (see
+        # _build_analytics_panel) -- drive that trigger first.
+        window.show()
+        panel.raise_()
+        qapp.processEvents()
+        _drain_workers(qapp, window._analytics_workers)
         target_case = panel._case_indices[5]
 
         class FakeEvent:
@@ -1423,7 +1449,11 @@ class TestIntegration:
         window = MainWindow(sim_data)
         if sim_data.is_demo:
             pytest.skip("real dataset not present")
+        # Selecting a row triggers summary_texts_needed, which starts the
+        # background auto-summary load (see _build_experiment_browser) --
+        # drain it before checking the label it fills in.
         window.experiment_browser.table.selectRow(0)
+        _drain_workers(qapp, window._summary_text_workers)
         text = window.experiment_browser.summary_label.text()
         assert text.startswith("Peak ")
         assert "°C at t=" in text
