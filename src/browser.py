@@ -124,6 +124,7 @@ class ExperimentBrowserDock(QtWidgets.QDockWidget):
     open_grid_requested = QtCore.pyqtSignal(list)
     open_ensemble_requested = QtCore.pyqtSignal(list)
     export_summaries_requested = QtCore.pyqtSignal()
+    open_model_eval_requested = QtCore.pyqtSignal(list)  # M3.2.5: selected case_indices
     # Emitted once, the first time a row is selected while summary_texts is
     # still empty -- MainWindow's cue to start the background auto-summary
     # load (see set_summary_texts below and main_window.py's
@@ -133,18 +134,25 @@ class ExperimentBrowserDock(QtWidgets.QDockWidget):
     # touch the store for it before a user actually looks at a summary.
     summary_texts_needed = QtCore.pyqtSignal()
 
-    def __init__(self, summaries: list, summary_texts: dict = None, parent=None):
+    def __init__(self, summaries: list, summary_texts: dict = None, parent=None,
+                 has_predictions: bool = False):
         """summary_texts (M3.1.3): case_index -> auto-generated summary
         sentence (auto_summary.generate_summary()), shown below the table
         for whichever row is selected. None/empty means no summaries were
         computed (caller's choice, not this widget's) -- the readout
         stays blank rather than showing a placeholder that looks like a
-        missing feature."""
+        missing feature.
+        has_predictions (M3.2.5): whether MainWindow found a trained
+        model's predictions/ export. The "View model prediction" button is
+        simply absent otherwise (nobody has run ml/train.py + ml/rollout.py
+        yet), same convention as this browser's own demo-mode absence,
+        rather than a button that errors when clicked."""
         super().__init__("Experiment Browser", parent)
         self.setObjectName("experimentBrowserDock")
         self.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
         self._summary_texts = summary_texts or {}
         self._summary_texts_requested = False
+        self._has_predictions = has_predictions
 
         root = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(root)
@@ -206,6 +214,19 @@ class ExperimentBrowserDock(QtWidgets.QDockWidget):
         button_row.addWidget(self.open_grid_button)
         button_row.addWidget(self.open_ensemble_button)
         layout.addLayout(button_row)
+
+        if self._has_predictions:
+            self.open_model_eval_button = QtWidgets.QPushButton("View model prediction")
+            self.open_model_eval_button.setToolTip(
+                "Show ground truth, the trained model's prediction, and their "
+                "difference side by side for the selected (test-set) scenario"
+            )
+            self.open_model_eval_button.clicked.connect(
+                lambda: self.open_model_eval_requested.emit(self.selected_case_indices())
+            )
+            layout.addWidget(self.open_model_eval_button)
+        else:
+            self.open_model_eval_button = None
 
         self.export_summaries_button = QtWidgets.QPushButton("Export summaries (Markdown)…")
         self.export_summaries_button.setToolTip("Save every scenario's auto-summary to one Markdown file")

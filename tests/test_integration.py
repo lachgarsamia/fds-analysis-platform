@@ -2,6 +2,7 @@
 
 import pytest
 import time
+import numpy as np
 from PyQt5 import QtCore, QtWidgets
 from data_provider import load_simulation_data
 from main_window import MainWindow
@@ -400,6 +401,68 @@ class TestIntegration:
         assert cell.cell_type == "ensemble"
         assert cell.ensemble_case_indices == [0, 1, 2]
         assert cell.view.heatmap is not None
+        window.close()
+
+    # ------------------------------------------------- M3.2.5 model evaluation
+    def test_model_eval_button_absent_without_predictions(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        assert window.prediction_store.is_available is False
+        assert window.experiment_browser.open_model_eval_button is None
+        window.close()
+
+    def test_model_eval_grid_populates_ground_truth_prediction_and_difference(
+        self, qapp, monkeypatch, tmp_path,
+    ):
+        """Fabricates a tiny "predictions" export for one real scenario --
+        shaped like ml/rollout.py's real output, but without needing an
+        actual trained model -- to exercise the in-app wiring (button,
+        1x3 layout, each cell pulling from the correct data source). The
+        model's own correctness is ml/tests/'s job, not this test's."""
+        import functools
+        import json
+
+        import prediction_store
+
+        sim_data = load_simulation_data()
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+
+        case_index = 3
+        real_data = sim_data.store.get(case_index)
+        fake_pred = real_data + 5.0
+        np.save(tmp_path / f"{case_index}.npy", fake_pred)
+        manifest = {"cases": {str(case_index): {"folder": "x", "n_frames": int(real_data.shape[0])}}}
+        with open(tmp_path / "manifest.json", "w") as f:
+            json.dump(manifest, f)
+
+        patched_source = functools.partial(prediction_store.PredictionSource, predictions_dir=str(tmp_path))
+        monkeypatch.setattr("main_window.PredictionSource", patched_source)
+
+        window = MainWindow(sim_data)
+        assert window.prediction_store.is_available
+        assert window.experiment_browser.open_model_eval_button is not None
+
+        window._open_browser_model_eval([case_index])
+        qapp.processEvents()
+
+        assert window.view_grid.layout_name == "1x3"
+        ground_truth_cell, prediction_cell, difference_cell = window.view_grid.visible_cells()
+        assert ground_truth_cell.cell_type == "slice"
+        assert ground_truth_cell.store_override is None
+        assert prediction_cell.cell_type == "slice"
+        assert prediction_cell.store_override is window.prediction_store
+        assert difference_cell.cell_type == "difference"
+        assert difference_cell.store_override_b is window.prediction_store
+
+        index = window.time_controller.index
+        assert np.allclose(ground_truth_cell.view.heatmap.get_array(), real_data[index], atol=1e-3)
+        assert np.allclose(prediction_cell.view.heatmap.get_array(), fake_pred[index], atol=1e-3)
+        diff_array = difference_cell.view.heatmap.get_array()
+        assert np.allclose(diff_array, -5.0, atol=1e-3)
+
         window.close()
 
     # ------------------------------------------------- M1.4 timeline tests
