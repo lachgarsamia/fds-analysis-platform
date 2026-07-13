@@ -38,10 +38,9 @@ from load_data import SIM_ROOT
 from slice_key import SliceInfo, DEFAULT_SLICE_KEY, available_slices
 from views import ViewGrid, DifferenceView, EnsembleView
 from summary_stats import build_summary_index
-from browser import ExperimentBrowserDock
-from analytics.features import build_feature_index
-from analytics_panel import AnalyticsPanelDock
-from auto_summary import generate_all_summaries, export_markdown
+from browser import ExperimentBrowserDock, _SummaryTextWorker
+from analytics_panel import AnalyticsPanelDock, _AnalyticsFeatureWorker
+from auto_summary import export_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +257,34 @@ class MainWindow(QtWidgets.QMainWindow):
         Demo mode has no manifest/HRR CSVs, so the browser is simply absent
         there rather than showing synthetic rows that cannot satisfy the
         milestone's "all 24 scenarios" requirement.
+
+        Auto-summary text (M3.1.3, auto_summary.generate_all_summaries())
+        is NOT computed here anymore. It used to be, synchronously -- a
+        second, independent instance of the same "eager full-ensemble
+        store.get() in MainWindow.__init__ before show()" mistake as
+        3fd87cf's analytics panel (see _build_analytics_panel's docstring),
+        introduced later by M3.1.3's auto-summary wiring: generate_all_
+        summaries() calls store.get() per scenario with no cache of its
+        own (unlike build_summary_index just above, which hits
+        summaries.json and skips the store entirely when fresh). Nothing
+        visible at startup actually needs it -- the table is built from
+        `summaries`, not summary_texts, and ExperimentBrowserDock already
+        treats a missing summary_texts as a legitimate "not computed yet"
+        state (only the per-row summary label and the export button's
+        enabled state depend on it, neither shown before a user acts).
+
+        So this is fully deferred, like the analytics panel, rather than
+        started eagerly here on a background thread: ExperimentBrowserDock
+        emits summary_texts_needed the first time a row is actually
+        selected (see _on_analytics-equivalent handler below), and that's
+        what starts _SummaryTextWorker. Starting it unconditionally at
+        construction -- even backgrounded -- was tried first and rejected:
+        with a warm disk cache (scenario .npy files already written by
+        ScenarioStore's own cache_dir, e.g. from a prior session), the
+        background thread can finish before the GUI thread even reaches
+        show(), reproducing the exact same "touched every scenario before
+        anyone asked" problem on a different thread. Deferring to first
+        selection sidesteps that regardless of disk-cache state.
         """
         if not self.sim_data.manifest:
             self.experiment_browser = None
@@ -270,15 +297,46 @@ class MainWindow(QtWidgets.QMainWindow):
             cache_path,
         )
         self._scenario_summaries = summaries  # reused by export_summaries_requested below
-        summary_texts = generate_all_summaries(
-            self.sim_data.manifest, summaries, self.controller.store, self.sim_data.timesteps_per_second,
-        )
-        self.experiment_browser = ExperimentBrowserDock(summaries, summary_texts, self)
+        self.experiment_browser = ExperimentBrowserDock(summaries, None, self)
         self.experiment_browser.scenario_activated.connect(self._open_browser_scenario)
         self.experiment_browser.open_grid_requested.connect(self._open_browser_grid)
         self.experiment_browser.open_ensemble_requested.connect(self._open_browser_ensemble)
         self.experiment_browser.export_summaries_requested.connect(self._export_summaries_markdown)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.experiment_browser)
+
+        self._summary_texts_loaded = False
+        self._summary_text_workers: list = []  # kept alive until each worker's own finished signal fires, same reasoning as SimulationController._prefetch_workers
+        self.experiment_browser.summary_texts_needed.connect(self._on_summary_texts_needed)
+
+    def _on_summary_texts_needed(self):
+        """One-shot: ExperimentBrowserDock.summary_texts_needed fires the
+        first time a user selects a row while summary_texts is still
+        empty. Starts the background load; later selections before it
+        finishes are no-ops (the dock's own _summary_texts_requested
+        guard already prevents re-emitting)."""
+        if self._summary_texts_loaded:
+            return
+        self._summary_texts_loaded = True
+        worker = _SummaryTextWorker(
+            self.sim_data.manifest, self._scenario_summaries, self.controller.store,
+            self.sim_data.timesteps_per_second,
+        )
+        self._summary_text_workers.append(worker)
+        worker.finished_ok.connect(self._on_summary_texts_ready)
+        worker.error.connect(self._on_summary_texts_error)
+        worker.finished.connect(lambda w=worker: self._cleanup_summary_text_worker(w))
+        worker.start()
+
+    def _cleanup_summary_text_worker(self, worker):
+        if worker in self._summary_text_workers:
+            self._summary_text_workers.remove(worker)
+
+    def _on_summary_texts_ready(self, summary_texts):
+        if self.experiment_browser is not None:
+            self.experiment_browser.set_summary_texts(summary_texts)
+
+    def _on_summary_texts_error(self, message):
+        logger.error(message)
 
     def _build_analytics_panel(self):
         """M3.1.2: docked PCA scatter + clustering over the ensemble's
@@ -287,19 +345,67 @@ class MainWindow(QtWidgets.QMainWindow):
         tabbed with it rather than stacked -- both are "pick a scenario or
         two to study" tools competing for the same side-panel space, and
         tabbing keeps either one a click away without permanently eating
-        screen real estate for both at once."""
+        screen real estate for both at once.
+
+        The feature index itself is NOT computed here. It used to be
+        (3fd87cf), synchronously, which meant every one of the 24 real
+        scenarios got pulled through ScenarioStore.get() -- and cached --
+        before the window was even shown: a startup-latency regression,
+        and (found via git bisect) the reason
+        test_stale_prefetch_error_does_not_discard_newer_success and
+        test_simultaneous_scenario_and_quantity_switch_cache_miss_race
+        started failing, since both depend on a specific scenario starting
+        uncached. Instead: the dock is built with an empty placeholder, and
+        the real feature index is computed on a background thread
+        (_AnalyticsFeatureWorker) only once the panel is actually shown
+        (its visibilityChanged(True) fires) -- so a user who never opens
+        this tab never touches the store for it at all, and a user who
+        does open it doesn't block the GUI thread while all 24 scenarios
+        load."""
         if not self.sim_data.manifest:
             self.analytics_panel = None
             return
-        features = build_feature_index(
-            self.sim_data.manifest, self.controller.store, self.sim_data.timesteps_per_second,
-        )
-        self.analytics_panel = AnalyticsPanelDock(features, self)
+        self.analytics_panel = AnalyticsPanelDock(parent=self)
         self.analytics_panel.scenario_activated.connect(self._open_browser_scenario)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.analytics_panel)
         if self.experiment_browser is not None:
             self.tabifyDockWidget(self.experiment_browser, self.analytics_panel)
             self.experiment_browser.raise_()  # experiment browser is the default-visible tab
+
+        self._analytics_features_loaded = False
+        self._analytics_workers: list = []  # kept alive until each worker's own finished signal fires, same reasoning as SimulationController._prefetch_workers
+        self.analytics_panel.visibilityChanged.connect(self._on_analytics_panel_visibility_changed)
+
+    def _on_analytics_panel_visibility_changed(self, visible: bool):
+        """One-shot trigger: the first time the analytics tab is actually
+        raised (not at construction, which starts hidden behind the
+        experiment browser's tab), kick off the background feature-index
+        load. Later visibility toggles (switching tabs back and forth)
+        are no-ops once loaded."""
+        if not visible or self._analytics_features_loaded:
+            return
+        self._analytics_features_loaded = True
+        worker = _AnalyticsFeatureWorker(
+            self.sim_data.manifest, self.controller.store, self.sim_data.timesteps_per_second,
+        )
+        self._analytics_workers.append(worker)
+        worker.finished_ok.connect(self._on_analytics_features_ready)
+        worker.error.connect(self._on_analytics_features_error)
+        worker.finished.connect(lambda w=worker: self._cleanup_analytics_worker(w))
+        worker.start()
+
+    def _cleanup_analytics_worker(self, worker):
+        if worker in self._analytics_workers:
+            self._analytics_workers.remove(worker)
+
+    def _on_analytics_features_ready(self, features):
+        if self.analytics_panel is not None:
+            self.analytics_panel.load_features(features)
+
+    def _on_analytics_features_error(self, message):
+        logger.error(message)
+        if self.analytics_panel is not None:
+            self.analytics_panel.status_label.setText(message)
 
     def _build_central_widget(self):
         central = QtWidgets.QWidget()
@@ -1562,4 +1668,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("splitter_state", self.splitter.saveState())
         self.time_controller.pause()
+        # A cache-miss prefetch left in flight when the window closes
+        # (SimulationController._prefetch_workers is fire-and-forget by
+        # design -- see that module's own docstring -- so closing doesn't
+        # cancel it) must not leave QApplication's override-cursor stack
+        # holding a WaitCursor push with no corresponding pop: that stack
+        # is process-global, outliving this one window, so an unresolved
+        # busy state here would otherwise show a stuck wait cursor (or, in
+        # tests, a stale cursor bleeding into whatever runs next).
+        if self._busy:
+            self._end_busy_state()
         super().closeEvent(event)
