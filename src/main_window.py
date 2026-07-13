@@ -39,6 +39,9 @@ from slice_key import SliceInfo, DEFAULT_SLICE_KEY, available_slices
 from views import ViewGrid, DifferenceView, EnsembleView
 from summary_stats import build_summary_index
 from browser import ExperimentBrowserDock
+from analytics.features import build_feature_index
+from analytics_panel import AnalyticsPanelDock
+from auto_summary import generate_all_summaries, export_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +165,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._build_menu()
         self._build_central_widget()
         self._build_experiment_browser()
+        self._build_analytics_panel()
         self._build_status_bar()
         self._apply_theme()
         self._restore_window_state()
@@ -265,11 +269,37 @@ class MainWindow(QtWidgets.QMainWindow):
             self.sim_data.timesteps_per_second,
             cache_path,
         )
-        self.experiment_browser = ExperimentBrowserDock(summaries, self)
+        self._scenario_summaries = summaries  # reused by export_summaries_requested below
+        summary_texts = generate_all_summaries(
+            self.sim_data.manifest, summaries, self.controller.store, self.sim_data.timesteps_per_second,
+        )
+        self.experiment_browser = ExperimentBrowserDock(summaries, summary_texts, self)
         self.experiment_browser.scenario_activated.connect(self._open_browser_scenario)
         self.experiment_browser.open_grid_requested.connect(self._open_browser_grid)
         self.experiment_browser.open_ensemble_requested.connect(self._open_browser_ensemble)
+        self.experiment_browser.export_summaries_requested.connect(self._export_summaries_markdown)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.experiment_browser)
+
+    def _build_analytics_panel(self):
+        """M3.1.2: docked PCA scatter + clustering over the ensemble's
+        feature vectors. Same demo-mode absence as the experiment browser
+        (no manifest, nothing to analyze across 24 real scenarios) and
+        tabbed with it rather than stacked -- both are "pick a scenario or
+        two to study" tools competing for the same side-panel space, and
+        tabbing keeps either one a click away without permanently eating
+        screen real estate for both at once."""
+        if not self.sim_data.manifest:
+            self.analytics_panel = None
+            return
+        features = build_feature_index(
+            self.sim_data.manifest, self.controller.store, self.sim_data.timesteps_per_second,
+        )
+        self.analytics_panel = AnalyticsPanelDock(features, self)
+        self.analytics_panel.scenario_activated.connect(self._open_browser_scenario)
+        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.analytics_panel)
+        if self.experiment_browser is not None:
+            self.tabifyDockWidget(self.experiment_browser, self.analytics_panel)
+            self.experiment_browser.raise_()  # experiment browser is the default-visible tab
 
     def _build_central_widget(self):
         central = QtWidgets.QWidget()
@@ -1117,6 +1147,29 @@ class MainWindow(QtWidgets.QMainWindow):
             cell.stat_combo.blockSignals(False)
         self._render_ensemble_cell(cell)
         self._apply_link_clim()
+
+    def _export_summaries_markdown(self):
+        """Experiment browser's "Export summaries (Markdown)…" button
+        (M3.1.3). Reuses self._scenario_summaries (already computed for
+        the browser table) rather than recomputing -- the exported text
+        is generated the same way, from the same data, as what the
+        browser already showed on screen."""
+        default_name = "fds_scenario_summaries.md"
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export Summaries", default_name, "Markdown (*.md)")
+        if not path:
+            return
+        if not path.lower().endswith(".md"):
+            path += ".md"
+        try:
+            export_markdown(
+                self.sim_data.manifest, self._scenario_summaries,
+                self.controller.store, self.sim_data.timesteps_per_second, path,
+            )
+        except OSError as e:
+            self._on_sim_error(f"Could not write summaries to {path}: {e}")
+            return
+        self.statusBar().showMessage(f"Exported scenario summaries to {path}", 5000)
 
     def _load_cell(self, cell, case_index: int, quantity_key):
         """A *non-active* cell's own combo picked a new (case, key)

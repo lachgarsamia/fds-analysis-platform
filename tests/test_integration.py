@@ -1372,3 +1372,101 @@ class TestIntegration:
 
         assert cell.view._isotherm_levels == []
         window.close()
+
+    # ------------------------------------------------ M3.1 ensemble analytics
+    def test_analytics_panel_present_for_real_data(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        assert window.analytics_panel is not None
+        assert len(window.analytics_panel._features) == 24
+        window.close()
+
+    def test_analytics_panel_absent_in_demo_mode(self, qapp, monkeypatch):
+        monkeypatch.setattr("data_provider.list_scenario_folders", lambda *a, **kw: [])
+        sim_data = load_simulation_data()
+        assert sim_data.is_demo
+        window = MainWindow(sim_data)
+        assert window.analytics_panel is None
+        window.close()
+
+    def test_analytics_panel_tabified_with_experiment_browser(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        tabs = window.tabifiedDockWidgets(window.experiment_browser)
+        assert window.analytics_panel in tabs
+        window.close()
+
+    def test_clicking_analytics_point_loads_scenario_into_active_cell(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        panel = window.analytics_panel
+        target_case = panel._case_indices[5]
+
+        class FakeEvent:
+            inaxes = panel.ax
+            xdata = panel._coords[5, 0]
+            ydata = panel._coords[5, 1]
+
+        panel._on_click(FakeEvent())
+
+        assert window.controller.current_case_index() == target_case
+        window.close()
+
+    def test_browser_selection_shows_auto_summary(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window.experiment_browser.table.selectRow(0)
+        text = window.experiment_browser.summary_label.text()
+        assert text.startswith("Peak ")
+        assert "°C at t=" in text
+        window.close()
+
+    def test_export_summaries_writes_all_24_and_updates_status_bar(self, qapp, monkeypatch, tmp_path):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        out_path = str(tmp_path / "summaries.md")
+        monkeypatch.setattr(
+            "PyQt5.QtWidgets.QFileDialog.getSaveFileName", lambda *a, **kw: (out_path, "")
+        )
+
+        window._export_summaries_markdown()
+
+        content = open(out_path).read()
+        assert content.count("## ") == 24
+        assert "Exported scenario summaries" in window.statusBar().currentMessage()
+        window.close()
+
+    def test_export_summaries_cancelled_dialog_does_not_write_or_crash(self, qapp, monkeypatch):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        monkeypatch.setattr("PyQt5.QtWidgets.QFileDialog.getSaveFileName", lambda *a, **kw: ("", ""))
+
+        window._export_summaries_markdown()  # must not raise
+        window.close()
+
+    def test_analytics_panel_present_does_not_change_playback_fps_path(self, qapp):
+        """DoD: panel doesn't degrade playback. Direct mechanism check: the
+        panel widget has none of PlotView's per-frame methods (show_frame)
+        and isn't a TimeController slot target, so its mere presence can't
+        add per-tick cost to _on_time_changed -- confirmed structurally,
+        not just by a timing measurement (which would be flaky in CI)."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        assert window.analytics_panel is not None
+        assert not hasattr(window.analytics_panel, "show_frame")
+        assert not hasattr(window.analytics_panel, "_on_time_changed")
+        window.close()
