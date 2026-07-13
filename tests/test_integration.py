@@ -404,13 +404,19 @@ class TestIntegration:
         window.close()
 
     # ------------------------------------------------- M3.2.5 model evaluation
-    def test_model_eval_button_absent_without_predictions(self, qapp):
+    def test_model_eval_button_matches_prediction_availability(self, qapp):
+        """Button presence must track prediction_store.is_available, not
+        one hard-coded state -- whether predictions/ exists on a given
+        machine depends on whether ml/rollout.py has ever been run there,
+        which varies by dev environment (this repo's own included)."""
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo:
             pytest.skip("real dataset not present")
-        assert window.prediction_store.is_available is False
-        assert window.experiment_browser.open_model_eval_button is None
+        if window.prediction_store.is_available:
+            assert window.experiment_browser.open_model_eval_button is not None
+        else:
+            assert window.experiment_browser.open_model_eval_button is None
         window.close()
 
     def test_model_eval_grid_populates_ground_truth_prediction_and_difference(
