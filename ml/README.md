@@ -38,7 +38,12 @@ only the raw dataset) — there's no hidden shared state.
 - **Scenario split is deterministic**: `dataset.SPLIT_SEED = 42` fixes a
   20/4 train/test split by scenario (never by time — an entire scenario's
   time series is wholly train or wholly test), then a further 3-scenario
-  carve-out from the 20 for validation/early-stopping. Every script here
+  carve-out from the 20 for validation/early-stopping. `ml/train.py` also
+  seeds `torch.manual_seed()` from this same value, so weight
+  initialization and DataLoader shuffle order are reproducible too, not
+  just which scenarios land in which bucket (CPU runs are fully
+  deterministic this way; MPS may still have minor kernel-level
+  non-determinism in a few fused ops regardless). Every script here
   calls `dataset.scenario_split()`/`train_val_split()` with the same
   default seed, so re-running any step reproduces the identical split.
 - **Checkpoints are traceable**: `ml/train.py` saves

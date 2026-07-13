@@ -48,6 +48,12 @@ DEFAULT_CONFIG = {
 def train(config: dict = None, verbose: bool = True) -> dict:
     config = {**DEFAULT_CONFIG, **(config or {})}
     device = get_device()
+    # Weight init + DataLoader shuffle order, seeded from the same split
+    # seed the scenario split already uses -- so "reproducible" covers the
+    # whole run, not just which scenarios ended up in which bucket. (MPS
+    # itself may still have minor kernel-level non-determinism in a few
+    # fused ops regardless of this -- CPU runs are fully deterministic.)
+    torch.manual_seed(config["split_seed"])
 
     entries = load_entries()
     train_cases, test_cases = scenario_split(entries, seed=config["split_seed"])
