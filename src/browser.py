@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from PyQt5 import QtCore, QtWidgets
 
+from auto_summary import generate_all_summaries
+
 
 FACTOR_LABELS = {
     "candles": {0: "1 candle", 1: "2 candles"},
@@ -122,6 +124,14 @@ class ExperimentBrowserDock(QtWidgets.QDockWidget):
     open_grid_requested = QtCore.pyqtSignal(list)
     open_ensemble_requested = QtCore.pyqtSignal(list)
     export_summaries_requested = QtCore.pyqtSignal()
+    # Emitted once, the first time a row is selected while summary_texts is
+    # still empty -- MainWindow's cue to start the background auto-summary
+    # load (see set_summary_texts below and main_window.py's
+    # _build_experiment_browser). Fully deferred rather than started at
+    # construction: nothing visible at startup needs it (the table is
+    # built from `summaries`, not summary_texts), so there's no reason to
+    # touch the store for it before a user actually looks at a summary.
+    summary_texts_needed = QtCore.pyqtSignal()
 
     def __init__(self, summaries: list, summary_texts: dict = None, parent=None):
         """summary_texts (M3.1.3): case_index -> auto-generated summary
@@ -134,6 +144,7 @@ class ExperimentBrowserDock(QtWidgets.QDockWidget):
         self.setObjectName("experimentBrowserDock")
         self.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
         self._summary_texts = summary_texts or {}
+        self._summary_texts_requested = False
 
         root = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(root)
@@ -210,10 +221,29 @@ class ExperimentBrowserDock(QtWidgets.QDockWidget):
         rows = sorted({idx.row() for idx in self.table.selectionModel().selectedRows()})
         if not rows:
             return
+        if not self._summary_texts and not self._summary_texts_requested:
+            self._summary_texts_requested = True
+            self.summary_texts_needed.emit()
         source_index = self.proxy.mapToSource(self.proxy.index(rows[-1], 0))
         summary = self.model.data(source_index, QtCore.Qt.UserRole)
         text = self._summary_texts.get(summary.case_index)
         self.summary_label.setText(text if text else f"{summary.folder}: no auto-summary available.")
+
+    def set_summary_texts(self, summary_texts: dict):
+        """Populates auto-summary text after construction -- MainWindow
+        now computes this on a background thread (_SummaryTextWorker
+        below) rather than synchronously before the window is shown (see
+        main_window.py's _build_experiment_browser), so a browser built
+        with summary_texts=None starts in the same "not computed yet"
+        state this widget already treats as legitimate, and this just
+        fills it in once ready. Refreshes the export button's enabled
+        state and, if a row is already selected, its summary label -- a
+        user who selected before this arrived shouldn't be stuck seeing
+        "no auto-summary available" forever."""
+        self._summary_texts = summary_texts or {}
+        self.export_summaries_button.setEnabled(bool(self._summary_texts))
+        if self.table.selectionModel().hasSelection():
+            self._on_selection_changed(None, None)
 
     def selected_case_indices(self) -> list[int]:
         rows = sorted({idx.row() for idx in self.table.selectionModel().selectedRows()})
@@ -228,3 +258,37 @@ class ExperimentBrowserDock(QtWidgets.QDockWidget):
         source_index = self.proxy.mapToSource(proxy_index)
         summary = self.model.data(source_index, QtCore.Qt.UserRole)
         self.scenario_activated.emit(summary.case_index)
+
+
+class _SummaryTextWorker(QtCore.QThread):
+    """One-shot background computation of auto-summary text for every
+    scenario (auto_summary.generate_all_summaries()). Mirrors
+    simulation_controller.py's _PrefetchWorker and analytics_panel.py's
+    _AnalyticsFeatureWorker: fire-and-forget, kept alive by the owner
+    (MainWindow) until its own finished_ok/error signal fires.
+
+    Exists because generate_all_summaries() calls store.get() for every
+    scenario with no cache of its own (unlike build_summary_index, which
+    hits summaries.json and skips the store entirely when fresh) -- running
+    it synchronously in MainWindow.__init__ was a second, independent
+    instance of the same "eager full-ensemble store.get() before show()"
+    mistake as 3fd87cf's analytics panel (see main_window.py's
+    _build_experiment_browser), introduced later by M3.1.3's auto-summary
+    wiring."""
+
+    finished_ok = QtCore.pyqtSignal(dict)  # case_index -> summary text
+    error = QtCore.pyqtSignal(str)
+
+    def __init__(self, entries, summaries, store, fps):
+        super().__init__()
+        self._entries = entries
+        self._summaries = summaries
+        self._store = store
+        self._fps = fps
+
+    def run(self):
+        try:
+            texts = generate_all_summaries(self._entries, self._summaries, self._store, self._fps)
+            self.finished_ok.emit(texts)
+        except Exception as e:  # noqa: BLE001 - never let a worker crash silently
+            self.error.emit(f"Failed to build auto-summaries: {e}")
