@@ -189,6 +189,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
         view_menu = menu_bar.addMenu("&View")
 
+        # Populated later, in _build_experiment_browser()/_build_analytics_panel(),
+        # once those docks actually exist -- each entry is the dock's own
+        # toggleViewAction(), so Qt keeps the checkbox in sync with the
+        # dock's real visibility automatically (closed via the titlebar's
+        # X or reopened via this menu, no custom show/hide bookkeeping
+        # needed here).
+        self.panels_menu = view_menu.addMenu("Panels")
+
         theme_menu = view_menu.addMenu("Theme")
         self.theme_action_group = QtWidgets.QActionGroup(self)
         for key, label in (("light", "Light"), ("dark", "Dark")):
@@ -315,6 +323,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.experiment_browser.open_model_eval_button is not None:
             self.experiment_browser.open_model_eval_requested.connect(self._open_browser_model_eval)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.experiment_browser)
+        self.panels_menu.addAction(self.experiment_browser.toggleViewAction())
 
         self._summary_texts_loaded = False
         self._summary_text_workers: list = []  # kept alive until each worker's own finished signal fires, same reasoning as SimulationController._prefetch_workers
@@ -380,6 +389,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.analytics_panel = AnalyticsPanelDock(parent=self)
         self.analytics_panel.scenario_activated.connect(self._open_browser_scenario)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.analytics_panel)
+        self.panels_menu.addAction(self.analytics_panel.toggleViewAction())
         if self.experiment_browser is not None:
             self.tabifyDockWidget(self.experiment_browser, self.analytics_panel)
             self.experiment_browser.raise_()  # experiment browser is the default-visible tab
