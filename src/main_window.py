@@ -41,6 +41,7 @@ from summary_stats import build_summary_index
 from browser import ExperimentBrowserDock, _SummaryTextWorker
 from analytics_panel import AnalyticsPanelDock, _AnalyticsFeatureWorker
 from auto_summary import export_markdown
+from prediction_store import PredictionSource
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.controller.prefetch_finished.connect(self._on_grid_prefetch_finished)
         self.controller.prefetch_error.connect(self._on_grid_prefetch_error)
         self._pending_cell_prefetches = set()  # GridCells awaiting their own background load
+
+        # M3.2.5: trained-model predictions, if ml/train.py + ml/rollout.py
+        # have ever been run -- absent/empty otherwise (predictions/ simply
+        # doesn't exist), same convention as demo mode's absent experiment
+        # browser. Never touches the real store's cache: PredictionSource
+        # loads its own small .npy files eagerly and independently.
+        self.prediction_store = PredictionSource(sim_data.store, enabled=not sim_data.is_demo)
 
         # M1.4: pull-based playback clock. frame_count_fn must never trigger
         # a load itself -- it just reports self._current_n_frames, which is
@@ -297,11 +305,15 @@ class MainWindow(QtWidgets.QMainWindow):
             cache_path,
         )
         self._scenario_summaries = summaries  # reused by export_summaries_requested below
-        self.experiment_browser = ExperimentBrowserDock(summaries, None, self)
+        self.experiment_browser = ExperimentBrowserDock(
+            summaries, None, self, has_predictions=self.prediction_store.is_available,
+        )
         self.experiment_browser.scenario_activated.connect(self._open_browser_scenario)
         self.experiment_browser.open_grid_requested.connect(self._open_browser_grid)
         self.experiment_browser.open_ensemble_requested.connect(self._open_browser_ensemble)
         self.experiment_browser.export_summaries_requested.connect(self._export_summaries_markdown)
+        if self.experiment_browser.open_model_eval_button is not None:
+            self.experiment_browser.open_model_eval_requested.connect(self._open_browser_model_eval)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.experiment_browser)
 
         self._summary_texts_loaded = False
@@ -885,16 +897,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self.view_grid.active_view().show_frame(frame)
 
     # -------------------------------------------------------- signal slots
+    def _store_for_cell(self, cell):
+        """M3.2.5: a cell normally reads the one real ScenarioStore;
+        store_override (set only by _open_browser_model_eval) routes a
+        "slice" cell's data through self.prediction_store instead, so the
+        model-evaluation grid reuses the exact same rendering path as
+        every other cell rather than a parallel display system."""
+        return cell.store_override if cell.store_override is not None else self.controller.store
+
     def _frame_for_cell(self, cell, index: int):
         """The frame `cell` should show at timeline `index`, dispatched by
         cell_type (M2.3.3): a plain slice, an A-B difference, or an
         ensemble composite. Returns None for an ensemble cell with no
         scenarios selected yet (nothing to show)."""
         if cell.cell_type == "slice":
-            return self.controller.store.get(cell.case_index, cell.quantity_key)[index]
+            store = self._store_for_cell(cell)
+            return store.get(cell.case_index, cell.quantity_key)[index]
         if cell.cell_type == "difference":
+            store_b = cell.store_override_b if cell.store_override_b is not None else self.controller.store
             data_a = self.controller.store.get(cell.case_index_a, cell.quantity_key)
-            data_b = self.controller.store.get(cell.case_index_b, cell.quantity_key)
+            data_b = store_b.get(cell.case_index_b, cell.quantity_key)
             idx = min(index, data_a.shape[0] - 1, data_b.shape[0] - 1)
             return DifferenceView.compute_diff(data_a, data_b, idx)
         if cell.cell_type == "ensemble":
@@ -1254,6 +1276,49 @@ class MainWindow(QtWidgets.QMainWindow):
         self._render_ensemble_cell(cell)
         self._apply_link_clim()
 
+    def _open_browser_model_eval(self, case_indices: list):
+        """M3.2.5: "View model prediction" button -- ground truth, the
+        trained model's prediction, and their difference, side by side,
+        for a single (test-set) scenario. Reuses the grid/GridCell
+        machinery every other view uses (a 1x3 layout, "slice" and
+        "difference" cell types) rather than a parallel display system --
+        only the DATA SOURCE differs for the prediction/difference-B cells
+        (store_override(_b), see _store_for_cell), not the rendering
+        path."""
+        if not self.prediction_store.is_available:
+            return
+        available = set(self.prediction_store.case_indices)
+        case_index = next((ci for ci in case_indices if ci in available), None)
+        if case_index is None:
+            case_index = self.prediction_store.case_indices[0]
+            self.statusBar().showMessage(
+                "No prediction for the selected scenario -- showing a test-set scenario instead.", 5000,
+            )
+
+        self.view_grid.set_layout("1x3")
+        self.toolbar.setVisible(False)
+        ground_truth_cell, prediction_cell, difference_cell = self.view_grid.visible_cells()
+
+        for cell in (ground_truth_cell, prediction_cell):
+            if cell.cell_type != "slice":
+                cell.set_cell_type("slice")
+        ground_truth_cell.store_override = None
+        prediction_cell.store_override = self.prediction_store
+        ground_truth_cell.set_scenario_silently(case_index)
+        prediction_cell.set_scenario_silently(case_index)
+        self._load_cell(ground_truth_cell, case_index, DEFAULT_SLICE_KEY)
+        self._load_cell(prediction_cell, case_index, DEFAULT_SLICE_KEY)
+
+        if difference_cell.cell_type != "difference":
+            difference_cell.set_cell_type("difference")
+        difference_cell.case_index_a = case_index
+        difference_cell.case_index_b = case_index
+        difference_cell.store_override_b = self.prediction_store
+        difference_cell.quantity_key = DEFAULT_SLICE_KEY
+        self._render_difference_cell(difference_cell)
+
+        self._apply_link_clim()
+
     def _export_summaries_markdown(self):
         """Experiment browser's "Export summaries (Markdown)…" button
         (M3.1.3). Reuses self._scenario_summaries (already computed for
@@ -1293,17 +1358,23 @@ class MainWindow(QtWidgets.QMainWindow):
         changes thereafter."""
         cell.case_index = case_index
         cell.quantity_key = quantity_key
-        if self.controller.is_cached(case_index, quantity_key):
+        store = self._store_for_cell(cell)
+        if store.is_cached(case_index, quantity_key):
             self._redraw_cell_now(cell)
             self._apply_link_clim()
             return
+        # A store_override (M3.2.5's PredictionSource) is always fully
+        # loaded at construction, so is_cached() above is always True for
+        # it -- this prefetch path only ever actually runs for the real
+        # ScenarioStore.
         self._pending_cell_prefetches.add(cell)
         self.controller.prefetch(case_index, quantity_key)
 
     def _redraw_cell_now(self, cell):
         """Assumes cell.case_index/quantity_key are already cached."""
+        store = self._store_for_cell(cell)
         display = QUANTITY_DISPLAY[cell.quantity_key.quantity]
-        data = self.controller.store.get(cell.case_index, cell.quantity_key)
+        data = store.get(cell.case_index, cell.quantity_key)
         cell.view.set_cmap(display['cmap'])
         cell.view.set_clim(display['vmin'], display['slider_default'])
         cell.view.set_colorbar_label(f"{display['label']} ({display['unit']})")
@@ -1392,8 +1463,9 @@ class MainWindow(QtWidgets.QMainWindow):
         changes (no prefetch orchestration for the two-scenario case; see
         _load_cell's docstring, which applies equally here)."""
         key = cell.quantity_key
+        store_b = cell.store_override_b if cell.store_override_b is not None else self.controller.store
         data_a = self.controller.store.get(cell.case_index_a, key)
-        data_b = self.controller.store.get(cell.case_index_b, key)
+        data_b = store_b.get(cell.case_index_b, key)
         vmin, vmax = cell.view.symmetric_clim(
             data_a, data_b, cache_key=(cell.case_index_a, cell.case_index_b, key))
         display = QUANTITY_DISPLAY[key.quantity]

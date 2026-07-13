@@ -626,6 +626,14 @@ class GridCell(QtWidgets.QWidget):
         self.ensemble_case_indices: list = []
         self.ensemble_stat = "mean"
         self.quantity_key = self._quantity_options[0][1] if self._quantity_options else None
+        # Model-evaluation mode (M3.2.5): None means "use the normal,
+        # single global ScenarioStore" for every existing cell, unchanged.
+        # Set only by MainWindow._open_browser_model_eval() to route a
+        # "slice" cell's data (store_override) or a "difference" cell's B
+        # operand (store_override_b) through a PredictionSource instead --
+        # ground truth always still comes from the real store.
+        self.store_override = None
+        self.store_override_b = None
         self._is_active = False
         self._accent = "#0B5FA5"
 
@@ -869,6 +877,7 @@ class ViewGrid(QtWidgets.QWidget):
     LAYOUTS = {
         "1x1": (1, 1),
         "1x2": (1, 2),
+        "1x3": (1, 3),
         "2x2": (2, 2),
     }
 

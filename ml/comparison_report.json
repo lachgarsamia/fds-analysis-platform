@@ -1,0 +1,52 @@
+{
+  "by_lead": {
+    "1": {
+      "fno_rmse": 5.931806405385335,
+      "persistence_rmse": 8.04306986182928,
+      "fno_beats_persistence": true
+    },
+    "2": {
+      "fno_rmse": 6.568975888192654,
+      "persistence_rmse": 7.952744238078594,
+      "fno_beats_persistence": true
+    },
+    "3": {
+      "fno_rmse": 6.8603590577840805,
+      "persistence_rmse": 8.061657955249151,
+      "fno_beats_persistence": true
+    },
+    "4": {
+      "fno_rmse": 7.018158473074436,
+      "persistence_rmse": 8.625450650850931,
+      "fno_beats_persistence": true
+    },
+    "5": {
+      "fno_rmse": 7.363875235120456,
+      "persistence_rmse": 8.855817958712578,
+      "fno_beats_persistence": true
+    },
+    "6": {
+      "fno_rmse": 7.496328726410866,
+      "persistence_rmse": 8.89572462439537,
+      "fno_beats_persistence": true
+    },
+    "7": {
+      "fno_rmse": 7.614086305101712,
+      "persistence_rmse": 8.815385604898134,
+      "fno_beats_persistence": true
+    },
+    "8": {
+      "fno_rmse": 7.976613161464532,
+      "persistence_rmse": 9.207482027510801,
+      "fno_beats_persistence": true
+    }
+  },
+  "beats_persistence_at_lead_4_or_more": true,
+  "leads_where_fno_beats_persistence_at_4_plus": [
+    4,
+    5,
+    6,
+    7,
+    8
+  ]
+}
