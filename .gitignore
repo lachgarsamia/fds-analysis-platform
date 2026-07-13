@@ -27,6 +27,13 @@ image_video_sim/
 .cache/
 predictions/
 
+# M3.2 training artifacts (regenerable from ml/ scripts + ml/README.md,
+# not source -- checkpoints are large binary blobs unsuited to git)
+ml/checkpoints/
+ml/runs/
+*.pt
+*.pth
+
 # LaTeX build side-products
 report/*.aux
 report/*.out
