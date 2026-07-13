@@ -121,11 +121,19 @@ class ExperimentBrowserDock(QtWidgets.QDockWidget):
     scenario_activated = QtCore.pyqtSignal(int)
     open_grid_requested = QtCore.pyqtSignal(list)
     open_ensemble_requested = QtCore.pyqtSignal(list)
+    export_summaries_requested = QtCore.pyqtSignal()
 
-    def __init__(self, summaries: list, parent=None):
+    def __init__(self, summaries: list, summary_texts: dict = None, parent=None):
+        """summary_texts (M3.1.3): case_index -> auto-generated summary
+        sentence (auto_summary.generate_summary()), shown below the table
+        for whichever row is selected. None/empty means no summaries were
+        computed (caller's choice, not this widget's) -- the readout
+        stays blank rather than showing a placeholder that looks like a
+        missing feature."""
         super().__init__("Experiment Browser", parent)
         self.setObjectName("experimentBrowserDock")
         self.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
+        self._summary_texts = summary_texts or {}
 
         root = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(root)
@@ -171,6 +179,12 @@ class ExperimentBrowserDock(QtWidgets.QDockWidget):
         self.table.doubleClicked.connect(self._on_double_clicked)
         layout.addWidget(self.table, 1)
 
+        self.summary_label = QtWidgets.QLabel("Select a scenario to see its auto-summary.")
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setAccessibleName("Scenario auto-summary")
+        self.summary_label.setProperty("role", "value")
+        layout.addWidget(self.summary_label)
+
         button_row = QtWidgets.QHBoxLayout()
         self.open_grid_button = QtWidgets.QPushButton("Open as grid")
         self.open_grid_button.setToolTip("Open the selected scenarios in the visible grid cells")
@@ -182,8 +196,24 @@ class ExperimentBrowserDock(QtWidgets.QDockWidget):
         button_row.addWidget(self.open_ensemble_button)
         layout.addLayout(button_row)
 
+        self.export_summaries_button = QtWidgets.QPushButton("Export summaries (Markdown)…")
+        self.export_summaries_button.setToolTip("Save every scenario's auto-summary to one Markdown file")
+        self.export_summaries_button.setEnabled(bool(self._summary_texts))
+        self.export_summaries_button.clicked.connect(self.export_summaries_requested.emit)
+        layout.addWidget(self.export_summaries_button)
+
         self.search_edit.textChanged.connect(self.proxy.set_text_filter)
+        self.table.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.setWidget(root)
+
+    def _on_selection_changed(self, _selected, _deselected):
+        rows = sorted({idx.row() for idx in self.table.selectionModel().selectedRows()})
+        if not rows:
+            return
+        source_index = self.proxy.mapToSource(self.proxy.index(rows[-1], 0))
+        summary = self.model.data(source_index, QtCore.Qt.UserRole)
+        text = self._summary_texts.get(summary.case_index)
+        self.summary_label.setText(text if text else f"{summary.folder}: no auto-summary available.")
 
     def selected_case_indices(self) -> list[int]:
         rows = sorted({idx.row() for idx in self.table.selectionModel().selectedRows()})

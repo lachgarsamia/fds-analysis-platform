@@ -41,6 +41,7 @@ from summary_stats import build_summary_index
 from browser import ExperimentBrowserDock
 from analytics.features import build_feature_index
 from analytics_panel import AnalyticsPanelDock
+from auto_summary import generate_all_summaries, export_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -268,11 +269,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self.sim_data.timesteps_per_second,
             cache_path,
         )
-        self._scenario_summaries = summaries  # reused by M3.1's auto-summary export
-        self.experiment_browser = ExperimentBrowserDock(summaries, self)
+        self._scenario_summaries = summaries  # reused by export_summaries_requested below
+        summary_texts = generate_all_summaries(
+            self.sim_data.manifest, summaries, self.controller.store, self.sim_data.timesteps_per_second,
+        )
+        self.experiment_browser = ExperimentBrowserDock(summaries, summary_texts, self)
         self.experiment_browser.scenario_activated.connect(self._open_browser_scenario)
         self.experiment_browser.open_grid_requested.connect(self._open_browser_grid)
         self.experiment_browser.open_ensemble_requested.connect(self._open_browser_ensemble)
+        self.experiment_browser.export_summaries_requested.connect(self._export_summaries_markdown)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.experiment_browser)
 
     def _build_analytics_panel(self):
@@ -1142,6 +1147,29 @@ class MainWindow(QtWidgets.QMainWindow):
             cell.stat_combo.blockSignals(False)
         self._render_ensemble_cell(cell)
         self._apply_link_clim()
+
+    def _export_summaries_markdown(self):
+        """Experiment browser's "Export summaries (Markdown)…" button
+        (M3.1.3). Reuses self._scenario_summaries (already computed for
+        the browser table) rather than recomputing -- the exported text
+        is generated the same way, from the same data, as what the
+        browser already showed on screen."""
+        default_name = "fds_scenario_summaries.md"
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export Summaries", default_name, "Markdown (*.md)")
+        if not path:
+            return
+        if not path.lower().endswith(".md"):
+            path += ".md"
+        try:
+            export_markdown(
+                self.sim_data.manifest, self._scenario_summaries,
+                self.controller.store, self.sim_data.timesteps_per_second, path,
+            )
+        except OSError as e:
+            self._on_sim_error(f"Could not write summaries to {path}: {e}")
+            return
+        self.statusBar().showMessage(f"Exported scenario summaries to {path}", 5000)
 
     def _load_cell(self, cell, case_index: int, quantity_key):
         """A *non-active* cell's own combo picked a new (case, key)
