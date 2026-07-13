@@ -39,6 +39,8 @@ from slice_key import SliceInfo, DEFAULT_SLICE_KEY, available_slices
 from views import ViewGrid, DifferenceView, EnsembleView
 from summary_stats import build_summary_index
 from browser import ExperimentBrowserDock
+from analytics.features import build_feature_index
+from analytics_panel import AnalyticsPanelDock
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +164,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._build_menu()
         self._build_central_widget()
         self._build_experiment_browser()
+        self._build_analytics_panel()
         self._build_status_bar()
         self._apply_theme()
         self._restore_window_state()
@@ -265,11 +268,33 @@ class MainWindow(QtWidgets.QMainWindow):
             self.sim_data.timesteps_per_second,
             cache_path,
         )
+        self._scenario_summaries = summaries  # reused by M3.1's auto-summary export
         self.experiment_browser = ExperimentBrowserDock(summaries, self)
         self.experiment_browser.scenario_activated.connect(self._open_browser_scenario)
         self.experiment_browser.open_grid_requested.connect(self._open_browser_grid)
         self.experiment_browser.open_ensemble_requested.connect(self._open_browser_ensemble)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.experiment_browser)
+
+    def _build_analytics_panel(self):
+        """M3.1.2: docked PCA scatter + clustering over the ensemble's
+        feature vectors. Same demo-mode absence as the experiment browser
+        (no manifest, nothing to analyze across 24 real scenarios) and
+        tabbed with it rather than stacked -- both are "pick a scenario or
+        two to study" tools competing for the same side-panel space, and
+        tabbing keeps either one a click away without permanently eating
+        screen real estate for both at once."""
+        if not self.sim_data.manifest:
+            self.analytics_panel = None
+            return
+        features = build_feature_index(
+            self.sim_data.manifest, self.controller.store, self.sim_data.timesteps_per_second,
+        )
+        self.analytics_panel = AnalyticsPanelDock(features, self)
+        self.analytics_panel.scenario_activated.connect(self._open_browser_scenario)
+        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.analytics_panel)
+        if self.experiment_browser is not None:
+            self.tabifyDockWidget(self.experiment_browser, self.analytics_panel)
+            self.experiment_browser.raise_()  # experiment browser is the default-visible tab
 
     def _build_central_widget(self):
         central = QtWidgets.QWidget()
