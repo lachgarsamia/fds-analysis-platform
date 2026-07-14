@@ -27,7 +27,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
 from config import DEFAULT_CANDLES, DEFAULT_DOOR, DEFAULT_VOD, DEFAULT_VOC, QUANTITY_DISPLAY, ISOTHERM_LEVELS
-from theme import THEMES, build_qss
+from theme import THEMES, apply_card_shadow, build_qss
 from widgets import ToggleGroup, CollapsibleSection, TimelineWidget
 from simulation_controller import SimulationController
 from time_controller import TimeController
@@ -1769,6 +1769,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.schematic.apply_palette(palette)
         self._refresh_toggle_icons(palette)
         self.view_grid.apply_accent(palette.accent)
+        # Card shadows are Python-side (QGraphicsDropShadowEffect, not QSS --
+        # see theme.apply_card_shadow), so a theme switch has to reapply
+        # them explicitly: light/dark need different shadow opacity.
+        for section in self.findChildren(CollapsibleSection):
+            apply_card_shadow(section.card, palette)
         # The QSS restyle doesn't touch the matplotlib canvases themselves,
         # but the cached blit backgrounds are invalidated defensively per
         # M1.3.3's spec (resize/theme/colormap changes all recapture) in

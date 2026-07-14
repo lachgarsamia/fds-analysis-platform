@@ -236,25 +236,31 @@ class TimelineWidget(QtWidgets.QWidget):
 
 
 class CollapsibleSection(QtWidgets.QWidget):
-    """A labeled section with a thin divider - used to group control-panel
-    rows (Speed / Candles / Doors / Vents) so the panel reads as organized
-    sections rather than an undifferentiated stack of buttons."""
+    """A control-panel "card" (Speed / Candles / Doors / Vents) -- rounded
+    corners + a soft drop shadow (theme.apply_card_shadow) stand in for the
+    old title+divider grouping, so the sidebar reads as a stack of distinct
+    cards rather than lines drawn between undifferentiated rows (Streamlit-
+    style redesign pass). This widget is static once built (no per-frame
+    repaint), so the real QGraphicsDropShadowEffect is safe here -- see
+    apply_card_shadow's docstring for why that's not true everywhere."""
 
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
-        self._layout = QtWidgets.QVBoxLayout(self)
-        self._layout.setContentsMargins(0, 0, 0, 0)
-        self._layout.setSpacing(6)
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        self.card = QtWidgets.QFrame()
+        self.card.setObjectName("sectionCard")
+        outer.addWidget(self.card)
+
+        self._layout = QtWidgets.QVBoxLayout(self.card)
+        self._layout.setContentsMargins(16, 14, 16, 16)
+        self._layout.setSpacing(10)
 
         title_label = QtWidgets.QLabel(title)
         title_label.setProperty("role", "section-title")
         title_label.setAccessibleName(f"{title} section")
         self._layout.addWidget(title_label)
-
-        divider = QtWidgets.QFrame()
-        divider.setObjectName("divider")
-        divider.setFrameShape(QtWidgets.QFrame.HLine)
-        self._layout.addWidget(divider)
 
     def add_row(self, widget: QtWidgets.QWidget):
         self._layout.addWidget(widget)

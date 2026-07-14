@@ -17,33 +17,35 @@ Why this exists:
 from dataclasses import dataclass
 from typing import Dict
 
+from PyQt5 import QtGui, QtWidgets
+
 
 # ---------------------------------------------------------------------------
 # Spacing / radius / type scale (shared across themes)
 # ---------------------------------------------------------------------------
 
 SPACE = {
-    "xs": 4,
-    "sm": 8,
-    "md": 12,
-    "lg": 16,
-    "xl": 24,
-    "xxl": 32,
+    "xs": 6,
+    "sm": 10,
+    "md": 16,
+    "lg": 24,
+    "xl": 32,
+    "xxl": 40,
 }
 
 RADIUS = {
-    "sm": 4,
-    "md": 6,
-    "lg": 10,
+    "sm": 8,
+    "md": 10,
+    "lg": 14,
 }
 
 TYPE_SCALE = {
     "caption": 11,
     "body": 13,
     "label": 13,
-    "subtitle": 15,
-    "title": 18,
-    "display": 22,
+    "subtitle": 16,
+    "title": 20,
+    "display": 26,
 }
 
 FONT_FAMILY = '"Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif'
@@ -127,6 +129,35 @@ DARK = Palette(
 )
 
 
+def apply_card_shadow(widget: QtWidgets.QWidget, p: Palette) -> None:
+    """Attach a soft drop shadow standing in for a hard border -- the
+    "card" look of the Streamlit-style redesign. QSS has no box-shadow
+    equivalent, so this is done in Python via QGraphicsDropShadowEffect.
+
+    Deliberately reserved for widgets that are static once built (sidebar
+    section cards, the analytics figure's outer frame) -- NOT for anything
+    that wraps a frequently-repainting child (grid cells wrapping the
+    blitted MplCanvas during playback, or a scrolling QTableView). Qt has
+    to re-render a QGraphicsEffect's whole offscreen buffer whenever any
+    descendant repaints, so putting one on an animated container would
+    reintroduce the exact per-frame jank this same redesign pass was
+    asked to check for. Those widgets get a QSS-only "soft card" look
+    (rounded corners + a subtle border) instead -- see MplCanvas's QSS
+    rule and QTableView's QSS rule below.
+
+    Call again after a theme switch: light/dark need different shadow
+    opacity (a dark shadow barely reads on an already-dark background).
+    """
+    effect = QtWidgets.QGraphicsDropShadowEffect(widget)
+    effect.setBlurRadius(28)
+    effect.setXOffset(0)
+    effect.setYOffset(4)
+    color = QtGui.QColor("#000000")
+    color.setAlpha(50 if p.name == "light" else 110)
+    effect.setColor(color)
+    widget.setGraphicsEffect(effect)
+
+
 def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
     """Render a QSS stylesheet from a palette + a user-adjustable UI scale.
 
@@ -143,12 +174,14 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
     title = px(TYPE_SCALE["title"])
     caption = px(TYPE_SCALE["caption"])
 
+    pad_xs = px(SPACE["xs"])
     pad_sm = px(SPACE["sm"])
     pad_md = px(SPACE["md"])
     pad_lg = px(SPACE["lg"])
 
     r_sm = px(RADIUS["sm"])
     r_md = px(RADIUS["md"])
+    r_lg = px(RADIUS["lg"])
 
     return f"""
     * {{
@@ -159,12 +192,17 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
     }}
 
     QMainWindow, QWidget#centralWidget {{
-        background-color: {p.bg_base};
+        background-color: {p.bg_elevated};
     }}
 
+    /* Streamlit's defining trait: a sidebar in a flat, slightly muted
+    tone next to a brighter main content area -- no hard dividing line,
+    the tone difference alone reads as a separate region. Section "cards"
+    inside the sidebar (CollapsibleSection, widgets.py) then sit on top in
+    `surface` white so they pop against the muted sidebar background. */
     QWidget#controlPanel {{
-        background-color: {p.bg_elevated};
-        border-right: 1px solid {p.border};
+        background-color: {p.bg_base};
+        border: none;
     }}
 
     QLabel {{
@@ -175,8 +213,8 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
     QLabel[role="section-title"] {{
         color: {p.text_primary};
         font-size: {subtitle};
-        font-weight: 600;
-        padding-top: {pad_md};
+        font-weight: 700;
+        padding-top: 0;
     }}
 
     QLabel[role="title"] {{
@@ -203,50 +241,67 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
         border: none;
     }}
 
+    /* Sidebar section "card" (widgets.py's CollapsibleSection) -- replaces
+    the old title+divider grouping. Real drop shadow applied in Python via
+    theme.apply_card_shadow (QSS has no box-shadow); this widget never
+    hosts frequently-repainting content, so the shadow's extra compositing
+    pass is safe here in a way it wouldn't be on a grid cell. */
+    QFrame#sectionCard {{
+        background-color: {p.surface};
+        border: none;
+        border-radius: {r_lg};
+    }}
+
     /* The plot canvas itself is always white (widgets.py's MplCanvas.PLOT_BG
     -- standard practice so colormaps read true colors, unaffected by the
     app's own theme), which would otherwise look like a stray white hole
-    punched into a dark UI; a deliberate frame around it reads as an
-    intentional panel instead. */
+    punched into a dark UI; a soft, subtle frame reads as an intentional
+    "card" without a hard line. No QGraphicsDropShadowEffect here -- this
+    widget repaints every playback frame via blitting, and a real drop
+    shadow would force Qt to recomposite on every frame (see
+    apply_card_shadow's docstring). */
     MplCanvas {{
-        border: 1px solid {p.border_strong};
-        border-radius: {r_sm};
+        border: 1px solid {p.border};
+        border-radius: {r_lg};
     }}
 
     QPushButton {{
         background-color: {p.bg_sunken};
-        border: 1px solid {p.border};
+        border: none;
         border-radius: {r_md};
-        padding: {pad_sm} {pad_md};
+        padding: {pad_sm} {pad_lg};
         color: {p.text_primary};
-        min-height: 22px;
+        font-weight: 500;
+        min-height: 26px;
     }}
 
     QPushButton:hover {{
-        border-color: {p.border_strong};
+        background-color: {p.border};
     }}
 
     QPushButton:pressed {{
-        background-color: {p.bg_sunken};
+        background-color: {p.border_strong};
     }}
 
     QPushButton:disabled {{
         color: {p.text_disabled};
         background-color: {p.bg_sunken};
-        border-color: {p.border};
     }}
 
     QPushButton:focus {{
         border: 2px solid {p.focus_ring};
-        padding: {px(SPACE["sm"] - 1)} {px(SPACE["md"] - 1)};
+        padding: {px(SPACE["sm"] - 1)} {px(SPACE["lg"] - 1)};
     }}
 
     /* Toggle-style buttons (checkable) used in ToggleGroup */
     QPushButton[toggle="true"]:checked {{
         background-color: {p.accent};
-        border-color: {p.accent};
         color: {p.accent_text};
         font-weight: 600;
+    }}
+
+    QPushButton[toggle="true"]:checked:hover {{
+        background-color: {p.accent_hover};
     }}
 
     QPushButton[toggle="true"]:checked:disabled {{
@@ -255,9 +310,10 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
         opacity: 0.6;
     }}
 
+    /* Primary actions: solid accent fill. Secondary/default QPushButton
+    above stays a minimal, ghost-style subtle tint. */
     QPushButton#primaryButton {{
         background-color: {p.accent};
-        border-color: {p.accent};
         color: {p.accent_text};
         font-weight: 600;
     }}
@@ -273,7 +329,6 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
     QPushButton#primaryButton:disabled {{
         background-color: {p.bg_sunken};
         color: {p.text_disabled};
-        border-color: {p.border};
     }}
 
     QSlider::groove:horizontal {{
@@ -359,10 +414,14 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
 
     QComboBox {{
         background-color: {p.bg_sunken};
-        border: 1px solid {p.border};
+        border: none;
         border-radius: {r_md};
-        padding: {pad_sm};
-        min-height: 22px;
+        padding: {pad_sm} {pad_md};
+        min-height: 26px;
+    }}
+
+    QComboBox:hover {{
+        background-color: {p.border};
     }}
 
     QComboBox:focus {{
@@ -372,7 +431,8 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
     QComboBox QAbstractItemView {{
         background-color: {p.bg_elevated};
         color: {p.text_primary};
-        border: 1px solid {p.border_strong};
+        border: 1px solid {p.border};
+        border-radius: {r_md};
         selection-background-color: {p.accent};
         selection-color: {p.accent_text};
         outline: none;
@@ -387,20 +447,25 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
     to Qt's native/system palette here -- e.g. QTableView followed the
     OS's own light/dark appearance rather than this app's chosen theme,
     which could show a dark table under a light app theme (or vice
-    versa) regardless of which palette is active. */
+    versa) regardless of which palette is active.
+
+    QSS-only "soft card" (rounded corners, subtle border, no real
+    QGraphicsDropShadowEffect) -- this view repaints on every scroll, and
+    a real shadow effect would recomposite the whole table on each one;
+    see apply_card_shadow's docstring in this file for the full reasoning. */
     QTableView {{
         background-color: {p.surface};
         alternate-background-color: {p.bg_sunken};
         color: {p.text_primary};
         gridline-color: {p.border};
         border: 1px solid {p.border};
-        border-radius: {r_sm};
+        border-radius: {r_lg};
         selection-background-color: {p.accent};
         selection-color: {p.accent_text};
     }}
 
     QTableView::item {{
-        padding: {px(4)};
+        padding: {pad_xs};
     }}
 
     QHeaderView::section {{
@@ -408,18 +473,17 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
         color: {p.text_secondary};
         padding: {pad_sm};
         border: none;
-        border-bottom: 1px solid {p.border_strong};
-        border-right: 1px solid {p.border};
+        border-bottom: 1px solid {p.border};
         font-weight: 600;
     }}
 
     QLineEdit {{
         background-color: {p.bg_sunken};
-        border: 1px solid {p.border};
+        border: none;
         border-radius: {r_md};
-        padding: {pad_sm};
+        padding: {pad_sm} {pad_md};
         color: {p.text_primary};
-        min-height: 22px;
+        min-height: 26px;
     }}
 
     QLineEdit:focus {{
@@ -432,36 +496,42 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
         titlebar-normal-icon: none;
     }}
 
+    /* Same QSS-only soft-card treatment as QTableView above -- dock
+    content can scroll/animate, so no real drop shadow. */
     QDockWidget::title {{
         background-color: {p.bg_sunken};
         color: {p.text_secondary};
-        padding: {pad_sm};
-        border-bottom: 1px solid {p.border};
-        font-weight: 600;
+        padding: {pad_md};
+        border: none;
+        border-top-left-radius: {r_lg};
+        border-top-right-radius: {r_lg};
+        font-weight: 700;
+        font-size: {label};
     }}
 
     QTabBar::tab {{
-        background-color: {p.bg_sunken};
+        background-color: transparent;
         color: {p.text_secondary};
-        border: 1px solid {p.border};
-        border-bottom: none;
-        border-top-left-radius: {r_sm};
-        border-top-right-radius: {r_sm};
-        padding: {pad_sm} {pad_md};
+        border: none;
+        border-top-left-radius: {r_md};
+        border-top-right-radius: {r_md};
+        padding: {pad_sm} {pad_lg};
     }}
 
     QTabBar::tab:selected {{
-        background-color: {p.surface};
+        background-color: {p.bg_sunken};
         color: {p.text_primary};
         border-bottom: 2px solid {p.accent};
+        font-weight: 600;
     }}
 
     QTabBar::tab:hover:!selected {{
         color: {p.text_primary};
+        background-color: {p.bg_sunken};
     }}
 
     QMenuBar {{
-        background-color: {p.bg_base};
+        background-color: {p.bg_elevated};
         color: {p.text_primary};
     }}
 
@@ -473,9 +543,9 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
     QMenu {{
         background-color: {p.bg_elevated};
         color: {p.text_primary};
-        border: 1px solid {p.border_strong};
-        border-radius: {r_md};
-        padding: {px(4)};
+        border: 1px solid {p.border};
+        border-radius: {r_lg};
+        padding: {pad_xs};
     }}
 
     QMenu::item {{
