@@ -65,3 +65,12 @@ class TestBuildQssCardRules:
         qss = build_qss(LIGHT)
         assert "QPushButton#primaryButton {" in qss
         assert LIGHT.accent in qss
+
+    def test_disabled_combobox_has_explicit_rule(self):
+        """Without this, macOS's native style paints a disabled QComboBox
+        itself and ignores the stylesheet entirely -- a stray white pill
+        under the dark theme (e.g. the per-cell quantity combo when only
+        one quantity is available). QPushButton already had this; QComboBox
+        didn't."""
+        qss = build_qss(DARK)
+        assert "QComboBox:disabled {" in qss

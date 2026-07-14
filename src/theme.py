@@ -438,6 +438,16 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
         border: 2px solid {p.focus_ring};
     }}
 
+    /* Without an explicit :disabled rule here, macOS's native style takes
+    over painting a disabled QComboBox and ignores this stylesheet entirely
+    -- shows up as a stray white pill in dark mode (e.g. a per-cell quantity
+    combo when only one quantity is available to pick). QPushButton below
+    already has the same :disabled override for the same reason. */
+    QComboBox:disabled {{
+        color: {p.text_disabled};
+        background-color: {p.bg_sunken};
+    }}
+
     QComboBox QAbstractItemView {{
         background-color: {p.bg_elevated};
         color: {p.text_primary};
