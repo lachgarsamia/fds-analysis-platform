@@ -207,6 +207,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # X or reopened via this menu, no custom show/hide bookkeeping
         # needed here).
         self.panels_menu = view_menu.addMenu("Panels")
+        view_menu.addSeparator()
 
         theme_menu = view_menu.addMenu("Theme")
         self.theme_action_group = QtWidgets.QActionGroup(self)
@@ -223,15 +224,19 @@ class MainWindow(QtWidgets.QMainWindow):
             action.setChecked(abs(scale - self.ui_scale) < 1e-6)
             action.triggered.connect(lambda _checked, s=scale: self._set_ui_scale(s))
             scale_menu.addAction(action)
+        view_menu.addSeparator()
 
         colormap_menu = view_menu.addMenu("Colormap")
         self.colormap_action_group = QtWidgets.QActionGroup(self)
-        for label, cmap in COLORMAPS:
+        for i, (label, cmap) in enumerate(COLORMAPS):
+            if i == 2:  # after the two calibrated defaults, before the stock options
+                colormap_menu.addSeparator()
             action = QtWidgets.QAction(label, self, checkable=True)
             action.setChecked(cmap == self.current_colormap)
             action.triggered.connect(lambda _checked, c=cmap: self._set_colormap(c))
             self.colormap_action_group.addAction(action)
             colormap_menu.addAction(action)
+        view_menu.addSeparator()
 
         interpolation_menu = view_menu.addMenu("Interpolation")
         self.interpolation_action_group = QtWidgets.QActionGroup(self)
@@ -250,6 +255,7 @@ class MainWindow(QtWidgets.QMainWindow):
             action.triggered.connect(lambda _checked, l=layout_name: self._set_grid_layout(l))
             self.grid_layout_action_group.addAction(action)
             grid_menu.addAction(action)
+        view_menu.addSeparator()
 
         self.link_clim_action = QtWidgets.QAction("Link color scales", self, checkable=True)
         self.link_clim_action.setToolTip(
@@ -279,6 +285,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.velocity_overlay_action.triggered.connect(self._set_velocity_overlay_enabled)
         view_menu.addAction(self.velocity_overlay_action)
+        view_menu.addSeparator()
 
         fullscreen_action = QtWidgets.QAction("Toggle Fullscreen\tF11", self)
         fullscreen_action.triggered.connect(self._toggle_fullscreen)
