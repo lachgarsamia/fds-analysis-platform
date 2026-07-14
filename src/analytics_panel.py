@@ -21,11 +21,13 @@ starts uncached no longer held).
 
 from __future__ import annotations
 
-import matplotlib.cm as mpl_cm
+import matplotlib as mpl
+import matplotlib.lines as mlines
 from PyQt5 import QtCore, QtWidgets
 
 from analytics.clustering import DEFAULT_N_CLUSTERS, cluster_alignment, run_clustering, run_pca
 from analytics.features import build_feature_index, build_feature_matrix
+from browser import FACTOR_LABELS
 from widgets import MplCanvas
 
 # Cycled by a scenario's `candles` factor index so an unexpected extra
@@ -75,6 +77,7 @@ class AnalyticsPanelDock(QtWidgets.QDockWidget):
         self.setWidget(root)
 
         self.ax = self.canvas.fig.add_subplot(111)
+        self.ax.set_facecolor(MplCanvas.PLOT_BG)
         if features is None:
             self.status_label.setText("Loading ensemble analytics...")
         else:
@@ -97,11 +100,13 @@ class AnalyticsPanelDock(QtWidgets.QDockWidget):
             self.status_label.setText("No scenarios to analyze.")
             return
 
-        self._coords = run_pca(matrix, n_components=2)
+        pca_result = run_pca(matrix, n_components=2)
+        self._coords = pca_result.coords
+        variance = pca_result.explained_variance_ratio
         labels = run_clustering(matrix, n_clusters=DEFAULT_N_CLUSTERS)
         by_case = {f.case_index: f for f in self._features}
 
-        colors = mpl_cm.get_cmap(CLUSTER_CMAP_NAME)
+        colors = mpl.colormaps[CLUSTER_CMAP_NAME]
 
         for i, case_index in enumerate(case_indices):
             entry = by_case[case_index]
@@ -112,18 +117,71 @@ class AnalyticsPanelDock(QtWidgets.QDockWidget):
                 edgecolors="white", linewidths=0.5,
             )
 
-        self.ax.set_xlabel("PC1")
-        self.ax.set_ylabel("PC2")
+        self.ax.set_title("Ensemble PCA — scenario clustering by fire behavior", fontsize=11, fontweight="bold")
+        self.ax.set_xlabel(self._axis_label("PC1", variance, 0))
+        self.ax.set_ylabel(self._axis_label("PC2", variance, 1))
         self.ax.set_xticks([])
         self.ax.set_yticks([])
-        self.canvas.fig.subplots_adjust(top=0.95, bottom=0.1, left=0.08, right=0.97)
-        self.canvas.draw_idle()
 
         candles = [by_case[ci].candles for ci in case_indices]
         alignment = cluster_alignment(labels, candles)
+        self._add_legends(labels, candles, colors)
+
+        caption = (
+            f"{len(case_indices)} scenarios, {DEFAULT_N_CLUSTERS} clusters — "
+            f"{alignment * 100:.0f}% match candle count."
+        )
+        self.canvas.fig.text(0.5, 0.01, caption, ha="center", va="bottom",
+                              fontsize=8, style="italic", color="#555555")
+
+        self.canvas.fig.subplots_adjust(top=0.90, bottom=0.13, left=0.09, right=0.97)
+        self.canvas.draw_idle()
+
         self.status_label.setText(
             f"{len(case_indices)} scenarios, {DEFAULT_N_CLUSTERS} clusters "
             f"({alignment * 100:.0f}% match candle count). Hover a point for details."
+        )
+
+    @staticmethod
+    def _axis_label(name: str, variance, index: int) -> str:
+        """"PC1 (62% variance explained)" -- the real number from this
+        fit, not a placeholder; falls back to a bare name if this
+        component wasn't computed (e.g. only 1 scenario -> 1 component)."""
+        if index < len(variance):
+            return f"{name} ({variance[index] * 100:.0f}% variance explained)"
+        return name
+
+    def _add_legends(self, labels, candles: list, colors) -> None:
+        """Two separate legends -- point color encodes cluster, marker
+        shape encodes candle count -- rather than a single legend trying
+        to enumerate every (cluster, candle) combination actually present."""
+        unique_clusters = sorted(set(int(label) for label in labels))
+        cluster_handles = [
+            mlines.Line2D(
+                [], [], color=colors(cluster_id % 10), marker="o", linestyle="None",
+                markersize=8, markeredgecolor="white", markeredgewidth=0.5,
+                label=f"Cluster {cluster_id}",
+            )
+            for cluster_id in unique_clusters
+        ]
+        cluster_legend = self.ax.legend(
+            handles=cluster_handles, loc="upper left", title="Cluster",
+            fontsize=8, title_fontsize=8, framealpha=0.9,
+        )
+        self.ax.add_artist(cluster_legend)  # kept on-axes once the 2nd legend() call below replaces the "current" legend
+
+        unique_candles = sorted(set(candles))
+        candle_handles = [
+            mlines.Line2D(
+                [], [], color="#555555", marker=CANDLE_MARKERS[candle_count % len(CANDLE_MARKERS)],
+                linestyle="None", markersize=8,
+                label=FACTOR_LABELS["candles"].get(candle_count, f"{candle_count} candles"),
+            )
+            for candle_count in unique_candles
+        ]
+        self.ax.legend(
+            handles=candle_handles, loc="upper right", title="Candles",
+            fontsize=8, title_fontsize=8, framealpha=0.9,
         )
 
     def _nearest_case_index(self, event) -> int:

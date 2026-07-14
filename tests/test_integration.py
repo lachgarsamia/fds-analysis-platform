@@ -184,10 +184,13 @@ class TestIntegration:
         window.close()
 
     def test_colormap_menu_includes_inferno(self, qapp):
-        """M1.3.1: menu keeps gist_heat/inferno/viridis/cividis per spec."""
+        """M1.3.1's stock options (gist_heat/inferno/viridis/cividis) stay
+        available alongside the calibrated fds_fire/fds_flow defaults
+        added by the GUI modernization pass."""
         from main_window import COLORMAPS
         cmap_values = [c for _, c in COLORMAPS]
-        assert set(cmap_values) == {"gist_heat", "inferno", "viridis", "cividis"}
+        assert {"gist_heat", "inferno", "viridis", "cividis"}.issubset(set(cmap_values))
+        assert {"fds_fire", "fds_flow"}.issubset(set(cmap_values))
 
     def test_mainwindow_closes_cleanly(self, qapp):
         """Verify window closes and cleans up without crash."""
@@ -1437,9 +1440,10 @@ class TestIntegration:
         window.close()
 
     def test_switching_quantity_updates_isotherm_levels(self, qapp):
-        """TEMPERATURE has default hazard-band levels; VELOCITY doesn't
-        (config.ISOTHERM_LEVELS) -- switching quantity on an isotherm-
-        enabled active cell must pick that up, not keep stale levels."""
+        """TEMPERATURE has default hazard-band levels; VELOCITY has speed-
+        band levels (config.ISOTHERM_LEVELS) -- switching quantity on an
+        isotherm-enabled active cell must pick up the new quantity's own
+        levels, not keep the stale ones."""
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo:
@@ -1451,7 +1455,7 @@ class TestIntegration:
 
         window.quantity_combo.setCurrentIndex(1)  # switch to Air speed (VELOCITY)
 
-        assert cell.view._isotherm_levels == []
+        assert cell.view._isotherm_levels == [1.0, 2.0, 3.0]
         window.close()
 
     # ------------------------------------------------ M3.1 ensemble analytics

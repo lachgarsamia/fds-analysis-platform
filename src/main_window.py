@@ -52,6 +52,8 @@ APP_NAME = "FDSSLCFVisualizer"
 # spike (docs/spike-parser-validation.md): already a black-red-orange-yellow-
 # white blackbody/flame progression, kept as-is rather than replaced.
 COLORMAPS = [
+    ("Fire (calibrated, default)", "fds_fire"),
+    ("Flow (calibrated, default for air speed)", "fds_flow"),
     ("Heat (gist_heat)", "gist_heat"),
     ("Inferno", "inferno"),
     ("Viridis (colorblind-safe)", "viridis"),
@@ -248,11 +250,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.link_clim_action.triggered.connect(self._set_link_clim)
         view_menu.addAction(self.link_clim_action)
 
-        self.isotherms_action = QtWidgets.QAction("Isotherm overlay", self, checkable=True)
+        self.isotherms_action = QtWidgets.QAction("Contour overlay", self, checkable=True)
         self.isotherms_action.setToolTip(
-            "Draw contour lines at fixed hazard-band thresholds (60/100/300 °C) "
-            "on every visible cell. Redraws each frame instead of blitting while "
-            "on, so playback is slightly heavier with this enabled."
+            "Draw contour lines at fixed reference levels on every visible "
+            "cell -- hazard-band thresholds (60/100/300 °C) for Temperature, "
+            "speed bands (1/2/3 m/s) for Air speed. Redraws each frame "
+            "instead of blitting while on, so playback is slightly heavier "
+            "with this enabled."
         )
         self.isotherms_action.triggered.connect(self._set_isotherms_enabled)
         view_menu.addAction(self.isotherms_action)

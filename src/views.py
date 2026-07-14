@@ -9,9 +9,9 @@ matplotlib internals directly. Single-view mode (MainWindow) is just a
 
 from typing import Protocol
 
+import matplotlib as mpl
 import numpy as np
 from PyQt5 import QtCore, QtWidgets
-from matplotlib import cm
 
 from widgets import MplCanvas
 from config import QUANTITY_DISPLAY
@@ -80,6 +80,7 @@ class SliceView:
         why this is the load-bearing piece for M2.6's probe/isotherms."""
         self._extent = extent
         self.ax = self.canvas.fig.add_subplot(111)
+        self.ax.set_facecolor(MplCanvas.PLOT_BG)
         imshow_kwargs = dict(cmap=cmap, interpolation=interpolation, aspect="auto")
         if extent is not None:
             imshow_kwargs["extent"] = extent
@@ -108,7 +109,7 @@ class SliceView:
             self.canvas.blit_update(self.heatmap)
 
     def set_cmap(self, name: str) -> None:
-        self.heatmap.set_cmap(cm.get_cmap(name))
+        self.heatmap.set_cmap(mpl.colormaps[name])
         self.canvas.capture_background()
 
     def set_clim(self, vmin: float, vmax: float) -> None:

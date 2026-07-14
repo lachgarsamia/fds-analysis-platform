@@ -29,8 +29,17 @@ class MplCanvas(FigureCanvas):
     again -- see main_window.py's setters.
     """
 
+    # Plot area background is fixed white regardless of the app's own
+    # light/dark theme -- standard practice for scientific heatmaps, so a
+    # colormap and its colorbar always read the same true colors rather
+    # than being visually tinted by whatever app chrome surrounds them.
+    # Explicit (not just matplotlib's own default, which happens to also
+    # be white) so this can't silently change if a rcParams default ever
+    # does.
+    PLOT_BG = "#FFFFFF"
+
     def __init__(self, parent=None, dpi: int = 100):
-        self.fig = Figure(dpi=dpi)
+        self.fig = Figure(dpi=dpi, facecolor=self.PLOT_BG)
         super().__init__(self.fig)
         self.setParent(parent)
         self.setSizePolicy(

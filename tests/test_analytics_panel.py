@@ -109,3 +109,45 @@ class TestAnalyticsPanelDock:
         # distinct marker shapes were used across the 6 (candles 0/1) scenarios.
         markers_used = {tuple(p[0].vertices.round(3).flatten()) for p in paths if p}
         assert len(markers_used) >= 2
+
+    def test_has_a_title(self, qapp):
+        dock = AnalyticsPanelDock(_fake_features())
+        assert dock.ax.get_title() != ""
+
+    def test_axis_labels_include_real_explained_variance_percentages(self, qapp):
+        dock = AnalyticsPanelDock(_fake_features())
+        xlabel, ylabel = dock.ax.get_xlabel(), dock.ax.get_ylabel()
+        assert xlabel.startswith("PC1 (") and "% variance explained" in xlabel
+        assert ylabel.startswith("PC2 (") and "% variance explained" in ylabel
+        # Not a placeholder -- extract the number and confirm it's a real,
+        # non-trivial percentage (the two obvious blobs in _fake_features
+        # are separated along a dominant axis, so PC1 should explain a lot).
+        pct = float(xlabel.split("(")[1].split("%")[0])
+        assert pct > 10.0
+
+    def test_has_cluster_and_candle_legends(self, qapp):
+        dock = AnalyticsPanelDock(_fake_features())
+        legends = dock.ax.findobj(match=lambda a: hasattr(a, "get_texts") and callable(a.get_texts))
+        # Two separate legend() calls (_add_legends) -- one for cluster
+        # color, one for candle-count marker shape -- both must survive on
+        # the axes (add_artist() for the first, so the second legend()
+        # call doesn't silently remove it).
+        titles = {leg.get_title().get_text() for leg in legends if hasattr(leg, "get_title")}
+        assert "Cluster" in titles
+        assert "Candles" in titles
+
+    def test_candle_legend_uses_plain_language_labels(self, qapp):
+        dock = AnalyticsPanelDock(_fake_features())
+        legends = [a for a in dock.ax.findobj(match=lambda a: hasattr(a, "get_texts") and callable(a.get_texts))
+                   if hasattr(a, "get_title") and a.get_title().get_text() == "Candles"]
+        assert len(legends) == 1
+        labels = {t.get_text() for t in legends[0].get_texts()}
+        # FACTOR_LABELS wording ("1 candle"/"2 candles"), same as the
+        # experiment browser -- not a bare "0"/"1" factor index.
+        assert labels <= {"1 candle", "2 candles"}
+        assert any("candle" in label for label in labels)
+
+    def test_figure_has_a_plain_language_caption(self, qapp):
+        dock = AnalyticsPanelDock(_fake_features())
+        texts = [t.get_text() for t in dock.canvas.fig.texts]
+        assert any("6 scenarios" in t and "match candle count" in t for t in texts)

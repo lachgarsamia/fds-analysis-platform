@@ -8,6 +8,8 @@ until it's earned" convention (ROADMAP.md §7.3).
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
@@ -23,19 +25,29 @@ RANDOM_STATE = 42
 DEFAULT_N_CLUSTERS = 2
 
 
-def run_pca(feature_matrix: np.ndarray, n_components: int = 2) -> np.ndarray:
-    """(n_scenarios, n_components) projection. Features are on very
-    different scales (fractions in [0,1] vs temperatures in the hundreds
-    vs threshold-crossing seconds) -- standardizing each feature to zero
-    mean/unit variance first keeps large-magnitude features (raw °C
-    curves) from dominating the projection just because of their units,
-    not because they're more informative."""
+class PCAResult(NamedTuple):
+    """coords: (n_scenarios, n_components) projection. explained_variance_ratio:
+    (n_components,) fraction of total feature variance each PC captures --
+    e.g. [0.62, 0.18] means PC1 explains 62% of the variance, PC2 18% --
+    for axis labels that say something real rather than a bare "PC1"."""
+    coords: np.ndarray
+    explained_variance_ratio: np.ndarray
+
+
+def run_pca(feature_matrix: np.ndarray, n_components: int = 2) -> PCAResult:
+    """Features are on very different scales (fractions in [0,1] vs
+    temperatures in the hundreds vs threshold-crossing seconds) --
+    standardizing each feature to zero mean/unit variance first keeps
+    large-magnitude features (raw °C curves) from dominating the
+    projection just because of their units, not because they're more
+    informative."""
     if feature_matrix.shape[0] == 0:
-        return np.zeros((0, n_components))
+        return PCAResult(np.zeros((0, n_components)), np.zeros((n_components,)))
     standardized = _standardize(feature_matrix)
     n_components = min(n_components, feature_matrix.shape[0], feature_matrix.shape[1])
     pca = PCA(n_components=n_components, random_state=RANDOM_STATE)
-    return pca.fit_transform(standardized)
+    coords = pca.fit_transform(standardized)
+    return PCAResult(coords, pca.explained_variance_ratio_)
 
 
 def run_clustering(feature_matrix: np.ndarray, n_clusters: int = DEFAULT_N_CLUSTERS) -> np.ndarray:
