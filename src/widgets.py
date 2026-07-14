@@ -38,7 +38,18 @@ class MplCanvas(FigureCanvas):
     # does.
     PLOT_BG = "#FFFFFF"
 
-    def __init__(self, parent=None, dpi: int = 100):
+    # Bumped from matplotlib's own default of 100 (GUI modernization pass,
+    # item 7) -- crisper on-screen rendering (sharper text, contour lines,
+    # colorbar ticks) at typical window/cell sizes. This is a rendering-
+    # quality change only: the underlying data is still the FDS mesh's
+    # native 49x101 grid (see main_window.py's velocity/interpolation
+    # docstrings for the distinction between "renders less blocky" and
+    # "the simulation itself ran at finer resolution" -- only the former
+    # is true here; the latter would mean re-running simulations at a
+    # finer mesh, out of scope, gated on M-SIM).
+    DEFAULT_DPI = 150
+
+    def __init__(self, parent=None, dpi: int = DEFAULT_DPI):
         self.fig = Figure(dpi=dpi, facecolor=self.PLOT_BG)
         super().__init__(self.fig)
         self.setParent(parent)

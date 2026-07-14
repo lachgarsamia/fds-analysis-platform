@@ -60,9 +60,18 @@ COLORMAPS = [
     ("Cividis (colorblind-safe)", "cividis"),
 ]
 
+# Bilinear is the default (GUI modernization pass, item 7) -- matplotlib's
+# imshow default of "nearest" is genuinely blocky at this grid's native
+# 49x101 resolution stretched to fill a much larger on-screen cell.
+# Bicubic was considered (matplotlib supports it too) but rejected as the
+# default: for a scientific tool, cubic interpolation's mild ringing/
+# overshoot near sharp gradients can visually suggest values the
+# underlying simulation never produced, which bilinear doesn't do.
+# "Nearest" stays available for anyone who specifically wants to see raw
+# cell boundaries (e.g. to sanity-check against the actual mesh).
 INTERPOLATIONS = [
-    ("Nearest", "nearest"),
     ("Bilinear", "bilinear"),
+    ("Nearest", "nearest"),
 ]
 
 MIN_WIDTH = 900
@@ -163,7 +172,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.current_theme_name = self.settings.value("theme", "dark")
         self.ui_scale = float(self.settings.value("ui_scale", 1.0))
         self.current_colormap = self.settings.value("colormap", "gist_heat")
-        self.current_interpolation = self.settings.value("interpolation", "nearest")
+        self.current_interpolation = self.settings.value("interpolation", "bilinear")
         # M2.1: which (quantity, direction, offset) slice the heatmap shows.
         # Set before the control panel/plot are built since both read it.
         self.current_quantity_key = DEFAULT_SLICE_KEY

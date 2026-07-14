@@ -164,6 +164,28 @@ class TestIntegration:
         assert not image.isNull()
         window.close()
 
+    def test_bilinear_is_the_fresh_install_interpolation_default(self, qapp, monkeypatch):
+        """GUI modernization pass, item 7: a never-configured install
+        (nothing in QSettings yet) must default to bilinear, not the
+        blocky "nearest" default matplotlib itself would use. Forces a
+        clean QSettings.value() -- always returns the fallback -- rather
+        than assuming this machine's real, persisted QSettings happens to
+        be unconfigured (it may well already have a saved preference from
+        another test run)."""
+        from PyQt5 import QtCore
+        monkeypatch.setattr(QtCore.QSettings, "value", lambda self, key, default=None: default)
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        assert window.current_interpolation == "bilinear"
+        assert window.heatmap.get_interpolation() == "bilinear"
+        window.close()
+
+    def test_nearest_still_available_in_interpolation_menu(self, qapp):
+        from main_window import INTERPOLATIONS
+        values = [v for _label, v in INTERPOLATIONS]
+        assert "nearest" in values
+        assert "bilinear" in values
+
     def test_interpolation_toggle_persists(self, qapp):
         """Verify the interpolation toggle (M1.3.4) applies and persists.
 
