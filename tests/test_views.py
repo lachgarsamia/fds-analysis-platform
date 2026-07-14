@@ -241,6 +241,97 @@ class TestSliceViewIsotherms:
         assert view._contour_artist is not None
 
 
+class TestSliceViewVelocityOverlay:
+    """Item 6 (GUI modernization pass): VELOCITY speed-band contours drawn
+    on top of a TEMPERATURE heatmap. Own artist/state, independent of the
+    isotherm mechanism above -- these tests mirror TestSliceViewIsotherms
+    but exercise the second, separately-tracked overlay."""
+
+    def test_disabled_by_default(self, qapp):
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=0.0, vmax=100.0, colorbar_label="x")
+        assert not view.velocity_overlay_enabled
+
+    def test_enabling_draws_nothing_until_a_velocity_frame_arrives(self, qapp):
+        """Turning the toggle on alone isn't enough -- there's no "current"
+        velocity frame to contour until show_frame() supplies one."""
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=0.0, vmax=100.0, colorbar_label="x", extent=(0.0, 1.0, 0.0, 0.48))
+        view.set_velocity_overlay_levels([1.0, 2.0])
+        view.set_velocity_overlay_enabled(True)
+        assert view.velocity_overlay_enabled
+        assert view._velocity_contour_artist is None
+
+    def test_show_frame_with_velocity_frame_draws_the_overlay(self, qapp):
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=0.0, vmax=100.0, colorbar_label="x", extent=(0.0, 1.0, 0.0, 0.48))
+        view.set_velocity_overlay_levels([1.0, 2.0])
+        view.set_velocity_overlay_enabled(True)
+        velocity_frame = np.linspace(0.0, 3.0, 49 * 101, dtype=np.float32).reshape(49, 101)
+        view.show_frame(FRAME, velocity_frame=velocity_frame)
+        assert view._velocity_contour_artist is not None
+
+    def test_disabling_clears_the_overlay(self, qapp):
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=0.0, vmax=100.0, colorbar_label="x", extent=(0.0, 1.0, 0.0, 0.48))
+        view.set_velocity_overlay_levels([1.0])
+        view.set_velocity_overlay_enabled(True)
+        velocity_frame = np.linspace(0.0, 3.0, 49 * 101, dtype=np.float32).reshape(49, 101)
+        view.show_frame(FRAME, velocity_frame=velocity_frame)
+        view.set_velocity_overlay_enabled(False)
+        assert not view.velocity_overlay_enabled
+        assert view._velocity_contour_artist is None
+
+    def test_no_velocity_frame_passed_draws_no_overlay_even_if_enabled(self, qapp):
+        """A "slice" cell showing VELOCITY itself (not TEMPERATURE) never
+        gets a velocity_frame from main_window.py -- must degrade to no
+        overlay, not crash on None data."""
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=0.0, vmax=100.0, colorbar_label="x", extent=(0.0, 1.0, 0.0, 0.48))
+        view.set_velocity_overlay_levels([1.0])
+        view.set_velocity_overlay_enabled(True)
+        view.show_frame(FRAME)  # no velocity_frame kwarg -- defaults to None
+        assert view._velocity_contour_artist is None
+
+    def test_coexists_with_temperature_isotherms(self, qapp):
+        """Both overlays can be on at once, as two independent artists --
+        neither one clobbers the other."""
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=0.0, vmax=100.0, colorbar_label="x", extent=(0.0, 1.0, 0.0, 0.48))
+        view.set_isotherm_levels([60, 100])
+        view.set_isotherms_enabled(True)
+        view.set_velocity_overlay_levels([1.0, 2.0])
+        view.set_velocity_overlay_enabled(True)
+        velocity_frame = np.linspace(0.0, 3.0, 49 * 101, dtype=np.float32).reshape(49, 101)
+        view.show_frame(FRAME, velocity_frame=velocity_frame)
+        assert view._contour_artist is not None
+        assert view._velocity_contour_artist is not None
+        assert view._contour_artist is not view._velocity_contour_artist
+
+    def test_styled_distinctly_from_temperature_isotherms(self, qapp):
+        """Different color/linestyle so a viewer never confuses a
+        temperature hazard-band line with a velocity speed-band line."""
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=0.0, vmax=100.0, colorbar_label="x", extent=(0.0, 1.0, 0.0, 0.48))
+        view.set_isotherm_levels([60])
+        view.set_isotherms_enabled(True)
+        view.set_velocity_overlay_levels([1.0])
+        view.set_velocity_overlay_enabled(True)
+        velocity_frame = np.linspace(0.0, 3.0, 49 * 101, dtype=np.float32).reshape(49, 101)
+        view.show_frame(FRAME, velocity_frame=velocity_frame)
+        temp_color = view._contour_artist.get_edgecolor()
+        vel_color = view._velocity_contour_artist.get_edgecolor()
+        assert list(temp_color[0]) != list(vel_color[0])
+        assert view._contour_artist.get_linestyle() != view._velocity_contour_artist.get_linestyle()
+
+
 class TestDifferenceView:
     def test_compute_diff(self):
         a = np.array([[[1.0, 2.0], [3.0, 4.0]], [[10.0, 20.0], [30.0, 40.0]]], dtype=np.float32)
@@ -300,6 +391,24 @@ class TestDifferenceView:
         assert view._inner.heatmap.get_clim() == (-20.0, 20.0)
         view.set_title("c1_d0 − c1_d1 · TEMP")
         assert view._inner.ax.get_title() == "c1_d0 − c1_d1 · TEMP"
+
+    def test_velocity_overlay_calls_delegate_without_crashing(self, qapp):
+        """Regression test: main_window.py's _apply_contour_overlay_state
+        calls set_velocity_overlay_levels()/set_velocity_overlay_enabled()
+        unconditionally on every visible cell's view, regardless of
+        cell_type (same as the isotherm setters above) -- a DifferenceView
+        missing these delegating methods raised AttributeError from inside
+        a Qt signal handler (GridCell.type_changed), which PyQt5 turns
+        into a hard process abort, not a catchable exception. The overlay
+        never actually applies to a difference cell in practice, but the
+        delegate call itself must not raise."""
+        view = DifferenceView()
+        view.init_plot(FRAME, interpolation="nearest", vmin=-10.0, vmax=10.0, colorbar_label="x")
+        view.set_velocity_overlay_levels([1.0, 2.0])
+        view.set_velocity_overlay_enabled(True)
+        assert view.velocity_overlay_enabled
+        view.set_velocity_overlay_enabled(False)
+        assert not view.velocity_overlay_enabled
 
 
 @requires_real_dataset
@@ -510,6 +619,17 @@ class TestEnsembleView:
         composite = np.full((49, 101), 3.5, dtype=np.float32)
         view.show_frame(composite)
         assert (view._inner.heatmap.get_array() == 3.5).all()
+
+    def test_velocity_overlay_calls_delegate_without_crashing(self, qapp):
+        """Same regression as DifferenceView's -- see that test's docstring."""
+        view = EnsembleView()
+        view.init_plot(FRAME, cmap="viridis", interpolation="nearest",
+                        vmin=0.0, vmax=5.0, colorbar_label="x")
+        view.set_velocity_overlay_levels([1.0, 2.0])
+        view.set_velocity_overlay_enabled(True)
+        assert view.velocity_overlay_enabled
+        view.set_velocity_overlay_enabled(False)
+        assert not view.velocity_overlay_enabled
 
 
 @requires_real_dataset

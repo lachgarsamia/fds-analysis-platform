@@ -1458,6 +1458,70 @@ class TestIntegration:
         assert cell.view._isotherm_levels == [1.0, 2.0, 3.0]
         window.close()
 
+    # ------------------------------------------- GUI modernization item 6
+    def test_velocity_overlay_off_by_default(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        assert not window.velocity_overlay_action.isChecked()
+        cell = window.view_grid.active_cell()
+        assert not cell.view.velocity_overlay_enabled
+        window.close()
+
+    def test_velocity_overlay_applies_only_to_temperature_slice_cells(self, qapp):
+        """Opt-in, grid-wide toggle (View -> Show velocity overlay) --
+        applies to a "slice" cell showing TEMPERATURE, is a no-op for a
+        cell already showing VELOCITY (overlaying velocity on itself makes
+        no sense) or a difference/ensemble cell."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+
+        window._open_browser_grid([0, 1])
+        qapp.processEvents()
+        temp_cell, velocity_cell = window.view_grid.visible_cells()
+        idx = next(i for i, info in enumerate(window.quantity_infos) if info.key.quantity == "VELOCITY")
+        velocity_cell.set_quantity_silently(velocity_cell._quantity_options[idx][1])
+        window._load_cell(velocity_cell, velocity_cell.case_index, velocity_cell._quantity_options[idx][1])
+        qapp.processEvents()
+
+        window.velocity_overlay_action.setChecked(True)
+        window._set_velocity_overlay_enabled(True)
+        qapp.processEvents()
+
+        assert temp_cell.view.velocity_overlay_enabled
+        assert not velocity_cell.view.velocity_overlay_enabled
+        window.close()
+
+    def test_velocity_overlay_contour_reflects_real_aligned_data(self, qapp):
+        """Real-data verification (not assumed): TEMPERATURE and VELOCITY
+        share the exact same physical plane/extent for a real scenario
+        (confirmed directly against fds/sim/ before building this), so the
+        overlay's contour must be drawn from the SAME scenario's real
+        VELOCITY array at the SAME frame the temperature heatmap is
+        showing, not placeholder/zero data."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+
+        window.velocity_overlay_action.setChecked(True)
+        window._set_velocity_overlay_enabled(True)
+        qapp.processEvents()
+
+        cell = window.view_grid.active_cell()
+        assert cell.view.velocity_overlay_enabled
+        assert cell.view._velocity_frame is not None
+
+        from slice_key import SliceKey
+        expected = window.controller.store.get(
+            cell.case_index, SliceKey("VELOCITY", cell.quantity_key.direction, cell.quantity_key.offset),
+        )[window.time_controller.index]
+        assert np.array_equal(cell.view._velocity_frame, expected)
+        window.close()
+
     # ------------------------------------------------ M3.1 ensemble analytics
     def test_analytics_panel_present_for_real_data(self, qapp):
         sim_data = load_simulation_data()

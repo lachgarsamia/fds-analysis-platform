@@ -35,7 +35,7 @@ from data_provider import SimulationData
 from schematic import SchematicWidget, flame_icon, door_icon, vent_icon, resolve_room_extent
 from export import AnimationExporter, ffmpeg_available
 from load_data import SIM_ROOT
-from slice_key import SliceInfo, DEFAULT_SLICE_KEY, available_slices
+from slice_key import SliceInfo, SliceKey, DEFAULT_SLICE_KEY, available_slices
 from views import ViewGrid, DifferenceView, EnsembleView
 from summary_stats import build_summary_index
 from browser import ExperimentBrowserDock, _SummaryTextWorker
@@ -260,6 +260,16 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.isotherms_action.triggered.connect(self._set_isotherms_enabled)
         view_menu.addAction(self.isotherms_action)
+
+        self.velocity_overlay_action = QtWidgets.QAction("Show velocity overlay", self, checkable=True)
+        self.velocity_overlay_action.setToolTip(
+            "Draw VELOCITY speed-band contours (dashed, blue) on top of any "
+            "cell currently showing Temperature -- confirmed VELOCITY shares "
+            "the exact same physical plane, so the overlay always lines up. "
+            "Off by default; a plain temperature view stays available."
+        )
+        self.velocity_overlay_action.triggered.connect(self._set_velocity_overlay_enabled)
+        view_menu.addAction(self.velocity_overlay_action)
 
         fullscreen_action = QtWidgets.QAction("Toggle Fullscreen\tF11", self)
         fullscreen_action.triggered.connect(self._toggle_fullscreen)
@@ -794,7 +804,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.temp_slider.setValue(display['slider_default'])
 
         self.view_grid.active_view().set_colorbar_label(f"{display['label']} ({display['unit']})")
-        self._apply_isotherm_state(self.view_grid.active_cell())  # levels are quantity-specific
+        self._apply_contour_overlay_state(self.view_grid.active_cell())  # levels are quantity-specific
         self._apply_link_clim()
 
     def _extent_for(self, case_index: int, quantity_key) -> tuple:
@@ -823,7 +833,7 @@ class MainWindow(QtWidgets.QMainWindow):
         not on every scenario/quantity redraw (the callback/levels don't
         need re-registering just because the displayed data changed)."""
         cell.view.enable_probe(lambda x, z, v, c=cell: self._on_cell_probe(c, x, z, v))
-        self._apply_isotherm_state(cell)
+        self._apply_contour_overlay_state(cell)
 
     def _on_cell_probe(self, cell, x, z, value):
         """Cursor probe callback (M2.6.1): x/z are physical meters, value
@@ -839,15 +849,51 @@ class MainWindow(QtWidgets.QMainWindow):
         value_text = f"{value:.1f}{unit}" if value is not None else "—"
         self.statusBar().showMessage(f"x = {x:.3f} m, z = {z:.3f} m, value = {value_text}")
 
-    def _apply_isotherm_state(self, cell):
-        """Sync one cell's isotherm overlay to the global View-menu toggle
-        and its own quantity's default levels (config.ISOTHERM_LEVELS) --
-        called for every cell whenever the toggle changes, and once for
-        each cell right after its view is first initialized."""
+    def _apply_contour_overlay_state(self, cell):
+        """Sync one cell's contour overlays to their global View-menu
+        toggles and quantity-specific levels (config.ISOTHERM_LEVELS) --
+        called for every cell whenever either toggle changes, and once for
+        each cell right after its view is first initialized. Two
+        independent overlays: the cell's own quantity's isotherms/speed-
+        bands (drawn on itself), and -- only for a "slice" cell currently
+        showing TEMPERATURE -- the opt-in VELOCITY overlay (GUI
+        modernization pass, item 6)."""
         quantity = cell.quantity_key.quantity if cell.quantity_key else None
         levels = ISOTHERM_LEVELS.get(quantity, [])
         cell.view.set_isotherm_levels(levels)
         cell.view.set_isotherms_enabled(getattr(self, "_isotherms_enabled", False))
+
+        velocity_overlay_on = getattr(self, "_velocity_overlay_enabled", False)
+        applies_here = velocity_overlay_on and cell.cell_type == "slice" and quantity == "TEMPERATURE"
+        cell.view.set_velocity_overlay_levels(ISOTHERM_LEVELS.get("VELOCITY", []))
+        cell.view.set_velocity_overlay_enabled(applies_here)
+        if applies_here and cell.view.heatmap is not None:
+            velocity_frame = self._velocity_overlay_frame_for_cell(cell, self.time_controller.index)
+            if velocity_frame is not None:
+                cell.view.show_frame(cell.view.heatmap.get_array(), velocity_frame=velocity_frame)
+
+    def _velocity_overlay_frame_for_cell(self, cell, index: int):
+        """The VELOCITY frame to overlay on `cell` at timeline `index` --
+        only ever called for a "slice" cell showing TEMPERATURE. VELOCITY
+        shares the exact same plane/extent as TEMPERATURE for every real
+        scenario (confirmed directly against the dataset, not assumed:
+        identical (n_times, 49, 101) shape and physical extent for both
+        quantities at every offset/direction combination), so this always
+        aligns pixel-for-pixel with whatever frame the cell's own heatmap
+        is already showing. No prefetch orchestration here -- same
+        accepted tradeoff as _render_difference_cell's two-scenario fetch:
+        a one-time synchronous cost the first time the overlay is toggled
+        on for a given cell, not a per-frame cost once the store has it
+        cached."""
+        store = self._store_for_cell(cell)
+        velocity_key = SliceKey("VELOCITY", cell.quantity_key.direction, cell.quantity_key.offset)
+        try:
+            data = store.get(cell.case_index, velocity_key)
+        except Exception as e:  # noqa: BLE001 - overlay is a nice-to-have, must not blank the cell
+            logger.warning("velocity overlay: failed to fetch VELOCITY for case %s: %s", cell.case_index, e)
+            return None
+        idx = min(index, data.shape[0] - 1)
+        return data[idx]
 
     def _init_cell_view(self, cell) -> int:
         """Fetch data for `cell`'s current (case_index, quantity_key) and
@@ -955,7 +1001,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 logger.warning("failed to fetch frame for grid cell (type=%s): %s", cell.cell_type, e)
                 continue
             if frame is not None:
-                cell.view.show_frame(frame)
+                if cell.view.velocity_overlay_enabled:
+                    cell.view.show_frame(frame, velocity_frame=self._velocity_overlay_frame_for_cell(cell, index))
+                else:
+                    cell.view.show_frame(frame)
         self.timeline.set_index(index)
         current_time = index / self.time_controller.timesteps_per_second
         self.statusBar().showMessage(f"t = {current_time:.1f} s", 2000)
@@ -1145,7 +1194,20 @@ class MainWindow(QtWidgets.QMainWindow):
         choice tied to one cell's own range."""
         self._isotherms_enabled = checked
         for cell in self.view_grid.visible_cells():
-            self._apply_isotherm_state(cell)
+            self._apply_contour_overlay_state(cell)
+        if not self.time_controller.is_playing():
+            self._on_time_changed(self.time_controller.index)
+
+    def _set_velocity_overlay_enabled(self, checked: bool):
+        """View -> Show velocity overlay toggle (GUI modernization pass,
+        item 6). Same "every visible cell, not just the active one" reach
+        as the isotherm toggle, for the same reason -- but only actually
+        applies to cells currently showing TEMPERATURE as a plain "slice"
+        (see _apply_contour_overlay_state); a cell already showing
+        VELOCITY, or a difference/ensemble cell, is a no-op, not an error."""
+        self._velocity_overlay_enabled = checked
+        for cell in self.view_grid.visible_cells():
+            self._apply_contour_overlay_state(cell)
         if not self.time_controller.is_playing():
             self._on_time_changed(self.time_controller.index)
 
@@ -1392,9 +1454,12 @@ class MainWindow(QtWidgets.QMainWindow):
         cell.view.set_cmap(display['cmap'])
         cell.view.set_clim(display['vmin'], display['slider_default'])
         cell.view.set_colorbar_label(f"{display['label']} ({display['unit']})")
-        self._apply_isotherm_state(cell)  # levels are quantity-specific; quantity may have just changed
+        self._apply_contour_overlay_state(cell)  # levels are quantity-specific; quantity may have just changed
         index = min(self.time_controller.index, data.shape[0] - 1)
-        cell.view.show_frame(data[index])
+        if cell.view.velocity_overlay_enabled:
+            cell.view.show_frame(data[index], velocity_frame=self._velocity_overlay_frame_for_cell(cell, index))
+        else:
+            cell.view.show_frame(data[index])
 
     def _on_grid_prefetch_finished(self, case_idx: int):
         """A background prefetch completed -- check every grid cell
@@ -1494,7 +1559,7 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             cell.view.set_clim(vmin, vmax)
             cell.view.set_colorbar_label(colorbar_label)
-            self._apply_isotherm_state(cell)  # quantity may have just changed
+            self._apply_contour_overlay_state(cell)  # quantity may have just changed
             cell.view.show_frame(frame)
 
     def _render_ensemble_cell(self, cell):
@@ -1525,7 +1590,7 @@ class MainWindow(QtWidgets.QMainWindow):
             cell.view.set_cmap(cmap)
             cell.view.set_clim(vmin, vmax)
             cell.view.set_colorbar_label(colorbar_label)
-            self._apply_isotherm_state(cell)  # quantity may have just changed
+            self._apply_contour_overlay_state(cell)  # quantity may have just changed
             cell.view.show_frame(frame)
 
     def _on_cell_difference_scenarios_changed(self, cell, case_a: int, case_b: int):
