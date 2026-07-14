@@ -192,7 +192,17 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
     }}
 
     QMainWindow, QWidget#centralWidget {{
-        background-color: {p.bg_elevated};
+        background-color: {p.bg_base};
+    }}
+
+    /* Grid cells (views.py's GridCell -- each holds one plot) are cards
+    that sit on that muted backdrop, same pattern as the sidebar's
+    sectionCard below: a flat page background, distinct-toned cards on
+    top. Without this, GridCell (a plain unstyled QWidget) falls back to
+    Qt's own default palette background, which stays off-white/light even
+    under the dark theme -- a stray pale rectangle behind the plot. */
+    GridCell {{
+        background-color: {p.surface};
     }}
 
     /* Streamlit's defining trait: a sidebar in a flat, slightly muted
@@ -531,7 +541,7 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
     }}
 
     QMenuBar {{
-        background-color: {p.bg_elevated};
+        background-color: {p.bg_base};
         color: {p.text_primary};
     }}
 

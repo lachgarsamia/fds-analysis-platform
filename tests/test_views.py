@@ -729,6 +729,15 @@ class TestGridCell:
         active_style = cell.styleSheet()
         assert active_style != inactive_style
 
+    def test_has_styled_background_attribute(self, qapp):
+        """Plain QWidget subclasses ignore QSS background-color/border-
+        radius unless WA_StyledBackground is set -- without it, this cell
+        falls back to the OS's native widget background regardless of the
+        app's theme (Streamlit redesign pass: found via a stray pale
+        rectangle behind the plot under the dark theme)."""
+        cell = GridCell(self.SCENARIOS, self.QUANTITIES)
+        assert cell.testAttribute(QtCore.Qt.WA_StyledBackground)
+
 
 class FakeEntry:
     """Duck-types manifest.ScenarioEntry's shape (case_index/folder/

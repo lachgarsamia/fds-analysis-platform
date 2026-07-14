@@ -15,6 +15,7 @@ from PyQt5 import QtCore, QtWidgets
 
 from widgets import MplCanvas
 from config import QUANTITY_DISPLAY
+from theme import RADIUS
 
 
 class PlotView(Protocol):
@@ -738,6 +739,14 @@ class GridCell(QtWidgets.QWidget):
         self._is_active = False
         self._accent = "#0B5FA5"
 
+        # Plain QWidget subclasses don't paint QSS background-color/
+        # border-radius unless this attribute is set (Qt's documented
+        # "Customizing QWidget using Style Sheets" caveat) -- without it,
+        # this cell falls back to the OS's native/light widget background
+        # regardless of the app's theme (visible as a stray pale rectangle
+        # under the dark theme).
+        self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+
         self._outer_layout = QtWidgets.QVBoxLayout(self)
         self._outer_layout.setContentsMargins(2, 2, 2, 2)
         self._outer_layout.setSpacing(2)
@@ -767,7 +776,7 @@ class GridCell(QtWidgets.QWidget):
 
     def _restyle(self):
         border = f"2px solid {self._accent}" if self._is_active else "2px solid transparent"
-        self.setStyleSheet(f"GridCell {{ border: {border}; border-radius: 3px; }}")
+        self.setStyleSheet(f"GridCell {{ border: {border}; border-radius: {RADIUS['lg']}px; }}")
 
     # -------------------------------------------------- type switching (M2.3.3)
     def _show_context_menu(self, pos):
