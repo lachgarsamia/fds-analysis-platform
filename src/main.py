@@ -27,6 +27,13 @@ def _icon_or_none(filename: str) -> QtGui.QIcon:
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
+    # Native styles (e.g. macOS Aqua) paint *disabled* controls themselves
+    # and ignore the app's QSS entirely for that state -- a QComboBox with
+    # only one option (disabled) stayed a stray native-white pill under the
+    # dark theme no matter what :disabled rule theme.py declared. Fusion is
+    # the only Qt style that reliably honors stylesheets for every widget
+    # state, so it's the fix rather than another CSS rule.
+    app.setStyle("Fusion")
     app.setApplicationName("FDS SLCF Visualizer")
 
     splash_path = os.path.join(LOGO_DIR, "fds_vis.png")

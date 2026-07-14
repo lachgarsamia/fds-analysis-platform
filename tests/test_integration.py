@@ -164,6 +164,28 @@ class TestIntegration:
         assert not image.isNull()
         window.close()
 
+    def test_bilinear_is_the_fresh_install_interpolation_default(self, qapp, monkeypatch):
+        """GUI modernization pass, item 7: a never-configured install
+        (nothing in QSettings yet) must default to bilinear, not the
+        blocky "nearest" default matplotlib itself would use. Forces a
+        clean QSettings.value() -- always returns the fallback -- rather
+        than assuming this machine's real, persisted QSettings happens to
+        be unconfigured (it may well already have a saved preference from
+        another test run)."""
+        from PyQt5 import QtCore
+        monkeypatch.setattr(QtCore.QSettings, "value", lambda self, key, default=None: default)
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        assert window.current_interpolation == "bilinear"
+        assert window.heatmap.get_interpolation() == "bilinear"
+        window.close()
+
+    def test_nearest_still_available_in_interpolation_menu(self, qapp):
+        from main_window import INTERPOLATIONS
+        values = [v for _label, v in INTERPOLATIONS]
+        assert "nearest" in values
+        assert "bilinear" in values
+
     def test_interpolation_toggle_persists(self, qapp):
         """Verify the interpolation toggle (M1.3.4) applies and persists.
 
@@ -184,10 +206,13 @@ class TestIntegration:
         window.close()
 
     def test_colormap_menu_includes_inferno(self, qapp):
-        """M1.3.1: menu keeps gist_heat/inferno/viridis/cividis per spec."""
+        """M1.3.1's stock options (gist_heat/inferno/viridis/cividis) stay
+        available alongside the calibrated fds_fire/fds_flow defaults
+        added by the GUI modernization pass."""
         from main_window import COLORMAPS
         cmap_values = [c for _, c in COLORMAPS]
-        assert set(cmap_values) == {"gist_heat", "inferno", "viridis", "cividis"}
+        assert {"gist_heat", "inferno", "viridis", "cividis"}.issubset(set(cmap_values))
+        assert {"fds_fire", "fds_flow"}.issubset(set(cmap_values))
 
     def test_mainwindow_closes_cleanly(self, qapp):
         """Verify window closes and cleans up without crash."""
@@ -1437,9 +1462,10 @@ class TestIntegration:
         window.close()
 
     def test_switching_quantity_updates_isotherm_levels(self, qapp):
-        """TEMPERATURE has default hazard-band levels; VELOCITY doesn't
-        (config.ISOTHERM_LEVELS) -- switching quantity on an isotherm-
-        enabled active cell must pick that up, not keep stale levels."""
+        """TEMPERATURE has default hazard-band levels; VELOCITY has speed-
+        band levels (config.ISOTHERM_LEVELS) -- switching quantity on an
+        isotherm-enabled active cell must pick up the new quantity's own
+        levels, not keep the stale ones."""
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo:
@@ -1451,7 +1477,71 @@ class TestIntegration:
 
         window.quantity_combo.setCurrentIndex(1)  # switch to Air speed (VELOCITY)
 
-        assert cell.view._isotherm_levels == []
+        assert cell.view._isotherm_levels == [1.0, 2.0, 3.0]
+        window.close()
+
+    # ------------------------------------------- GUI modernization item 6
+    def test_velocity_overlay_off_by_default(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        assert not window.velocity_overlay_action.isChecked()
+        cell = window.view_grid.active_cell()
+        assert not cell.view.velocity_overlay_enabled
+        window.close()
+
+    def test_velocity_overlay_applies_only_to_temperature_slice_cells(self, qapp):
+        """Opt-in, grid-wide toggle (View -> Show velocity overlay) --
+        applies to a "slice" cell showing TEMPERATURE, is a no-op for a
+        cell already showing VELOCITY (overlaying velocity on itself makes
+        no sense) or a difference/ensemble cell."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+
+        window._open_browser_grid([0, 1])
+        qapp.processEvents()
+        temp_cell, velocity_cell = window.view_grid.visible_cells()
+        idx = next(i for i, info in enumerate(window.quantity_infos) if info.key.quantity == "VELOCITY")
+        velocity_cell.set_quantity_silently(velocity_cell._quantity_options[idx][1])
+        window._load_cell(velocity_cell, velocity_cell.case_index, velocity_cell._quantity_options[idx][1])
+        qapp.processEvents()
+
+        window.velocity_overlay_action.setChecked(True)
+        window._set_velocity_overlay_enabled(True)
+        qapp.processEvents()
+
+        assert temp_cell.view.velocity_overlay_enabled
+        assert not velocity_cell.view.velocity_overlay_enabled
+        window.close()
+
+    def test_velocity_overlay_contour_reflects_real_aligned_data(self, qapp):
+        """Real-data verification (not assumed): TEMPERATURE and VELOCITY
+        share the exact same physical plane/extent for a real scenario
+        (confirmed directly against fds/sim/ before building this), so the
+        overlay's contour must be drawn from the SAME scenario's real
+        VELOCITY array at the SAME frame the temperature heatmap is
+        showing, not placeholder/zero data."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+
+        window.velocity_overlay_action.setChecked(True)
+        window._set_velocity_overlay_enabled(True)
+        qapp.processEvents()
+
+        cell = window.view_grid.active_cell()
+        assert cell.view.velocity_overlay_enabled
+        assert cell.view._velocity_frame is not None
+
+        from slice_key import SliceKey
+        expected = window.controller.store.get(
+            cell.case_index, SliceKey("VELOCITY", cell.quantity_key.direction, cell.quantity_key.offset),
+        )[window.time_controller.index]
+        assert np.array_equal(cell.view._velocity_frame, expected)
         window.close()
 
     # ------------------------------------------------ M3.1 ensemble analytics
@@ -1487,6 +1577,37 @@ class TestIntegration:
             pytest.skip("real dataset not present")
         tabs = window.tabifiedDockWidgets(window.experiment_browser)
         assert window.analytics_panel in tabs
+        window.close()
+
+    def test_closed_dock_can_be_reopened_from_panels_menu(self, qapp):
+        """A dock closed via its own titlebar X used to be gone for good --
+        this pins the fix: View -> Panels' entries are the dock's own
+        toggleViewAction(), so Qt keeps the checkbox in sync with the
+        dock's real visibility (whether it was closed via the X or
+        reopened via the menu) without any custom bookkeeping."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window.show()  # isVisible() is meaningless on docks until the top-level window is shown
+        qapp.processEvents()
+
+        action = window.experiment_browser.toggleViewAction()
+        assert action in window.panels_menu.actions()
+        assert window.experiment_browser.isVisible()
+        assert action.isChecked()
+
+        window.experiment_browser.close()  # same effect as clicking the dock's own X
+        assert not window.experiment_browser.isVisible()
+        assert not action.isChecked()
+
+        action.trigger()  # click the menu entry to reopen it
+        assert window.experiment_browser.isVisible()
+        assert action.isChecked()
+        assert not window.experiment_browser.isFloating()
+        assert window.dockWidgetArea(window.experiment_browser) == QtCore.Qt.RightDockWidgetArea
+        assert window.analytics_panel in window.tabifiedDockWidgets(window.experiment_browser)
+
         window.close()
 
     def test_clicking_analytics_point_loads_scenario_into_active_cell(self, qapp):

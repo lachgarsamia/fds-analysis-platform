@@ -9,12 +9,13 @@ matplotlib internals directly. Single-view mode (MainWindow) is just a
 
 from typing import Protocol
 
+import matplotlib as mpl
 import numpy as np
 from PyQt5 import QtCore, QtWidgets
-from matplotlib import cm
 
 from widgets import MplCanvas
 from config import QUANTITY_DISPLAY
+from theme import RADIUS
 
 
 class PlotView(Protocol):
@@ -68,6 +69,17 @@ class SliceView:
         self._contour_artist = None
         self._probe_callback = None
         self._motion_cid = None
+        # Velocity overlay (GUI modernization pass, item 6): a second,
+        # independently-tracked contour -- VELOCITY speed bands drawn on
+        # top of a TEMPERATURE heatmap. Kept fully separate from
+        # _contour_artist/_isotherm_levels above (own artist, own frame,
+        # own enabled flag) so the two overlays can coexist and never
+        # fight over the same state; styled distinctly (see
+        # _redraw_velocity_overlay) so they're never visually confused.
+        self._velocity_overlay_levels: list = []
+        self._velocity_overlay_enabled = False
+        self._velocity_contour_artist = None
+        self._velocity_frame = None
 
     def widget(self) -> QtWidgets.QWidget:
         return self.canvas
@@ -80,6 +92,7 @@ class SliceView:
         why this is the load-bearing piece for M2.6's probe/isotherms."""
         self._extent = extent
         self.ax = self.canvas.fig.add_subplot(111)
+        self.ax.set_facecolor(MplCanvas.PLOT_BG)
         imshow_kwargs = dict(cmap=cmap, interpolation=interpolation, aspect="auto")
         if extent is not None:
             imshow_kwargs["extent"] = extent
@@ -92,23 +105,34 @@ class SliceView:
         self.heatmap.set_clim(vmin=vmin, vmax=vmax)
         self.canvas.capture_background()
 
-    def show_frame(self, frame: np.ndarray) -> None:
+    def show_frame(self, frame: np.ndarray, velocity_frame: np.ndarray = None) -> None:
+        """velocity_frame (GUI modernization pass, item 6): this cell's
+        VELOCITY data at the same timestep, only meaningful (and only ever
+        passed by MainWindow) when the velocity overlay is on and this
+        cell is showing TEMPERATURE -- None otherwise, the default for
+        every pre-existing caller."""
         self.heatmap.set_data(frame)
-        if self._isotherms_enabled and self._isotherm_levels:
-            # Isotherms redrawn per frame, full draw (blit bypass while
+        self._velocity_frame = velocity_frame
+        overlay_active = (
+            (self._isotherms_enabled and self._isotherm_levels)
+            or (self._velocity_overlay_enabled and self._velocity_overlay_levels and velocity_frame is not None)
+        )
+        if overlay_active:
+            # Contours redrawn per frame, full draw (blit bypass while
             # active) -- matplotlib has no cheap "update contour data"
             # primitive the way set_data() gives the image artist, and
             # ROADMAP.md's M2.6 spec explicitly accepts this cost at this
             # grid size rather than asking for a fast-path that doesn't
             # exist in matplotlib's contour API.
             self._redraw_isotherms()
+            self._redraw_velocity_overlay()
             self.canvas.draw_idle()
             self.canvas.capture_background()
         else:
             self.canvas.blit_update(self.heatmap)
 
     def set_cmap(self, name: str) -> None:
-        self.heatmap.set_cmap(cm.get_cmap(name))
+        self.heatmap.set_cmap(mpl.colormaps[name])
         self.canvas.capture_background()
 
     def set_clim(self, vmin: float, vmax: float) -> None:
@@ -174,6 +198,50 @@ class SliceView:
         else:
             self._contour_artist = self.ax.contour(
                 frame, levels=levels, colors="white", linewidths=0.8)
+
+    # ---------------------------------------- velocity overlay (item 6)
+    def set_velocity_overlay_levels(self, levels: list) -> None:
+        self._velocity_overlay_levels = list(levels)
+
+    def set_velocity_overlay_enabled(self, enabled: bool) -> None:
+        if enabled == self._velocity_overlay_enabled:
+            return
+        self._velocity_overlay_enabled = enabled
+        if not enabled:
+            self._clear_velocity_overlay()
+            self.canvas.capture_background()
+        # else: left to the next show_frame(..., velocity_frame=...) call
+        # to actually draw it -- there's no "current" velocity frame to
+        # redraw from until MainWindow supplies one.
+
+    @property
+    def velocity_overlay_enabled(self) -> bool:
+        return self._velocity_overlay_enabled
+
+    def _clear_velocity_overlay(self) -> None:
+        if self._velocity_contour_artist is not None:
+            self._velocity_contour_artist.remove()
+            self._velocity_contour_artist = None
+
+    def _redraw_velocity_overlay(self) -> None:
+        self._clear_velocity_overlay()
+        if not self._velocity_overlay_enabled or not self._velocity_overlay_levels or self._velocity_frame is None:
+            return
+        frame = self._velocity_frame
+        levels = sorted(set(self._velocity_overlay_levels))
+        # Deliberately distinct from _redraw_isotherms's white solid lines
+        # (dashed, accent blue) so a viewer never confuses a temperature
+        # hazard-band line with a velocity speed-band line when both
+        # happen to be visible at once.
+        style = dict(colors="#4FA8E8", linewidths=1.1, linestyles="dashed")
+        if self._extent is not None:
+            x0, x1, z0, z1 = self._extent
+            n_z, n_x = frame.shape
+            xs = np.linspace(x0, x1, n_x)
+            zs = np.linspace(z1, z0, n_z)
+            self._velocity_contour_artist = self.ax.contour(xs, zs, frame, levels=levels, **style)
+        else:
+            self._velocity_contour_artist = self.ax.contour(frame, levels=levels, **style)
 
     # ------------------------------------------------------ probe (M2.6.1)
     def enable_probe(self, callback) -> None:
@@ -324,6 +392,23 @@ class DifferenceView:
     def isotherms_enabled(self) -> bool:
         return self._inner.isotherms_enabled
 
+    # Velocity overlay (item 6) never actually applies to this cell type
+    # (main_window.py's _apply_contour_overlay_state only turns it on for
+    # a "slice" cell showing TEMPERATURE), but every cell_type gets these
+    # calls unconditionally the same way it already does for the isotherm
+    # setters above -- delegate straight through rather than crashing on
+    # a missing attribute (PyQt5 aborts the process on an unhandled
+    # exception raised inside a Qt signal handler).
+    def set_velocity_overlay_levels(self, levels: list) -> None:
+        self._inner.set_velocity_overlay_levels(levels)
+
+    def set_velocity_overlay_enabled(self, enabled: bool) -> None:
+        self._inner.set_velocity_overlay_enabled(enabled)
+
+    @property
+    def velocity_overlay_enabled(self) -> bool:
+        return self._inner.velocity_overlay_enabled
+
     def enable_probe(self, callback) -> None:
         self._inner.enable_probe(callback)
 
@@ -442,6 +527,23 @@ class EnsembleView:
     @property
     def isotherms_enabled(self) -> bool:
         return self._inner.isotherms_enabled
+
+    # Velocity overlay (item 6) never actually applies to this cell type
+    # (main_window.py's _apply_contour_overlay_state only turns it on for
+    # a "slice" cell showing TEMPERATURE), but every cell_type gets these
+    # calls unconditionally the same way it already does for the isotherm
+    # setters above -- delegate straight through rather than crashing on
+    # a missing attribute (PyQt5 aborts the process on an unhandled
+    # exception raised inside a Qt signal handler).
+    def set_velocity_overlay_levels(self, levels: list) -> None:
+        self._inner.set_velocity_overlay_levels(levels)
+
+    def set_velocity_overlay_enabled(self, enabled: bool) -> None:
+        self._inner.set_velocity_overlay_enabled(enabled)
+
+    @property
+    def velocity_overlay_enabled(self) -> bool:
+        return self._inner.velocity_overlay_enabled
 
     def enable_probe(self, callback) -> None:
         self._inner.enable_probe(callback)
@@ -637,6 +739,14 @@ class GridCell(QtWidgets.QWidget):
         self._is_active = False
         self._accent = "#0B5FA5"
 
+        # Plain QWidget subclasses don't paint QSS background-color/
+        # border-radius unless this attribute is set (Qt's documented
+        # "Customizing QWidget using Style Sheets" caveat) -- without it,
+        # this cell falls back to the OS's native/light widget background
+        # regardless of the app's theme (visible as a stray pale rectangle
+        # under the dark theme).
+        self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+
         self._outer_layout = QtWidgets.QVBoxLayout(self)
         self._outer_layout.setContentsMargins(2, 2, 2, 2)
         self._outer_layout.setSpacing(2)
@@ -666,7 +776,7 @@ class GridCell(QtWidgets.QWidget):
 
     def _restyle(self):
         border = f"2px solid {self._accent}" if self._is_active else "2px solid transparent"
-        self.setStyleSheet(f"GridCell {{ border: {border}; border-radius: 3px; }}")
+        self.setStyleSheet(f"GridCell {{ border: {border}; border-radius: {RADIUS['lg']}px; }}")
 
     # -------------------------------------------------- type switching (M2.3.3)
     def _show_context_menu(self, pos):

@@ -27,7 +27,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
 from config import DEFAULT_CANDLES, DEFAULT_DOOR, DEFAULT_VOD, DEFAULT_VOC, QUANTITY_DISPLAY, ISOTHERM_LEVELS
-from theme import THEMES, build_qss
+from theme import THEMES, apply_card_shadow, build_qss
 from widgets import ToggleGroup, CollapsibleSection, TimelineWidget
 from simulation_controller import SimulationController
 from time_controller import TimeController
@@ -35,7 +35,7 @@ from data_provider import SimulationData
 from schematic import SchematicWidget, flame_icon, door_icon, vent_icon, resolve_room_extent
 from export import AnimationExporter, ffmpeg_available
 from load_data import SIM_ROOT
-from slice_key import SliceInfo, DEFAULT_SLICE_KEY, available_slices
+from slice_key import SliceInfo, SliceKey, DEFAULT_SLICE_KEY, available_slices
 from views import ViewGrid, DifferenceView, EnsembleView
 from summary_stats import build_summary_index
 from browser import ExperimentBrowserDock, _SummaryTextWorker
@@ -52,15 +52,26 @@ APP_NAME = "FDSSLCFVisualizer"
 # spike (docs/spike-parser-validation.md): already a black-red-orange-yellow-
 # white blackbody/flame progression, kept as-is rather than replaced.
 COLORMAPS = [
+    ("Fire (calibrated, default)", "fds_fire"),
+    ("Flow (calibrated, default for air speed)", "fds_flow"),
     ("Heat (gist_heat)", "gist_heat"),
     ("Inferno", "inferno"),
     ("Viridis (colorblind-safe)", "viridis"),
     ("Cividis (colorblind-safe)", "cividis"),
 ]
 
+# Bilinear is the default (GUI modernization pass, item 7) -- matplotlib's
+# imshow default of "nearest" is genuinely blocky at this grid's native
+# 49x101 resolution stretched to fill a much larger on-screen cell.
+# Bicubic was considered (matplotlib supports it too) but rejected as the
+# default: for a scientific tool, cubic interpolation's mild ringing/
+# overshoot near sharp gradients can visually suggest values the
+# underlying simulation never produced, which bilinear doesn't do.
+# "Nearest" stays available for anyone who specifically wants to see raw
+# cell boundaries (e.g. to sanity-check against the actual mesh).
 INTERPOLATIONS = [
-    ("Nearest", "nearest"),
     ("Bilinear", "bilinear"),
+    ("Nearest", "nearest"),
 ]
 
 MIN_WIDTH = 900
@@ -161,7 +172,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.current_theme_name = self.settings.value("theme", "dark")
         self.ui_scale = float(self.settings.value("ui_scale", 1.0))
         self.current_colormap = self.settings.value("colormap", "gist_heat")
-        self.current_interpolation = self.settings.value("interpolation", "nearest")
+        self.current_interpolation = self.settings.value("interpolation", "bilinear")
         # M2.1: which (quantity, direction, offset) slice the heatmap shows.
         # Set before the control panel/plot are built since both read it.
         self.current_quantity_key = DEFAULT_SLICE_KEY
@@ -189,6 +200,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
         view_menu = menu_bar.addMenu("&View")
 
+        # Populated later, in _build_experiment_browser()/_build_analytics_panel(),
+        # once those docks actually exist -- each entry is the dock's own
+        # toggleViewAction(), so Qt keeps the checkbox in sync with the
+        # dock's real visibility automatically (closed via the titlebar's
+        # X or reopened via this menu, no custom show/hide bookkeeping
+        # needed here).
+        self.panels_menu = view_menu.addMenu("Panels")
+        view_menu.addSeparator()
+
         theme_menu = view_menu.addMenu("Theme")
         self.theme_action_group = QtWidgets.QActionGroup(self)
         for key, label in (("light", "Light"), ("dark", "Dark")):
@@ -204,15 +224,19 @@ class MainWindow(QtWidgets.QMainWindow):
             action.setChecked(abs(scale - self.ui_scale) < 1e-6)
             action.triggered.connect(lambda _checked, s=scale: self._set_ui_scale(s))
             scale_menu.addAction(action)
+        view_menu.addSeparator()
 
         colormap_menu = view_menu.addMenu("Colormap")
         self.colormap_action_group = QtWidgets.QActionGroup(self)
-        for label, cmap in COLORMAPS:
+        for i, (label, cmap) in enumerate(COLORMAPS):
+            if i == 2:  # after the two calibrated defaults, before the stock options
+                colormap_menu.addSeparator()
             action = QtWidgets.QAction(label, self, checkable=True)
             action.setChecked(cmap == self.current_colormap)
             action.triggered.connect(lambda _checked, c=cmap: self._set_colormap(c))
             self.colormap_action_group.addAction(action)
             colormap_menu.addAction(action)
+        view_menu.addSeparator()
 
         interpolation_menu = view_menu.addMenu("Interpolation")
         self.interpolation_action_group = QtWidgets.QActionGroup(self)
@@ -231,6 +255,7 @@ class MainWindow(QtWidgets.QMainWindow):
             action.triggered.connect(lambda _checked, l=layout_name: self._set_grid_layout(l))
             self.grid_layout_action_group.addAction(action)
             grid_menu.addAction(action)
+        view_menu.addSeparator()
 
         self.link_clim_action = QtWidgets.QAction("Link color scales", self, checkable=True)
         self.link_clim_action.setToolTip(
@@ -240,14 +265,27 @@ class MainWindow(QtWidgets.QMainWindow):
         self.link_clim_action.triggered.connect(self._set_link_clim)
         view_menu.addAction(self.link_clim_action)
 
-        self.isotherms_action = QtWidgets.QAction("Isotherm overlay", self, checkable=True)
+        self.isotherms_action = QtWidgets.QAction("Contour overlay", self, checkable=True)
         self.isotherms_action.setToolTip(
-            "Draw contour lines at fixed hazard-band thresholds (60/100/300 °C) "
-            "on every visible cell. Redraws each frame instead of blitting while "
-            "on, so playback is slightly heavier with this enabled."
+            "Draw contour lines at fixed reference levels on every visible "
+            "cell -- hazard-band thresholds (60/100/300 °C) for Temperature, "
+            "speed bands (1/2/3 m/s) for Air speed. Redraws each frame "
+            "instead of blitting while on, so playback is slightly heavier "
+            "with this enabled."
         )
         self.isotherms_action.triggered.connect(self._set_isotherms_enabled)
         view_menu.addAction(self.isotherms_action)
+
+        self.velocity_overlay_action = QtWidgets.QAction("Show velocity overlay", self, checkable=True)
+        self.velocity_overlay_action.setToolTip(
+            "Draw VELOCITY speed-band contours (dashed, blue) on top of any "
+            "cell currently showing Temperature -- confirmed VELOCITY shares "
+            "the exact same physical plane, so the overlay always lines up. "
+            "Off by default; a plain temperature view stays available."
+        )
+        self.velocity_overlay_action.triggered.connect(self._set_velocity_overlay_enabled)
+        view_menu.addAction(self.velocity_overlay_action)
+        view_menu.addSeparator()
 
         fullscreen_action = QtWidgets.QAction("Toggle Fullscreen\tF11", self)
         fullscreen_action.triggered.connect(self._toggle_fullscreen)
@@ -315,6 +353,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.experiment_browser.open_model_eval_button is not None:
             self.experiment_browser.open_model_eval_requested.connect(self._open_browser_model_eval)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.experiment_browser)
+        self.panels_menu.addAction(self.experiment_browser.toggleViewAction())
 
         self._summary_texts_loaded = False
         self._summary_text_workers: list = []  # kept alive until each worker's own finished signal fires, same reasoning as SimulationController._prefetch_workers
@@ -380,6 +419,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.analytics_panel = AnalyticsPanelDock(parent=self)
         self.analytics_panel.scenario_activated.connect(self._open_browser_scenario)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.analytics_panel)
+        self.panels_menu.addAction(self.analytics_panel.toggleViewAction())
         if self.experiment_browser is not None:
             self.tabifyDockWidget(self.experiment_browser, self.analytics_panel)
             self.experiment_browser.raise_()  # experiment browser is the default-visible tab
@@ -780,7 +820,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.temp_slider.setValue(display['slider_default'])
 
         self.view_grid.active_view().set_colorbar_label(f"{display['label']} ({display['unit']})")
-        self._apply_isotherm_state(self.view_grid.active_cell())  # levels are quantity-specific
+        self._apply_contour_overlay_state(self.view_grid.active_cell())  # levels are quantity-specific
         self._apply_link_clim()
 
     def _extent_for(self, case_index: int, quantity_key) -> tuple:
@@ -809,7 +849,7 @@ class MainWindow(QtWidgets.QMainWindow):
         not on every scenario/quantity redraw (the callback/levels don't
         need re-registering just because the displayed data changed)."""
         cell.view.enable_probe(lambda x, z, v, c=cell: self._on_cell_probe(c, x, z, v))
-        self._apply_isotherm_state(cell)
+        self._apply_contour_overlay_state(cell)
 
     def _on_cell_probe(self, cell, x, z, value):
         """Cursor probe callback (M2.6.1): x/z are physical meters, value
@@ -825,15 +865,51 @@ class MainWindow(QtWidgets.QMainWindow):
         value_text = f"{value:.1f}{unit}" if value is not None else "—"
         self.statusBar().showMessage(f"x = {x:.3f} m, z = {z:.3f} m, value = {value_text}")
 
-    def _apply_isotherm_state(self, cell):
-        """Sync one cell's isotherm overlay to the global View-menu toggle
-        and its own quantity's default levels (config.ISOTHERM_LEVELS) --
-        called for every cell whenever the toggle changes, and once for
-        each cell right after its view is first initialized."""
+    def _apply_contour_overlay_state(self, cell):
+        """Sync one cell's contour overlays to their global View-menu
+        toggles and quantity-specific levels (config.ISOTHERM_LEVELS) --
+        called for every cell whenever either toggle changes, and once for
+        each cell right after its view is first initialized. Two
+        independent overlays: the cell's own quantity's isotherms/speed-
+        bands (drawn on itself), and -- only for a "slice" cell currently
+        showing TEMPERATURE -- the opt-in VELOCITY overlay (GUI
+        modernization pass, item 6)."""
         quantity = cell.quantity_key.quantity if cell.quantity_key else None
         levels = ISOTHERM_LEVELS.get(quantity, [])
         cell.view.set_isotherm_levels(levels)
         cell.view.set_isotherms_enabled(getattr(self, "_isotherms_enabled", False))
+
+        velocity_overlay_on = getattr(self, "_velocity_overlay_enabled", False)
+        applies_here = velocity_overlay_on and cell.cell_type == "slice" and quantity == "TEMPERATURE"
+        cell.view.set_velocity_overlay_levels(ISOTHERM_LEVELS.get("VELOCITY", []))
+        cell.view.set_velocity_overlay_enabled(applies_here)
+        if applies_here and cell.view.heatmap is not None:
+            velocity_frame = self._velocity_overlay_frame_for_cell(cell, self.time_controller.index)
+            if velocity_frame is not None:
+                cell.view.show_frame(cell.view.heatmap.get_array(), velocity_frame=velocity_frame)
+
+    def _velocity_overlay_frame_for_cell(self, cell, index: int):
+        """The VELOCITY frame to overlay on `cell` at timeline `index` --
+        only ever called for a "slice" cell showing TEMPERATURE. VELOCITY
+        shares the exact same plane/extent as TEMPERATURE for every real
+        scenario (confirmed directly against the dataset, not assumed:
+        identical (n_times, 49, 101) shape and physical extent for both
+        quantities at every offset/direction combination), so this always
+        aligns pixel-for-pixel with whatever frame the cell's own heatmap
+        is already showing. No prefetch orchestration here -- same
+        accepted tradeoff as _render_difference_cell's two-scenario fetch:
+        a one-time synchronous cost the first time the overlay is toggled
+        on for a given cell, not a per-frame cost once the store has it
+        cached."""
+        store = self._store_for_cell(cell)
+        velocity_key = SliceKey("VELOCITY", cell.quantity_key.direction, cell.quantity_key.offset)
+        try:
+            data = store.get(cell.case_index, velocity_key)
+        except Exception as e:  # noqa: BLE001 - overlay is a nice-to-have, must not blank the cell
+            logger.warning("velocity overlay: failed to fetch VELOCITY for case %s: %s", cell.case_index, e)
+            return None
+        idx = min(index, data.shape[0] - 1)
+        return data[idx]
 
     def _init_cell_view(self, cell) -> int:
         """Fetch data for `cell`'s current (case_index, quantity_key) and
@@ -941,7 +1017,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 logger.warning("failed to fetch frame for grid cell (type=%s): %s", cell.cell_type, e)
                 continue
             if frame is not None:
-                cell.view.show_frame(frame)
+                if cell.view.velocity_overlay_enabled:
+                    cell.view.show_frame(frame, velocity_frame=self._velocity_overlay_frame_for_cell(cell, index))
+                else:
+                    cell.view.show_frame(frame)
         self.timeline.set_index(index)
         current_time = index / self.time_controller.timesteps_per_second
         self.statusBar().showMessage(f"t = {current_time:.1f} s", 2000)
@@ -1131,7 +1210,20 @@ class MainWindow(QtWidgets.QMainWindow):
         choice tied to one cell's own range."""
         self._isotherms_enabled = checked
         for cell in self.view_grid.visible_cells():
-            self._apply_isotherm_state(cell)
+            self._apply_contour_overlay_state(cell)
+        if not self.time_controller.is_playing():
+            self._on_time_changed(self.time_controller.index)
+
+    def _set_velocity_overlay_enabled(self, checked: bool):
+        """View -> Show velocity overlay toggle (GUI modernization pass,
+        item 6). Same "every visible cell, not just the active one" reach
+        as the isotherm toggle, for the same reason -- but only actually
+        applies to cells currently showing TEMPERATURE as a plain "slice"
+        (see _apply_contour_overlay_state); a cell already showing
+        VELOCITY, or a difference/ensemble cell, is a no-op, not an error."""
+        self._velocity_overlay_enabled = checked
+        for cell in self.view_grid.visible_cells():
+            self._apply_contour_overlay_state(cell)
         if not self.time_controller.is_playing():
             self._on_time_changed(self.time_controller.index)
 
@@ -1378,9 +1470,12 @@ class MainWindow(QtWidgets.QMainWindow):
         cell.view.set_cmap(display['cmap'])
         cell.view.set_clim(display['vmin'], display['slider_default'])
         cell.view.set_colorbar_label(f"{display['label']} ({display['unit']})")
-        self._apply_isotherm_state(cell)  # levels are quantity-specific; quantity may have just changed
+        self._apply_contour_overlay_state(cell)  # levels are quantity-specific; quantity may have just changed
         index = min(self.time_controller.index, data.shape[0] - 1)
-        cell.view.show_frame(data[index])
+        if cell.view.velocity_overlay_enabled:
+            cell.view.show_frame(data[index], velocity_frame=self._velocity_overlay_frame_for_cell(cell, index))
+        else:
+            cell.view.show_frame(data[index])
 
     def _on_grid_prefetch_finished(self, case_idx: int):
         """A background prefetch completed -- check every grid cell
@@ -1480,7 +1575,7 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             cell.view.set_clim(vmin, vmax)
             cell.view.set_colorbar_label(colorbar_label)
-            self._apply_isotherm_state(cell)  # quantity may have just changed
+            self._apply_contour_overlay_state(cell)  # quantity may have just changed
             cell.view.show_frame(frame)
 
     def _render_ensemble_cell(self, cell):
@@ -1511,7 +1606,7 @@ class MainWindow(QtWidgets.QMainWindow):
             cell.view.set_cmap(cmap)
             cell.view.set_clim(vmin, vmax)
             cell.view.set_colorbar_label(colorbar_label)
-            self._apply_isotherm_state(cell)  # quantity may have just changed
+            self._apply_contour_overlay_state(cell)  # quantity may have just changed
             cell.view.show_frame(frame)
 
     def _on_cell_difference_scenarios_changed(self, cell, case_a: int, case_b: int):
@@ -1674,6 +1769,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.schematic.apply_palette(palette)
         self._refresh_toggle_icons(palette)
         self.view_grid.apply_accent(palette.accent)
+        # Card shadows are Python-side (QGraphicsDropShadowEffect, not QSS --
+        # see theme.apply_card_shadow), so a theme switch has to reapply
+        # them explicitly: light/dark need different shadow opacity.
+        for section in self.findChildren(CollapsibleSection):
+            apply_card_shadow(section.card, palette)
         # The QSS restyle doesn't touch the matplotlib canvases themselves,
         # but the cached blit backgrounds are invalidated defensively per
         # M1.3.3's spec (resize/theme/colormap changes all recapture) in

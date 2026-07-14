@@ -6,6 +6,8 @@ single-source-of-truth fix for the "same magic numbers duplicated in three
 places" issue identified during the initial codebase audit.
 """
 
+import colormaps as _colormaps  # noqa: F401 -- registers 'fds_fire'/'fds_flow' with matplotlib before QUANTITY_DISPLAY references them by name
+
 # Scenario design matrix: (candle count, door width, vertical-opening-door mode,
 # vertical-opening-candle mode) -- see fds/generate_sim.py and protocol/2019_05_21.tex.
 N_CANDLES, N_DOORS, N_VOD, N_VOC = 2, 2, 3, 2
@@ -34,18 +36,26 @@ AMBIENT_C = 20.0
 # an engineering estimate from the on-disk dataset (observed magnitudes
 # ~0-4 m/s across sampled scenarios), not a physically-derived bound --
 # adjustable via the existing slider same as TEMPERATURE's.
+#
+# 'fds_fire'/'fds_flow' (GUI modernization pass, colormaps.py) are this
+# app's own calibrated colormaps -- black/red/orange/yellow fire
+# progression and a blue-to-red flow palette, each calibrated to this
+# dataset's real observed range rather than a generic gradient (see
+# colormaps.py's own module docstring for the exact calibration). The
+# stock options (gist_heat/inferno/viridis/cividis) stay available in the
+# View > Colormap menu; these are just the new defaults.
 QUANTITY_DISPLAY = {
     'TEMPERATURE': {
         'label': 'Temperature',
         'unit': '°C',
-        'cmap': 'gist_heat',
+        'cmap': 'fds_fire',
         'vmin': AMBIENT_C,
         'slider_min': 50, 'slider_max': 1000, 'slider_default': 300,
     },
     'VELOCITY': {
         'label': 'Air speed',
         'unit': 'm/s',
-        'cmap': 'viridis',
+        'cmap': 'fds_flow',
         'vmin': 0.0,
         'slider_min': 1, 'slider_max': 10, 'slider_default': 2,
     },
@@ -55,10 +65,15 @@ QUANTITY_DISPLAY = {
 # as QUANTITY_DISPLAY. TEMPERATURE's are the M1.3s.4 hazard-band proposal
 # (docs/spike-parser-validation.md §4: <60°C / 60-300°C / >300°C as general
 # fire-safety reference points, not derived from this study's own data --
-# pending domain-expert review per that spike's own caveat). No default is
-# defined for VELOCITY -- the roadmap's hazard-band example is a
-# temperature concept; toggling the overlay on for a VELOCITY-quantity
-# cell enables the mechanism but has no levels to draw until one is added.
+# pending domain-expert review per that spike's own caveat).
+#
+# VELOCITY's are "speed bands" (GUI modernization pass), reusing the exact
+# same overlay mechanism as TEMPERATURE's isotherms unchanged (SliceView's
+# _redraw_isotherms()/set_isotherm_levels() just draw contours at whatever
+# levels this dict hands them, with no quantity-specific logic) -- 1/2/3 m/s
+# span the real observed range (0-~3.7 m/s across sampled scenarios) and
+# cross the default 2 m/s view meaningfully.
 ISOTHERM_LEVELS = {
     'TEMPERATURE': [60, 100, 300],
+    'VELOCITY': [1.0, 2.0, 3.0],
 }

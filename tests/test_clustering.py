@@ -28,23 +28,37 @@ def _two_obvious_blobs(n_per_blob=10, seed=0):
 class TestRunPCA:
     def test_output_shape(self):
         matrix = _two_obvious_blobs()
-        coords = run_pca(matrix, n_components=2)
-        assert coords.shape == (20, 2)
+        result = run_pca(matrix, n_components=2)
+        assert result.coords.shape == (20, 2)
 
     def test_empty_matrix_returns_empty(self):
-        coords = run_pca(np.zeros((0, 5)))
-        assert coords.shape == (0, 2)
+        result = run_pca(np.zeros((0, 5)))
+        assert result.coords.shape == (0, 2)
+        assert result.explained_variance_ratio.shape == (2,)
 
     def test_deterministic_across_calls(self):
         matrix = _two_obvious_blobs()
         a = run_pca(matrix)
         b = run_pca(matrix)
-        assert np.allclose(a, b)
+        assert np.allclose(a.coords, b.coords)
+        assert np.allclose(a.explained_variance_ratio, b.explained_variance_ratio)
 
     def test_n_components_capped_by_n_features_and_n_samples(self):
         # 1 sample, 3 features -- can't ask for 2 PCA components.
-        coords = run_pca(np.array([[1.0, 2.0, 3.0]]), n_components=2)
-        assert coords.shape[0] == 1
+        result = run_pca(np.array([[1.0, 2.0, 3.0]]), n_components=2)
+        assert result.coords.shape[0] == 1
+
+    def test_explained_variance_ratio_sums_to_at_most_one(self):
+        # Two obvious, well-separated blobs -- almost all variance should
+        # be captured by 2 components over only 5 features.
+        matrix = _two_obvious_blobs()
+        result = run_pca(matrix, n_components=2)
+        assert result.explained_variance_ratio.shape == (2,)
+        assert 0.0 < result.explained_variance_ratio.sum() <= 1.0 + 1e-9
+        # A real, non-placeholder number -- the two obvious blobs are
+        # separated along one dominant axis, so PC1 alone should explain
+        # a large majority of the variance.
+        assert result.explained_variance_ratio[0] > 0.5
 
 
 class TestRunClustering:

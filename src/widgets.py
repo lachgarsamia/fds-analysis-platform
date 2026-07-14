@@ -29,8 +29,28 @@ class MplCanvas(FigureCanvas):
     again -- see main_window.py's setters.
     """
 
-    def __init__(self, parent=None, dpi: int = 100):
-        self.fig = Figure(dpi=dpi)
+    # Plot area background is fixed white regardless of the app's own
+    # light/dark theme -- standard practice for scientific heatmaps, so a
+    # colormap and its colorbar always read the same true colors rather
+    # than being visually tinted by whatever app chrome surrounds them.
+    # Explicit (not just matplotlib's own default, which happens to also
+    # be white) so this can't silently change if a rcParams default ever
+    # does.
+    PLOT_BG = "#FFFFFF"
+
+    # Bumped from matplotlib's own default of 100 (GUI modernization pass,
+    # item 7) -- crisper on-screen rendering (sharper text, contour lines,
+    # colorbar ticks) at typical window/cell sizes. This is a rendering-
+    # quality change only: the underlying data is still the FDS mesh's
+    # native 49x101 grid (see main_window.py's velocity/interpolation
+    # docstrings for the distinction between "renders less blocky" and
+    # "the simulation itself ran at finer resolution" -- only the former
+    # is true here; the latter would mean re-running simulations at a
+    # finer mesh, out of scope, gated on M-SIM).
+    DEFAULT_DPI = 150
+
+    def __init__(self, parent=None, dpi: int = DEFAULT_DPI):
+        self.fig = Figure(dpi=dpi, facecolor=self.PLOT_BG)
         super().__init__(self.fig)
         self.setParent(parent)
         self.setSizePolicy(
@@ -216,25 +236,31 @@ class TimelineWidget(QtWidgets.QWidget):
 
 
 class CollapsibleSection(QtWidgets.QWidget):
-    """A labeled section with a thin divider - used to group control-panel
-    rows (Speed / Candles / Doors / Vents) so the panel reads as organized
-    sections rather than an undifferentiated stack of buttons."""
+    """A control-panel "card" (Speed / Candles / Doors / Vents) -- rounded
+    corners + a soft drop shadow (theme.apply_card_shadow) stand in for the
+    old title+divider grouping, so the sidebar reads as a stack of distinct
+    cards rather than lines drawn between undifferentiated rows (Streamlit-
+    style redesign pass). This widget is static once built (no per-frame
+    repaint), so the real QGraphicsDropShadowEffect is safe here -- see
+    apply_card_shadow's docstring for why that's not true everywhere."""
 
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
-        self._layout = QtWidgets.QVBoxLayout(self)
-        self._layout.setContentsMargins(0, 0, 0, 0)
-        self._layout.setSpacing(6)
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        self.card = QtWidgets.QFrame()
+        self.card.setObjectName("sectionCard")
+        outer.addWidget(self.card)
+
+        self._layout = QtWidgets.QVBoxLayout(self.card)
+        self._layout.setContentsMargins(16, 14, 16, 16)
+        self._layout.setSpacing(10)
 
         title_label = QtWidgets.QLabel(title)
         title_label.setProperty("role", "section-title")
         title_label.setAccessibleName(f"{title} section")
         self._layout.addWidget(title_label)
-
-        divider = QtWidgets.QFrame()
-        divider.setObjectName("divider")
-        divider.setFrameShape(QtWidgets.QFrame.HLine)
-        self._layout.addWidget(divider)
 
     def add_row(self, widget: QtWidgets.QWidget):
         self._layout.addWidget(widget)
