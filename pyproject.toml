@@ -21,7 +21,7 @@ dev = [
 
 [tool.setuptools]
 package-dir = { "" = "src" }
-packages = ["fds", "fds.slice", "analytics"]
+packages = ["fds", "fds.slice", "analytics", "cinema"]
 py-modules = [
     "analytics_panel",
     "auto_summary",

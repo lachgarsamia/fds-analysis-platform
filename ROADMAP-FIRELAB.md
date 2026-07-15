@@ -4,6 +4,9 @@
 **Mission:** transform the FDS Visualizer from a research instrument into a breathtaking public-facing
 "FireLab Digital Twin" that stands next to the *real physical chamber* (candles, door, ventilation) at the
 demo — with a fire/smoke visualization so alive that visitors instinctively compare it to the flame in front of them.
+**Mission:** transform the FDS Visualizer from a research instrument into a breathtaking public-facing
+"FireLab Digital Twin" that stands next to the *real physical chamber* (candles, door, ventilation) at the
+demo — with a fire/smoke visualization so alive that visitors instinctively compare it to the flame in front of them.
 
 This roadmap **builds on**, and does not replace, `ROADMAP.md`. Everything listed as ✅ done there is the
 foundation: lazy loading + LRU + disk cache, `TimeController` (QTimer pull, seek ~4–15 ms), blitting

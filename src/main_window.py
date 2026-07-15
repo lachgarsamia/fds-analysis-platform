@@ -287,6 +287,17 @@ class MainWindow(QtWidgets.QMainWindow):
         view_menu.addAction(self.velocity_overlay_action)
         view_menu.addSeparator()
 
+        self.cinematic_action = QtWidgets.QAction("Cinematic fire view", self, checkable=True)
+        self.cinematic_action.setToolTip(
+            "Render Temperature cells through FireLab's cinematic pipeline "
+            "(black-body glow with alpha, filmic tone mapping, auto-exposure) "
+            "over a dark backdrop instead of the plain scientific colormap. "
+            "Other quantities/cell types are unaffected."
+        )
+        self.cinematic_action.triggered.connect(self._set_cinematic_enabled)
+        view_menu.addAction(self.cinematic_action)
+        view_menu.addSeparator()
+
         fullscreen_action = QtWidgets.QAction("Toggle Fullscreen\tF11", self)
         fullscreen_action.triggered.connect(self._toggle_fullscreen)
         view_menu.addAction(fullscreen_action)
@@ -850,6 +861,7 @@ class MainWindow(QtWidgets.QMainWindow):
         need re-registering just because the displayed data changed)."""
         cell.view.enable_probe(lambda x, z, v, c=cell: self._on_cell_probe(c, x, z, v))
         self._apply_contour_overlay_state(cell)
+        self._apply_cinematic_state(cell)
 
     def _on_cell_probe(self, cell, x, z, value):
         """Cursor probe callback (M2.6.1): x/z are physical meters, value
@@ -1227,6 +1239,39 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self.time_controller.is_playing():
             self._on_time_changed(self.time_controller.index)
 
+    def _set_cinematic_enabled(self, checked: bool):
+        """View -> Cinematic fire view toggle (FireLab roadmap Phase 2.1).
+        Grid-wide like the isotherm/velocity-overlay toggles, but only
+        actually applies to "slice" cells currently showing TEMPERATURE --
+        the FireLUT is calibrated to that quantity's hazard-band window
+        (see cinema/luts.py); other cells are left in science mode."""
+        self._cinematic_enabled = checked
+        for cell in self.view_grid.visible_cells():
+            self._apply_cinematic_state(cell)
+        if not self.time_controller.is_playing():
+            self._on_time_changed(self.time_controller.index)
+
+    def _apply_cinematic_state(self, cell):
+        """Sync one cell's cinematic-mode flag to the global toggle --
+        called for every cell whenever the toggle changes, and once for
+        each cell right after its view is first initialized (mirrors
+        _apply_contour_overlay_state's pattern)."""
+        if not hasattr(cell.view, "set_cinematic_mode"):
+            return  # DifferenceView/EnsembleView: cinematic mode is slice-only for now
+        quantity = cell.quantity_key.quantity if cell.quantity_key else None
+        applies_here = (
+            getattr(self, "_cinematic_enabled", False)
+            and cell.cell_type == "slice"
+            and quantity == "TEMPERATURE"
+        )
+        if applies_here and not cell.view.cinematic_enabled:
+            display = QUANTITY_DISPLAY["TEMPERATURE"]
+            is_active = cell is self.view_grid.active_cell()
+            vmax_init = self.temp_slider.value() if is_active else display["slider_default"]
+            cell.view.set_cinematic_mode(True, vmin=display["vmin"], vmax_init=vmax_init)
+        elif not applies_here and cell.view.cinematic_enabled:
+            cell.view.set_cinematic_mode(False)
+
     def _apply_link_clim(self):
         """When linked, every visible *slice-type* cell showing the same
         quantity as at least one other visible slice-type cell shares that
@@ -1471,6 +1516,7 @@ class MainWindow(QtWidgets.QMainWindow):
         cell.view.set_clim(display['vmin'], display['slider_default'])
         cell.view.set_colorbar_label(f"{display['label']} ({display['unit']})")
         self._apply_contour_overlay_state(cell)  # levels are quantity-specific; quantity may have just changed
+        self._apply_cinematic_state(cell)  # cinematic mode is TEMPERATURE-only; quantity may have just changed
         index = min(self.time_controller.index, data.shape[0] - 1)
         if cell.view.velocity_overlay_enabled:
             cell.view.show_frame(data[index], velocity_frame=self._velocity_overlay_frame_for_cell(cell, index))

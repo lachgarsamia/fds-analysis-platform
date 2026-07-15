@@ -16,6 +16,12 @@ from PyQt5 import QtCore, QtWidgets
 from widgets import MplCanvas
 from config import QUANTITY_DISPLAY
 from theme import RADIUS
+from cinema.pipeline import EffectsPipeline
+
+# Dark cinema backdrop (FireLab roadmap Phase 2): the FireLUT's alpha ramp
+# only reads as "fire floating in a dark room" against a near-black axes
+# background, not the plot area's normal white (MplCanvas.PLOT_BG).
+CINEMA_BG = "#0B0D12"
 
 
 class PlotView(Protocol):
@@ -80,6 +86,12 @@ class SliceView:
         self._velocity_overlay_enabled = False
         self._velocity_contour_artist = None
         self._velocity_frame = None
+        # Cinematic fire rendering (FireLab roadmap Phase 2, task 1):
+        # off by default, so every existing "science mode" call site
+        # (research views, tests) is pixel-unaffected.
+        self._cinematic_enabled = False
+        self._cinema_pipeline: EffectsPipeline = None
+        self._last_frame = None
 
     def widget(self) -> QtWidgets.QWidget:
         return self.canvas
@@ -111,7 +123,9 @@ class SliceView:
         passed by MainWindow) when the velocity overlay is on and this
         cell is showing TEMPERATURE -- None otherwise, the default for
         every pre-existing caller."""
-        self.heatmap.set_data(frame)
+        self._last_frame = frame
+        display_data = self._cinema_pipeline.render(frame) if self._cinematic_enabled else frame
+        self.heatmap.set_data(display_data)
         self._velocity_frame = velocity_frame
         overlay_active = (
             (self._isotherms_enabled and self._isotherm_levels)
@@ -156,6 +170,43 @@ class SliceView:
         through one of the setters above (e.g. a theme restyle)."""
         self.canvas.capture_background()
 
+    # ---------------------------------- cinematic fire rendering (Phase 2.1)
+    def set_cinematic_mode(self, enabled: bool, vmin: float = None, vmax_init: float = None) -> None:
+        """Toggle FireLab's cinematic rendering (FireLUT + alpha + filmic
+        tone map + auto-exposure, see cinema/pipeline.py) on this cell.
+
+        `vmin`/`vmax_init` seed the pipeline's fixed lower bound and the
+        auto-exposure EMA's starting point -- required when enabling,
+        ignored when disabling. Science mode (enabled=False, the default)
+        is untouched: show_frame() falls back to handing matplotlib the
+        raw array through the normal cmap/clim/colorbar path exactly as
+        before this feature existed.
+        """
+        if enabled == self._cinematic_enabled:
+            return
+        self._cinematic_enabled = enabled
+        if enabled:
+            if vmin is None or vmax_init is None:
+                raise ValueError("vmin and vmax_init are required to enable cinematic mode")
+            self._cinema_pipeline = EffectsPipeline(vmin, vmax_init)
+            self.ax.set_facecolor(CINEMA_BG)
+            self.colorbar.ax.set_visible(False)
+        else:
+            self._cinema_pipeline = None
+            self.ax.set_facecolor(MplCanvas.PLOT_BG)
+            self.colorbar.ax.set_visible(True)
+        self.canvas.capture_background()
+
+    @property
+    def cinematic_enabled(self) -> bool:
+        return self._cinematic_enabled
+
+    @property
+    def cinema_pipeline_cost_ms(self) -> float:
+        """Last render() call's cost in ms -- 0.0 if cinematic mode is off
+        or no frame has been rendered yet. For bench/telemetry use."""
+        return self._cinema_pipeline.last_cost_ms if self._cinema_pipeline else 0.0
+
     # -------------------------------------------------- isotherms (M2.6.2)
     def set_isotherm_levels(self, levels: list) -> None:
         self._isotherm_levels = list(levels)
@@ -186,7 +237,9 @@ class SliceView:
         self._clear_isotherms()
         if not self._isotherm_levels or self.heatmap is None:
             return
-        frame = self.heatmap.get_array()
+        # Raw temperature data, not the RGBA the heatmap artist may hold
+        # while cinematic mode is on (see show_frame()/_last_frame).
+        frame = self._last_frame if self._last_frame is not None else self.heatmap.get_array()
         levels = sorted(set(self._isotherm_levels))
         if self._extent is not None:
             x0, x1, z0, z1 = self._extent
@@ -279,7 +332,7 @@ class SliceView:
         if self.heatmap is None or self._extent is None:
             return None
         x0, x1, z0, z1 = self._extent
-        frame = self.heatmap.get_array()
+        frame = self._last_frame if self._last_frame is not None else self.heatmap.get_array()
         n_z, n_x = frame.shape
         if x1 == x0 or z1 == z0:
             return None
