@@ -32,7 +32,11 @@ from widgets import ToggleGroup, CollapsibleSection, TimelineWidget
 from simulation_controller import SimulationController
 from time_controller import TimeController
 from data_provider import SimulationData
-from schematic import SchematicWidget, flame_icon, door_icon, vent_icon, resolve_room_extent
+from schematic import SchematicWidget, resolve_room_extent, _VOD_STATES, _VOC_STATES
+from controls.candle_card import CandleCard
+from controls.door_widget import DoorWidget
+from controls.vent_widget import VentWidget
+from inspector import InspectorPanel
 from export import AnimationExporter, ffmpeg_available
 from load_data import SIM_ROOT
 from slice_key import SliceInfo, SliceKey, DEFAULT_SLICE_KEY, available_slices
@@ -158,6 +162,11 @@ class MainWindow(QtWidgets.QMainWindow):
         # that scenario's *_hrr.csv, or () if none was found -- read once
         # per scenario, not once per playback tick.
         self._hrr_cache = {}
+        # FireLab roadmap Phase 3: (case_index, quantity_key) the Live
+        # Inspector's sparkline/narration were last built for -- recomputed
+        # only when the active cell's scenario/quantity actually changes,
+        # not once per playback tick.
+        self._inspector_series_key = None
 
         # M3.2.5: trained-model predictions, if ml/train.py + ml/rollout.py
         # have ever been run -- absent/empty otherwise (predictions/ simply
@@ -199,6 +208,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_theme()
         self._restore_window_state()
         self._setup_shortcuts()
+        # The very first frame is drawn directly by _init_plot(), not via
+        # _on_time_changed (only real ticks/seeks go through that) -- seed
+        # the Live Inspector once here so it isn't blank until the user's
+        # first interaction.
+        self._update_inspector(self.time_controller.index)
 
         if sim_data.is_demo:
             self.statusBar().showMessage(
@@ -558,12 +572,21 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.splitter.addWidget(self._build_control_panel())
         self.splitter.addWidget(self._build_plot_panel())
-        # Control panel gets a fixed-ish starting share; plot gets the rest
-        # and does the growing when the window resizes (stretch factors).
+        self.splitter.addWidget(self._build_inspector_panel())
+        # Control panel and inspector get fixed-ish starting shares; plot
+        # gets the rest and does the growing when the window resizes.
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([320, 880])
+        self.splitter.setStretchFactor(2, 0)
+        self.splitter.setSizes([320, 720, 240])
         return central
+
+    def _build_inspector_panel(self) -> QtWidgets.QWidget:
+        """Right-hand Live Inspector (FireLab roadmap Phase 3): probe
+        readout, peak-temperature sparkline, HRR gauge, live narration --
+        see _update_inspector() for how it's kept in sync with playback."""
+        self.inspector = InspectorPanel()
+        return self.inspector
 
     def _build_control_panel(self) -> QtWidgets.QWidget:
         panel = QtWidgets.QWidget()
@@ -653,7 +676,7 @@ class MainWindow(QtWidgets.QMainWindow):
         outer.addWidget(speed_section)
 
         candle_section = CollapsibleSection("Number of candles")
-        self.candle_toggle = ToggleGroup(
+        self.candle_toggle = CandleCard(
             [("1 candle", 0), ("2 candles", 1)], default_index=DEFAULT_CANDLES,
             accessible_name="Number of candles",
         )
@@ -670,8 +693,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # secondary text, per the 2026-07-09c non-specialist label pass --
         # raw variable names must never appear unexplained (ROADMAP §4 M1.6.4).
         vod_section = CollapsibleSection("Air vent 1 (VOD)")
-        self.vod_toggle = ToggleGroup(
-            [("Open", 0), ("Closed", 1), ("HVAC", 2)], default_index=DEFAULT_VOD,
+        self.vod_toggle = VentWidget(
+            [("Open", 0), ("Closed", 1), ("HVAC", 2)], state_labels=_VOD_STATES, default_index=DEFAULT_VOD,
             accessible_name="Air vent 1 (VOD) state",
         )
         self.vod_toggle.setToolTip(
@@ -684,8 +707,8 @@ class MainWindow(QtWidgets.QMainWindow):
         outer.addWidget(vod_section)
 
         voc_section = CollapsibleSection("Air vent 2 (VOC)")
-        self.voc_toggle = ToggleGroup(
-            [("Open", 0), ("Closed", 1)], default_index=DEFAULT_VOC,
+        self.voc_toggle = VentWidget(
+            [("Open", 0), ("Closed", 1)], state_labels=_VOC_STATES, default_index=DEFAULT_VOC,
             accessible_name="Air vent 2 (VOC) state",
         )
         self.voc_toggle.setToolTip(
@@ -700,7 +723,7 @@ class MainWindow(QtWidgets.QMainWindow):
         door_section = CollapsibleSection("Door opening width")
         # Options list is [("Wide open", 1), ("Narrow", 0)]; DEFAULT_DOOR=1 is
         # at position 0, so default_index=0 correctly preselects "Wide open".
-        self.door_toggle = ToggleGroup(
+        self.door_toggle = DoorWidget(
             [("Wide open", 1), ("Narrow", 0)], default_index=0,
             accessible_name="Door state",
         )
@@ -942,15 +965,23 @@ class MainWindow(QtWidgets.QMainWindow):
         """Cursor probe callback (M2.6.1): x/z are physical meters, value
         is the displayed quantity's reading at that point -- shown in the
         status bar rather than a floating tooltip, consistent with how
-        _on_time_changed already reports "t = …s" there."""
+        _on_time_changed already reports "t = …s" there. Also mirrored,
+        large-type, into the Live Inspector (FireLab roadmap Phase 3) --
+        but only for the active cell, so a multi-view grid's other cells
+        don't fight over the one inspector panel."""
+        is_active = cell is self.view_grid.active_cell()
         if x is None:
             if not self.time_controller.is_playing():
                 self.statusBar().showMessage("Ready.")
+            if is_active:
+                self.inspector.set_probe(None, None, None)
             return
         display = QUANTITY_DISPLAY.get(cell.quantity_key.quantity if cell.quantity_key else None)
         unit = display['unit'] if display else ""
         value_text = f"{value:.1f}{unit}" if value is not None else "—"
         self.statusBar().showMessage(f"x = {x:.3f} m, z = {z:.3f} m, value = {value_text}")
+        if is_active:
+            self.inspector.set_probe(x, z, value, unit)
 
     def _apply_contour_overlay_state(self, cell):
         """Sync one cell's contour overlays to their global View-menu
@@ -1156,6 +1187,32 @@ class MainWindow(QtWidgets.QMainWindow):
         self.timeline.set_index(index)
         current_time = index / self.time_controller.timesteps_per_second
         self.statusBar().showMessage(f"t = {current_time:.1f} s", 2000)
+        self._update_inspector(index)
+
+    def _update_inspector(self, index: int) -> None:
+        """Keeps the Live Inspector (FireLab roadmap Phase 3) in sync with
+        the active cell -- only meaningful for a "slice" cell showing
+        TEMPERATURE (the inspector's sparkline/narration are calibrated to
+        that quantity); any other active cell just gets a neutral/cleared
+        panel rather than stale or misleading numbers."""
+        cell = self.view_grid.active_cell()
+        if (cell is None or cell.cell_type != "slice"
+                or not cell.quantity_key or cell.quantity_key.quantity != "TEMPERATURE"):
+            self.inspector.clear()
+            return
+        key = (cell.case_index, cell.quantity_key)
+        if key != self._inspector_series_key:
+            self._inspector_series_key = key
+            store = self._store_for_cell(cell)
+            data = store.get(cell.case_index, cell.quantity_key)
+            peak_by_frame = data.reshape(data.shape[0], -1).max(axis=1).tolist()
+            door_wide_open = self.controller.params.door == 1
+            self.inspector.set_scenario(peak_by_frame, QUANTITY_DISPLAY["TEMPERATURE"]["vmin"], door_wide_open)
+
+        intensity = self._hrr_intensity_for_cell(cell, index)
+        cached_hrr = self._hrr_cache.get(cell.case_index)
+        hrr_fraction = min(1.0, intensity) if cached_hrr else None
+        self.inspector.set_time(index, hrr_fraction)
 
     def _on_playing_changed(self, playing: bool):
         self.timeline.set_playing(playing)
@@ -1950,12 +2007,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _refresh_toggle_icons(self, palette):
         """Icon color is redrawn per theme so it stays legible against both
-        the light and dark control-panel background (ROADMAP §4 M1.6.4)."""
-        color = palette.text_secondary
-        self.candle_toggle.set_icon(flame_icon(color))
-        self.door_toggle.set_icon(door_icon(color))
-        self.vod_toggle.set_icon(vent_icon(color))
-        self.voc_toggle.set_icon(vent_icon(color))
+        the light and dark control-panel background (ROADMAP §4 M1.6.4).
+        FireLab roadmap Phase 3: these are now animated physical-mirror
+        widgets (CandleCard/DoorWidget/VentWidget), each owning its own
+        icon regeneration -- set_palette() just tells them which colors
+        to use next time they redraw, same intent as the old set_icon()
+        calls this replaces."""
+        self.candle_toggle.set_palette(palette)
+        self.door_toggle.set_palette(palette)
+        self.vod_toggle.set_palette(palette)
+        self.voc_toggle.set_palette(palette)
+        self.inspector.set_palette(palette)
 
     # -------------------------------------------------------- misc/window
     def _setup_shortcuts(self):
