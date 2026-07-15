@@ -129,6 +129,36 @@ DARK = Palette(
 )
 
 
+# FireLab roadmap Phase 1: the demo default. Near-black surfaces (deeper
+# than DARK's own near-black) so the cinematic fire palette (cinema/luts.py's
+# FireLUT) reads as the only bright thing on screen -- fire only looks hot
+# against real darkness. Ember-orange accent instead of DARK's blue, to
+# stay visually consistent with the fire theme rather than competing with
+# it. Contrast ratios follow the same AA-target discipline as LIGHT/DARK
+# above, just not re-derived here since this reuses DARK's text/border
+# roles verbatim (only bg/accent shift).
+THEATRE = Palette(
+    name="theatre",
+    bg_base="#08090C",
+    bg_elevated="#101318",
+    bg_sunken="#050506",
+    surface="#101318",
+    border="#1C2027",
+    border_strong="#2E333C",
+    text_primary="#EDEEF2",
+    text_secondary="#9CA3AF",
+    text_disabled="#5B6270",
+    accent="#FF6B35",       # ember orange -- matches the FireLUT's palette family
+    accent_hover="#FF8B5C",
+    accent_pressed="#E05A28",
+    accent_text="#0B0500",
+    focus_ring="#FF6B35",
+    success="#3DD68C",
+    danger="#F1594F",
+    warning="#F5A623",
+)
+
+
 def apply_card_shadow(widget: QtWidgets.QWidget, p: Palette) -> None:
     """Attach a soft drop shadow standing in for a hard border -- the
     "card" look of the Streamlit-style redesign. QSS has no box-shadow
@@ -339,6 +369,43 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
     QPushButton#primaryButton:disabled {{
         background-color: {p.bg_sunken};
         color: {p.text_disabled};
+    }}
+
+    /* FireLab roadmap Phase 1: left navigation rail. */
+    QWidget#navRail {{
+        background-color: {p.bg_sunken};
+        border-right: 1px solid {p.border};
+    }}
+
+    QPushButton#navButton {{
+        background-color: transparent;
+        border: none;
+        border-radius: {r_md};
+        text-align: left;
+        padding: {pad_sm} {pad_md};
+        color: {p.text_secondary};
+        font-weight: 500;
+    }}
+
+    QPushButton#navButton:hover {{
+        background-color: {p.bg_elevated};
+        color: {p.text_primary};
+    }}
+
+    QPushButton#navButton:checked {{
+        background-color: {p.accent};
+        color: {p.accent_text};
+        font-weight: 600;
+    }}
+
+    QPushButton#navCollapseButton {{
+        background-color: transparent;
+        border: none;
+        color: {p.text_secondary};
+    }}
+
+    QPushButton#navCollapseButton:hover {{
+        color: {p.text_primary};
     }}
 
     QSlider::groove:horizontal {{
@@ -602,4 +669,5 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
 THEMES: Dict[str, Palette] = {
     "light": LIGHT,
     "dark": DARK,
+    "theatre": THEATRE,
 }

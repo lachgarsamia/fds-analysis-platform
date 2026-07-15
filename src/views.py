@@ -14,8 +14,23 @@ import numpy as np
 from PyQt5 import QtCore, QtWidgets
 
 from widgets import MplCanvas
-from config import QUANTITY_DISPLAY
+from config import QUANTITY_DISPLAY, FRAMES_PER_SECOND
 from theme import RADIUS
+from cinema.pipeline import EffectsPipeline
+from cinema.interp import lerp_frames
+from cinema.particles import EmberParticles
+
+# Sub-frame interpolation (FireLab roadmap Phase 2.1d): visual refresh
+# rate while cinematic mode is on, decoupled from the data's native
+# FRAMES_PER_SECOND sample rate.
+_INTERP_HZ = 30
+_INTERP_INTERVAL_MS = round(1000 / _INTERP_HZ)
+_NOMINAL_TICK_MS = 1000.0 / FRAMES_PER_SECOND
+
+# Dark cinema backdrop (FireLab roadmap Phase 2): the FireLUT's alpha ramp
+# only reads as "fire floating in a dark room" against a near-black axes
+# background, not the plot area's normal white (MplCanvas.PLOT_BG).
+CINEMA_BG = "#0B0D12"
 
 
 class PlotView(Protocol):
@@ -80,6 +95,27 @@ class SliceView:
         self._velocity_overlay_enabled = False
         self._velocity_contour_artist = None
         self._velocity_frame = None
+        # Cinematic fire rendering (FireLab roadmap Phase 2, task 1):
+        # off by default, so every existing "science mode" call site
+        # (research views, tests) is pixel-unaffected.
+        self._cinematic_enabled = False
+        self._cinema_pipeline: EffectsPipeline = None
+        self._last_frame = None
+        # Sub-frame interpolation state: blends _interp_from -> _interp_to
+        # over the interval between real show_frame() calls, ticking a
+        # timer independent of TimeController's own (data-rate) clock.
+        self._interp_timer = QtCore.QTimer(self.canvas)
+        self._interp_timer.timeout.connect(self._interp_tick)
+        self._interp_from = None
+        self._interp_to = None
+        self._interp_phase = 1.0
+        self._interp_bloom_intensity = 1.0
+        self._interp_velocity_frame = None
+        # Ember particles (FireLab roadmap Phase 2.1g): a second,
+        # independently blit-tracked artist -- see widgets.py's
+        # multi-artist blit_update() extension.
+        self.ember_scatter = None
+        self._ember_sim: EmberParticles = None
 
     def widget(self) -> QtWidgets.QWidget:
         return self.canvas
@@ -97,6 +133,14 @@ class SliceView:
         if extent is not None:
             imshow_kwargs["extent"] = extent
         self.heatmap = self.ax.imshow(first_frame, **imshow_kwargs)
+        # Ember particles (Phase 2.1g): always present, empty/invisible
+        # outside cinematic mode -- zorder puts it above the heatmap.
+        # Deliberately no c=... at construction: passing a color arg (even
+        # an empty list) puts the collection into scalar-mappable mode,
+        # where draw() recomputes (and clobbers) facecolor from the
+        # colormap on every redraw -- set_facecolor() below would get
+        # silently overwritten back to empty on the very next blit.
+        self.ember_scatter = self.ax.scatter([], [], s=[], zorder=5)
         self.ax.set_xticks([])
         self.ax.set_yticks([])
         self.canvas.fig.subplots_adjust(top=0.97, bottom=0.03, left=0.02, right=0.95)
@@ -105,13 +149,45 @@ class SliceView:
         self.heatmap.set_clim(vmin=vmin, vmax=vmax)
         self.canvas.capture_background()
 
-    def show_frame(self, frame: np.ndarray, velocity_frame: np.ndarray = None) -> None:
+    def show_frame(self, frame: np.ndarray, velocity_frame: np.ndarray = None,
+                    next_frame: np.ndarray = None, bloom_intensity: float = 1.0) -> None:
         """velocity_frame (GUI modernization pass, item 6): this cell's
-        VELOCITY data at the same timestep, only meaningful (and only ever
-        passed by MainWindow) when the velocity overlay is on and this
-        cell is showing TEMPERATURE -- None otherwise, the default for
-        every pre-existing caller."""
-        self.heatmap.set_data(frame)
+        VELOCITY data at the same timestep -- meaningful when the velocity
+        overlay is on (drives the contour overlay) and/or cinematic mode
+        is on (drives the smoke layer's Tier 2 advection, FireLab roadmap
+        Phase 2.1f; Tier 1's fixed drift is used when this is None). None
+        otherwise, the default for every pre-existing caller.
+
+        next_frame/bloom_intensity (FireLab roadmap Phase 2.1c/d, cinematic
+        mode only): next_frame is the frame at the following timestep --
+        already resident in the same cached array MainWindow just indexed
+        `frame` out of, so this costs nothing to look up -- used to blend
+        smoothly toward it between real ticks (see _interp_tick). None
+        means no lookahead available (e.g. at the end of the series);
+        interpolation is simply skipped that tick. bloom_intensity scales
+        the pipeline's bloom/flicker strength (typically the scenario's
+        current HRR normalized to its own peak); ignored outside cinematic
+        mode."""
+        self._last_frame = frame
+        if self._cinematic_enabled:
+            self._interp_bloom_intensity = bloom_intensity
+            self._interp_velocity_frame = velocity_frame
+            if next_frame is not None:
+                self._interp_from = frame
+                self._interp_to = next_frame
+                self._interp_phase = 0.0
+                if not self._interp_timer.isActive():
+                    self._interp_timer.start(_INTERP_INTERVAL_MS)
+            else:
+                self._interp_timer.stop()
+                self._interp_from = None
+                self._interp_to = None
+            display_data = self._cinema_pipeline.render(
+                frame, hrr_intensity=bloom_intensity, velocity_frame=velocity_frame)
+            self._update_ember_scatter(frame, velocity_frame)
+        else:
+            display_data = frame
+        self.heatmap.set_data(display_data)
         self._velocity_frame = velocity_frame
         overlay_active = (
             (self._isotherms_enabled and self._isotherm_levels)
@@ -129,7 +205,7 @@ class SliceView:
             self.canvas.draw_idle()
             self.canvas.capture_background()
         else:
-            self.canvas.blit_update(self.heatmap)
+            self.canvas.blit_update([self.heatmap, self.ember_scatter])
 
     def set_cmap(self, name: str) -> None:
         self.heatmap.set_cmap(mpl.colormaps[name])
@@ -155,6 +231,88 @@ class SliceView:
         """Force a full redraw + recapture -- for changes that don't go
         through one of the setters above (e.g. a theme restyle)."""
         self.canvas.capture_background()
+
+    # ---------------------------------- cinematic fire rendering (Phase 2.1)
+    def set_cinematic_mode(self, enabled: bool, vmin: float = None, vmax_init: float = None) -> None:
+        """Toggle FireLab's cinematic rendering (FireLUT + alpha + filmic
+        tone map + auto-exposure, see cinema/pipeline.py) on this cell.
+
+        `vmin`/`vmax_init` seed the pipeline's fixed lower bound and the
+        auto-exposure EMA's starting point -- required when enabling,
+        ignored when disabling. Science mode (enabled=False, the default)
+        is untouched: show_frame() falls back to handing matplotlib the
+        raw array through the normal cmap/clim/colorbar path exactly as
+        before this feature existed.
+        """
+        if enabled == self._cinematic_enabled:
+            return
+        self._cinematic_enabled = enabled
+        if enabled:
+            if vmin is None or vmax_init is None:
+                raise ValueError("vmin and vmax_init are required to enable cinematic mode")
+            self._cinema_pipeline = EffectsPipeline(vmin, vmax_init)
+            blank_shape = self.heatmap.get_array().shape[:2]
+            self._ember_sim = EmberParticles(blank_shape)
+            self.ax.set_facecolor(CINEMA_BG)
+            self.colorbar.ax.set_visible(False)
+            # capture_background() below does a full draw right now, before
+            # the first cinematic show_frame() has run -- the heatmap still
+            # holds whatever non-RGBA science-mode frame (and cmap) it last
+            # displayed. Left alone, that stale frame gets baked into the
+            # cached blit background, and every future transparent (ambient)
+            # cinema pixel would let it show through instead of the near-
+            # black facecolor, since blitting composites new draws with
+            # alpha over the cached background, not over a blank facecolor.
+            # A fully transparent placeholder frame sidesteps that entirely.
+            self.heatmap.set_data(np.zeros(blank_shape + (4,), dtype=np.uint8))
+        else:
+            self._cinema_pipeline = None
+            self._ember_sim = None
+            self.ember_scatter.set_offsets(np.empty((0, 2)))
+            self.ember_scatter.set_sizes([])
+            self.ember_scatter.set_facecolor([])
+            self._interp_timer.stop()
+            self._interp_from = None
+            self._interp_to = None
+            self.ax.set_facecolor(MplCanvas.PLOT_BG)
+            self.colorbar.ax.set_visible(True)
+        self.canvas.capture_background()
+
+    def _update_ember_scatter(self, temperature_frame: np.ndarray, velocity_frame: np.ndarray) -> None:
+        self._ember_sim.step(temperature_frame, self._cinema_pipeline.vmin, velocity_frame)
+        offsets, sizes, colors = self._ember_sim.render_arrays()
+        self.ember_scatter.set_offsets(offsets)
+        self.ember_scatter.set_sizes(sizes)
+        self.ember_scatter.set_facecolor(colors)
+
+    @property
+    def cinematic_enabled(self) -> bool:
+        return self._cinematic_enabled
+
+    @property
+    def cinema_pipeline_cost_ms(self) -> float:
+        """Last render() call's cost in ms -- 0.0 if cinematic mode is off
+        or no frame has been rendered yet. For bench/telemetry use."""
+        return self._cinema_pipeline.last_cost_ms if self._cinema_pipeline else 0.0
+
+    def _interp_tick(self) -> None:
+        """Sub-frame interpolation timer callback (~30 Hz while cinematic
+        mode is on and a lookahead frame is available): advances the blend
+        phase toward _interp_to and blits the result, independent of
+        TimeController's own (data-rate) tick. Never touches _last_frame
+        or overlays -- those stay tied to the last *real* frame only."""
+        if not self._cinematic_enabled or self._interp_to is None:
+            self._interp_timer.stop()
+            return
+        self._interp_phase = min(1.0, self._interp_phase + _INTERP_INTERVAL_MS / _NOMINAL_TICK_MS)
+        blended = lerp_frames(self._interp_from, self._interp_to, self._interp_phase)
+        rgba = self._cinema_pipeline.render(
+            blended, hrr_intensity=self._interp_bloom_intensity, velocity_frame=self._interp_velocity_frame)
+        self._update_ember_scatter(blended, self._interp_velocity_frame)
+        self.heatmap.set_data(rgba)
+        self.canvas.blit_update([self.heatmap, self.ember_scatter])
+        if self._interp_phase >= 1.0:
+            self._interp_timer.stop()
 
     # -------------------------------------------------- isotherms (M2.6.2)
     def set_isotherm_levels(self, levels: list) -> None:
@@ -186,7 +344,9 @@ class SliceView:
         self._clear_isotherms()
         if not self._isotherm_levels or self.heatmap is None:
             return
-        frame = self.heatmap.get_array()
+        # Raw temperature data, not the RGBA the heatmap artist may hold
+        # while cinematic mode is on (see show_frame()/_last_frame).
+        frame = self._last_frame if self._last_frame is not None else self.heatmap.get_array()
         levels = sorted(set(self._isotherm_levels))
         if self._extent is not None:
             x0, x1, z0, z1 = self._extent
@@ -279,7 +439,7 @@ class SliceView:
         if self.heatmap is None or self._extent is None:
             return None
         x0, x1, z0, z1 = self._extent
-        frame = self.heatmap.get_array()
+        frame = self._last_frame if self._last_frame is not None else self.heatmap.get_array()
         n_z, n_x = frame.shape
         if x1 == x0 or z1 == z0:
             return None

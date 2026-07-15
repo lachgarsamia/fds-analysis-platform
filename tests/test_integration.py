@@ -1040,6 +1040,7 @@ class TestIntegration:
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         window.show()
+        window._navigate_to("live")  # FireLab nav shell: toolbar lives on the Live page, not shown by default (Home is)
         qapp.processEvents()
         assert window.toolbar.isVisible()
         window._set_grid_layout("2x2")
@@ -1551,12 +1552,12 @@ class TestIntegration:
         if sim_data.is_demo:
             pytest.skip("real dataset not present")
         assert window.analytics_panel is not None
-        # Feature index is lazy-loaded on first show (see
-        # _build_analytics_panel) -- drive that trigger before asserting
-        # on the loaded content. visibilityChanged only fires meaningfully
-        # once the top-level window itself is shown.
+        # Feature index is lazy-loaded on first show -- FireLab roadmap
+        # Phase 4 re-hosted this as the Analysis page's content, so
+        # navigating there (AnalysisPage.on_enter()) is what now drives
+        # that trigger, replacing the old dock-tab-raise mechanism.
         window.show()
-        window.analytics_panel.raise_()
+        window._navigate_to("analysis")
         qapp.processEvents()
         _drain_workers(qapp, window._analytics_workers)
         assert len(window.analytics_panel._features) == 24
@@ -1570,56 +1571,16 @@ class TestIntegration:
         assert window.analytics_panel is None
         window.close()
 
-    def test_analytics_panel_tabified_with_experiment_browser(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            pytest.skip("real dataset not present")
-        tabs = window.tabifiedDockWidgets(window.experiment_browser)
-        assert window.analytics_panel in tabs
-        window.close()
-
-    def test_closed_dock_can_be_reopened_from_panels_menu(self, qapp):
-        """A dock closed via its own titlebar X used to be gone for good --
-        this pins the fix: View -> Panels' entries are the dock's own
-        toggleViewAction(), so Qt keeps the checkbox in sync with the
-        dock's real visibility (whether it was closed via the X or
-        reopened via the menu) without any custom bookkeeping."""
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            pytest.skip("real dataset not present")
-        window.show()  # isVisible() is meaningless on docks until the top-level window is shown
-        qapp.processEvents()
-
-        action = window.experiment_browser.toggleViewAction()
-        assert action in window.panels_menu.actions()
-        assert window.experiment_browser.isVisible()
-        assert action.isChecked()
-
-        window.experiment_browser.close()  # same effect as clicking the dock's own X
-        assert not window.experiment_browser.isVisible()
-        assert not action.isChecked()
-
-        action.trigger()  # click the menu entry to reopen it
-        assert window.experiment_browser.isVisible()
-        assert action.isChecked()
-        assert not window.experiment_browser.isFloating()
-        assert window.dockWidgetArea(window.experiment_browser) == QtCore.Qt.RightDockWidgetArea
-        assert window.analytics_panel in window.tabifiedDockWidgets(window.experiment_browser)
-
-        window.close()
-
     def test_clicking_analytics_point_loads_scenario_into_active_cell(self, qapp):
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo:
             pytest.skip("real dataset not present")
         panel = window.analytics_panel
-        # Feature index is lazy-loaded on first show (see
-        # _build_analytics_panel) -- drive that trigger first.
+        # Feature index is lazy-loaded on first show -- see the comment in
+        # test_analytics_panel_present_for_real_data above.
         window.show()
-        panel.raise_()
+        window._navigate_to("analysis")
         qapp.processEvents()
         _drain_workers(qapp, window._analytics_workers)
         target_case = panel._case_indices[5]

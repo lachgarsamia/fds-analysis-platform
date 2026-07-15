@@ -115,6 +115,41 @@ def generate_all_summaries(entries: list, summaries: list, store, fps: int,
     return result
 
 
+# Degrees above ambient before "smoke is forming" is a fair description --
+# matches cinema/smoke.py's own SOURCE_THRESHOLD_C (kept as a literal here,
+# not an import, since cinema/ is deliberately decoupled from app-level
+# modules like this one; the two are documented as the same number by
+# design, not coincidentally equal).
+SMOKE_FORMING_THRESHOLD_C = 60.0
+HAZARD_THRESHOLD_C = 300.0
+
+
+def narrate_frame(current_temp_c: float, peak_temp_c: float, ambient_c: float,
+                   door_wide_open: bool) -> str:
+    """One deterministic sentence describing the current playback moment
+    (FireLab roadmap Phase 3's Live Inspector narration line) -- built
+    entirely from already-computed numbers via fixed templates, same "all
+    numbers computed, none generated" rule as generate_summary()."""
+    excess = current_temp_c - ambient_c
+    if excess < SMOKE_FORMING_THRESHOLD_C:
+        sentence = "The room is still near its starting temperature."
+    elif current_temp_c < HAZARD_THRESHOLD_C:
+        sentence = "The smoke layer is forming under the ceiling."
+    else:
+        sentence = "Conditions are hazardous now -- well past the safe temperature threshold."
+
+    if peak_temp_c > 0 and current_temp_c >= peak_temp_c - 0.5:
+        sentence += " This is the hottest point in the simulation so far."
+
+    if excess >= SMOKE_FORMING_THRESHOLD_C:
+        if door_wide_open:
+            sentence += " The doorway is feeding fresh air to the flame."
+        else:
+            sentence += " The narrow door is limiting how much air reaches the flame."
+
+    return sentence
+
+
 def export_markdown(entries: list, summaries: list, store, fps: int, path: str,
                      quantity_key=DEFAULT_SLICE_KEY) -> None:
     """Writes one Markdown file with every scenario's auto-summary --

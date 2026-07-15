@@ -32,21 +32,44 @@ from widgets import ToggleGroup, CollapsibleSection, TimelineWidget
 from simulation_controller import SimulationController
 from time_controller import TimeController
 from data_provider import SimulationData
-from schematic import SchematicWidget, flame_icon, door_icon, vent_icon, resolve_room_extent
+from schematic import SchematicWidget, resolve_room_extent, _VOD_STATES, _VOC_STATES
+from controls.candle_card import CandleCard
+from controls.door_widget import DoorWidget
+from controls.vent_widget import VentWidget
+from inspector import InspectorPanel
 from export import AnimationExporter, ffmpeg_available
 from load_data import SIM_ROOT
 from slice_key import SliceInfo, SliceKey, DEFAULT_SLICE_KEY, available_slices
 from views import ViewGrid, DifferenceView, EnsembleView
-from summary_stats import build_summary_index
+from summary_stats import build_summary_index, _read_hrr_csv
 from browser import ExperimentBrowserDock, _SummaryTextWorker
 from analytics_panel import AnalyticsPanelDock, _AnalyticsFeatureWorker
 from auto_summary import export_markdown
 from prediction_store import PredictionSource
+from nav import NavRail
+from pages.live import LivePage
+from pages.home import HomePage
+from pages.compare import ComparePage
+from pages.dataset import DatasetPage
+from pages.analysis import AnalysisPage
+from pages.export_page import ExportPage
+from kiosk import KioskController
 
 logger = logging.getLogger(__name__)
 
 ORG_NAME = "FZJuelich"
 APP_NAME = "FDSSLCFVisualizer"
+
+# Compare page story presets (FireLab roadmap Phase 4, pages/compare.py):
+# each key resolves to two scenarios differing in exactly one factor
+# (others held at config.py's own DEFAULT_* values) and the quantity that
+# best shows the effect. "door" uses VELOCITY, not TEMPERATURE, per M2.3's
+# verified finding that the door-width effect shows up in airflow, not heat.
+_COMPARE_PRESETS = {
+    "door": {"factor": "door", "values": (1, 0), "quantity": "VELOCITY"},
+    "candles": {"factor": "candles", "values": (0, 1), "quantity": "TEMPERATURE"},
+    "ventilation": {"factor": "vod", "values": (0, 1), "quantity": "TEMPERATURE"},
+}
 
 # Colormap options. Default (gist_heat) confirmed by the M1.3s validation
 # spike (docs/spike-parser-validation.md): already a black-red-orange-yellow-
@@ -147,6 +170,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.controller.prefetch_finished.connect(self._on_grid_prefetch_finished)
         self.controller.prefetch_error.connect(self._on_grid_prefetch_error)
         self._pending_cell_prefetches = set()  # GridCells awaiting their own background load
+        # FireLab roadmap Phase 2.1c: case_index -> (times, hrr_kw) from
+        # that scenario's *_hrr.csv, or () if none was found -- read once
+        # per scenario, not once per playback tick.
+        self._hrr_cache = {}
+        # FireLab roadmap Phase 3: (case_index, quantity_key) the Live
+        # Inspector's sparkline/narration were last built for -- recomputed
+        # only when the active cell's scenario/quantity actually changes,
+        # not once per playback tick.
+        self._inspector_series_key = None
 
         # M3.2.5: trained-model predictions, if ml/train.py + ml/rollout.py
         # have ever been run -- absent/empty otherwise (predictions/ simply
@@ -181,13 +213,42 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setMinimumSize(MIN_WIDTH, MIN_HEIGHT)
 
         self._build_menu()
-        self._build_central_widget()
+        # FireLab roadmap Phase 4: experiment_browser/analytics_panel must
+        # exist before _build_shell() builds the Dataset/Analysis pages,
+        # since those pages embed .widget() -- each dock's own inner
+        # content -- rather than duplicating it.
         self._build_experiment_browser()
         self._build_analytics_panel()
+        self._build_shell()
         self._build_status_bar()
         self._apply_theme()
         self._restore_window_state()
         self._setup_shortcuts()
+        # The very first frame is drawn directly by _init_plot(), not via
+        # _on_time_changed (only real ticks/seeks go through that) -- seed
+        # the Live Inspector once here so it isn't blank until the user's
+        # first interaction.
+        self._update_inspector(self.time_controller.index)
+
+        # Kiosk / attract mode (FireLab roadmap Phase 5): idle -> Home,
+        # any input -> Live. Needs a live QApplication instance, which
+        # exists by construction time (main.py creates it before MainWindow).
+        self._kiosk = KioskController(
+            on_idle=lambda: self._navigate_to("home"),
+            on_wake=lambda: self._navigate_to("live"),
+            app=QtWidgets.QApplication.instance(),
+            cursor_target=self,
+            parent=self,
+        )
+        # Demo-script bookmarks (FireLab roadmap Phase 5): slot -> {page,
+        # case_index, time_index}; Ctrl+Shift+<1-9> records, Shift+<1-9> jumps.
+        self._demo_bookmarks: dict = {}
+        # Esc long-press: "effects off" master switch, tracked via
+        # keyPressEvent/keyReleaseEvent below (QShortcut has no notion of
+        # hold-duration).
+        self._esc_hold_timer = QtCore.QTimer(self)
+        self._esc_hold_timer.setSingleShot(True)
+        self._esc_hold_timer.timeout.connect(self._toggle_effects_master_switch)
 
         if sim_data.is_demo:
             self.statusBar().showMessage(
@@ -200,18 +261,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         view_menu = menu_bar.addMenu("&View")
 
-        # Populated later, in _build_experiment_browser()/_build_analytics_panel(),
-        # once those docks actually exist -- each entry is the dock's own
-        # toggleViewAction(), so Qt keeps the checkbox in sync with the
-        # dock's real visibility automatically (closed via the titlebar's
-        # X or reopened via this menu, no custom show/hide bookkeeping
-        # needed here).
-        self.panels_menu = view_menu.addMenu("Panels")
-        view_menu.addSeparator()
-
         theme_menu = view_menu.addMenu("Theme")
         self.theme_action_group = QtWidgets.QActionGroup(self)
-        for key, label in (("light", "Light"), ("dark", "Dark")):
+        for key, label in (("light", "Light"), ("dark", "Dark"), ("theatre", "Theatre (demo)")):
             action = QtWidgets.QAction(label, self, checkable=True)
             action.setChecked(key == self.current_theme_name)
             action.triggered.connect(lambda _checked, k=key: self._set_theme(k))
@@ -287,6 +339,17 @@ class MainWindow(QtWidgets.QMainWindow):
         view_menu.addAction(self.velocity_overlay_action)
         view_menu.addSeparator()
 
+        self.cinematic_action = QtWidgets.QAction("Cinematic fire view", self, checkable=True)
+        self.cinematic_action.setToolTip(
+            "Render Temperature cells through FireLab's cinematic pipeline "
+            "(black-body glow with alpha, filmic tone mapping, auto-exposure) "
+            "over a dark backdrop instead of the plain scientific colormap. "
+            "Other quantities/cell types are unaffected."
+        )
+        self.cinematic_action.triggered.connect(self._set_cinematic_enabled)
+        view_menu.addAction(self.cinematic_action)
+        view_menu.addSeparator()
+
         fullscreen_action = QtWidgets.QAction("Toggle Fullscreen\tF11", self)
         fullscreen_action.triggered.connect(self._toggle_fullscreen)
         view_menu.addAction(fullscreen_action)
@@ -352,9 +415,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.experiment_browser.export_summaries_requested.connect(self._export_summaries_markdown)
         if self.experiment_browser.open_model_eval_button is not None:
             self.experiment_browser.open_model_eval_requested.connect(self._open_browser_model_eval)
-        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.experiment_browser)
-        self.panels_menu.addAction(self.experiment_browser.toggleViewAction())
-
+        # FireLab roadmap Phase 4: re-hosted as the Dataset page's content
+        # (see pages/dataset.py) instead of a QDockWidget -- never added to
+        # a dock area. The dock class itself is unchanged (still a
+        # QDockWidget internally; only .widget() -- its own inner content
+        # -- gets mounted elsewhere), which is why every signal/attribute
+        # wired below still works unmodified. Row-selection is what
+        # triggers the deferred summary-text load (see summary_texts_needed
+        # below), not dock visibility, so no extra on-enter wiring is
+        # needed here the way the analytics panel below needs.
         self._summary_texts_loaded = False
         self._summary_text_workers: list = []  # kept alive until each worker's own finished signal fires, same reasoning as SimulationController._prefetch_workers
         self.experiment_browser.summary_texts_needed.connect(self._on_summary_texts_needed)
@@ -418,23 +487,24 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self.analytics_panel = AnalyticsPanelDock(parent=self)
         self.analytics_panel.scenario_activated.connect(self._open_browser_scenario)
-        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.analytics_panel)
-        self.panels_menu.addAction(self.analytics_panel.toggleViewAction())
-        if self.experiment_browser is not None:
-            self.tabifyDockWidget(self.experiment_browser, self.analytics_panel)
-            self.experiment_browser.raise_()  # experiment browser is the default-visible tab
-
+        # FireLab roadmap Phase 4: re-hosted as the Analysis page's content
+        # (see pages/analysis.py) instead of a QDockWidget/tab -- never
+        # added to a dock area, never tabified. The one-shot feature-index
+        # load used to be triggered by the dock's own visibilityChanged
+        # (tab raised); that trigger doesn't exist for a plain page, so
+        # AnalysisPage.on_enter() calls _on_analytics_panel_visibility_changed(True)
+        # directly instead -- same guarded, one-shot method, new caller.
         self._analytics_features_loaded = False
         self._analytics_workers: list = []  # kept alive until each worker's own finished signal fires, same reasoning as SimulationController._prefetch_workers
-        self.analytics_panel.visibilityChanged.connect(self._on_analytics_panel_visibility_changed)
 
     def _on_analytics_panel_visibility_changed(self, visible: bool):
-        """One-shot trigger: the first time the analytics tab is actually
-        raised (not at construction, which starts hidden behind the
-        experiment browser's tab), kick off the background feature-index
-        load. Later visibility toggles (switching tabs back and forth)
-        are no-ops once loaded."""
-        if not visible or self._analytics_features_loaded:
+        """One-shot trigger, called from AnalysisPage.on_enter() the first
+        time the Analysis page is actually shown (not at construction).
+        Later calls (revisiting the page) are no-ops once loaded. Also a
+        no-op in demo mode (self.analytics_panel is None, and the
+        _analytics_features_loaded/_analytics_workers attrs below are
+        never set in that branch of _build_analytics_panel)."""
+        if self.analytics_panel is None or not visible or self._analytics_features_loaded:
             return
         self._analytics_features_loaded = True
         worker = _AnalyticsFeatureWorker(
@@ -459,10 +529,94 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.analytics_panel is not None:
             self.analytics_panel.status_label.setText(message)
 
-    def _build_central_widget(self):
+    def _build_shell(self):
+        """Nav rail + page host (FireLab roadmap Phase 1, pages given real
+        content in Phase 4): replaces the old single setCentralWidget(central)
+        call with a NavRail alongside a QStackedWidget of pages. LivePage
+        wraps _build_central_widget()'s existing content unchanged -- built
+        eagerly, right here, at the exact same point in __init__ as before
+        this shell existed, so every attribute it sets (self.view_grid,
+        self.timeline, self.temp_slider, ...) is available immediately, not
+        deferred behind a page switch. Dataset/Analysis embed the
+        experiment_browser/analytics_panel docks' own inner content
+        (already built -- see __init__'s ordering comment); Home is the
+        page shown first."""
+        live_content = self._build_central_widget()
+
+        dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
+        analysis_content = self.analytics_panel.widget() if self.analytics_panel is not None else None
+        # The dock objects themselves are now empty shells (their content
+        # was just reparented onto a page) -- never added to a dock area,
+        # but still MainWindow-parented QWidgets, so hide them explicitly
+        # rather than leave them as stray unlaid-out children.
+        if self.experiment_browser is not None:
+            self.experiment_browser.hide()
+        if self.analytics_panel is not None:
+            self.analytics_panel.hide()
+
+        self.pages = {
+            "home": HomePage(on_start=lambda: self._navigate_to("live")),
+            "live": LivePage(live_content, self.time_controller, settings=self.settings),
+            "compare": ComparePage(on_preset=self._apply_compare_preset),
+            "dataset": DatasetPage(dataset_content),
+            "analysis": AnalysisPage(
+                analysis_content, on_shown=lambda: self._on_analytics_panel_visibility_changed(True)),
+            "export": ExportPage(
+                on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
+        }
+        has_manifest = bool(self.sim_data.manifest)
+        self.pages["home"].set_stats(
+            len(self.sim_data.manifest or []), self._current_n_frames, len(self.quantity_infos))
+        self.pages["compare"].set_available(has_manifest)
+
+        nav_entries = [
+            ("home", "Home"), ("live", "Live Viewer"), ("compare", "Compare"),
+            ("dataset", "Dataset"), ("analysis", "Analysis"), ("export", "Export"),
+        ]
+
+        self.page_stack = QtWidgets.QStackedWidget()
+        for key, _label in nav_entries:
+            self.page_stack.addWidget(self.pages[key])
+
+        self.nav_rail = NavRail(nav_entries)
+        self.nav_rail.page_selected.connect(self._navigate_to)
+
+        shell = QtWidgets.QWidget()
+        shell.setObjectName("shellWidget")
+        shell_layout = QtWidgets.QHBoxLayout(shell)
+        shell_layout.setContentsMargins(0, 0, 0, 0)
+        shell_layout.setSpacing(0)
+        shell_layout.addWidget(self.nav_rail)
+        shell_layout.addWidget(self.page_stack, 1)
+        self.setCentralWidget(shell)
+
+        self._active_page_key = None
+        self._navigate_to("home")
+
+    def _navigate_to(self, key: str) -> None:
+        page = self.pages.get(key)
+        if page is None or key == self._active_page_key:
+            return
+        old_page = self.pages.get(self._active_page_key)
+        if old_page is not None:
+            old_page.on_leave()
+        self._active_page_key = key
+        self.page_stack.setCurrentWidget(page)
+        self.nav_rail.set_active(key)
+        page.on_enter()
+
+    def _build_central_widget(self) -> QtWidgets.QWidget:
+        """Builds the Live Viewer's content (control panel + plot grid),
+        unchanged from before the nav-rail shell existed -- FireLab
+        roadmap Phase 1 wraps this in a LivePage instead of setting it
+        directly as MainWindow's central widget (see _build_shell()), but
+        every widget built here (self.splitter, self.view_grid,
+        self.timeline, self.temp_slider, ...) is constructed exactly as
+        before, at the same point in __init__, so it's available as a
+        MainWindow attribute immediately -- not lazily -- for every
+        existing call site and test."""
         central = QtWidgets.QWidget()
         central.setObjectName("centralWidget")
-        self.setCentralWidget(central)
         root_layout = QtWidgets.QVBoxLayout(central)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
@@ -473,11 +627,21 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.splitter.addWidget(self._build_control_panel())
         self.splitter.addWidget(self._build_plot_panel())
-        # Control panel gets a fixed-ish starting share; plot gets the rest
-        # and does the growing when the window resizes (stretch factors).
+        self.splitter.addWidget(self._build_inspector_panel())
+        # Control panel and inspector get fixed-ish starting shares; plot
+        # gets the rest and does the growing when the window resizes.
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([320, 880])
+        self.splitter.setStretchFactor(2, 0)
+        self.splitter.setSizes([320, 720, 240])
+        return central
+
+    def _build_inspector_panel(self) -> QtWidgets.QWidget:
+        """Right-hand Live Inspector (FireLab roadmap Phase 3): probe
+        readout, peak-temperature sparkline, HRR gauge, live narration --
+        see _update_inspector() for how it's kept in sync with playback."""
+        self.inspector = InspectorPanel()
+        return self.inspector
 
     def _build_control_panel(self) -> QtWidgets.QWidget:
         panel = QtWidgets.QWidget()
@@ -567,7 +731,7 @@ class MainWindow(QtWidgets.QMainWindow):
         outer.addWidget(speed_section)
 
         candle_section = CollapsibleSection("Number of candles")
-        self.candle_toggle = ToggleGroup(
+        self.candle_toggle = CandleCard(
             [("1 candle", 0), ("2 candles", 1)], default_index=DEFAULT_CANDLES,
             accessible_name="Number of candles",
         )
@@ -584,8 +748,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # secondary text, per the 2026-07-09c non-specialist label pass --
         # raw variable names must never appear unexplained (ROADMAP §4 M1.6.4).
         vod_section = CollapsibleSection("Air vent 1 (VOD)")
-        self.vod_toggle = ToggleGroup(
-            [("Open", 0), ("Closed", 1), ("HVAC", 2)], default_index=DEFAULT_VOD,
+        self.vod_toggle = VentWidget(
+            [("Open", 0), ("Closed", 1), ("HVAC", 2)], state_labels=_VOD_STATES, default_index=DEFAULT_VOD,
             accessible_name="Air vent 1 (VOD) state",
         )
         self.vod_toggle.setToolTip(
@@ -598,8 +762,8 @@ class MainWindow(QtWidgets.QMainWindow):
         outer.addWidget(vod_section)
 
         voc_section = CollapsibleSection("Air vent 2 (VOC)")
-        self.voc_toggle = ToggleGroup(
-            [("Open", 0), ("Closed", 1)], default_index=DEFAULT_VOC,
+        self.voc_toggle = VentWidget(
+            [("Open", 0), ("Closed", 1)], state_labels=_VOC_STATES, default_index=DEFAULT_VOC,
             accessible_name="Air vent 2 (VOC) state",
         )
         self.voc_toggle.setToolTip(
@@ -614,7 +778,7 @@ class MainWindow(QtWidgets.QMainWindow):
         door_section = CollapsibleSection("Door opening width")
         # Options list is [("Wide open", 1), ("Narrow", 0)]; DEFAULT_DOOR=1 is
         # at position 0, so default_index=0 correctly preselects "Wide open".
-        self.door_toggle = ToggleGroup(
+        self.door_toggle = DoorWidget(
             [("Wide open", 1), ("Narrow", 0)], default_index=0,
             accessible_name="Door state",
         )
@@ -850,20 +1014,29 @@ class MainWindow(QtWidgets.QMainWindow):
         need re-registering just because the displayed data changed)."""
         cell.view.enable_probe(lambda x, z, v, c=cell: self._on_cell_probe(c, x, z, v))
         self._apply_contour_overlay_state(cell)
+        self._apply_cinematic_state(cell)
 
     def _on_cell_probe(self, cell, x, z, value):
         """Cursor probe callback (M2.6.1): x/z are physical meters, value
         is the displayed quantity's reading at that point -- shown in the
         status bar rather than a floating tooltip, consistent with how
-        _on_time_changed already reports "t = …s" there."""
+        _on_time_changed already reports "t = …s" there. Also mirrored,
+        large-type, into the Live Inspector (FireLab roadmap Phase 3) --
+        but only for the active cell, so a multi-view grid's other cells
+        don't fight over the one inspector panel."""
+        is_active = cell is self.view_grid.active_cell()
         if x is None:
             if not self.time_controller.is_playing():
                 self.statusBar().showMessage("Ready.")
+            if is_active:
+                self.inspector.set_probe(None, None, None)
             return
         display = QUANTITY_DISPLAY.get(cell.quantity_key.quantity if cell.quantity_key else None)
         unit = display['unit'] if display else ""
         value_text = f"{value:.1f}{unit}" if value is not None else "—"
         self.statusBar().showMessage(f"x = {x:.3f} m, z = {z:.3f} m, value = {value_text}")
+        if is_active:
+            self.inspector.set_probe(x, z, value, unit)
 
     def _apply_contour_overlay_state(self, cell):
         """Sync one cell's contour overlays to their global View-menu
@@ -981,6 +1154,42 @@ class MainWindow(QtWidgets.QMainWindow):
         every other cell rather than a parallel display system."""
         return cell.store_override if cell.store_override is not None else self.controller.store
 
+    def _next_frame_for_slice_cell(self, cell, index: int):
+        """Frame at index+1 for a "slice" cell, or None past the end of
+        the series -- only used for cinematic mode's sub-frame
+        interpolation (FireLab roadmap Phase 2.1d), which needs a
+        lookahead endpoint to blend toward. Free: store.get() already
+        returns the whole cached array, this is just one more index into
+        it, not an extra load."""
+        store = self._store_for_cell(cell)
+        data = store.get(cell.case_index, cell.quantity_key)
+        nxt = index + 1
+        return data[nxt] if nxt < data.shape[0] else None
+
+    def _hrr_intensity_for_cell(self, cell, index: int) -> float:
+        """cell's current HRR(t) normalized to that scenario's own peak
+        (FireLab roadmap Phase 2.1c) -- 1.0 (neutral) if there's no
+        manifest entry, no *_hrr.csv, or a zero peak, so demo-data mode
+        and any scenario missing the CSV still renders bloom/flicker, just
+        without the extra data-driven modulation."""
+        if not self.sim_data.manifest:
+            return 1.0
+        cached = self._hrr_cache.get(cell.case_index)
+        if cached is None:
+            entry = next((e for e in self.sim_data.manifest if e.case_index == cell.case_index), None)
+            hrr_data = _read_hrr_csv(entry.path) if entry else None
+            cached = hrr_data if hrr_data is not None else ()
+            self._hrr_cache[cell.case_index] = cached
+        if cached == ():
+            return 1.0
+        times, hrr_kw = cached
+        peak = float(np.max(hrr_kw)) if len(hrr_kw) else 0.0
+        if peak <= 0:
+            return 1.0
+        t_now = index / self.time_controller.timesteps_per_second
+        current = float(np.interp(t_now, times, hrr_kw))
+        return max(0.15, min(1.5, current / peak))
+
     def _frame_for_cell(self, cell, index: int):
         """The frame `cell` should show at timeline `index`, dispatched by
         cell_type (M2.3.3): a plain slice, an A-B difference, or an
@@ -1017,13 +1226,48 @@ class MainWindow(QtWidgets.QMainWindow):
                 logger.warning("failed to fetch frame for grid cell (type=%s): %s", cell.cell_type, e)
                 continue
             if frame is not None:
-                if cell.view.velocity_overlay_enabled:
-                    cell.view.show_frame(frame, velocity_frame=self._velocity_overlay_frame_for_cell(cell, index))
+                cinematic = cell.cell_type == "slice" and getattr(cell.view, "cinematic_enabled", False)
+                extra = {}
+                if cinematic:
+                    extra["next_frame"] = self._next_frame_for_slice_cell(cell, index)
+                    extra["bloom_intensity"] = self._hrr_intensity_for_cell(cell, index)
+                # Cinematic mode's smoke layer (Tier 2, FireLab roadmap
+                # Phase 2.1f) wants VELOCITY data every tick regardless of
+                # whether the separate contour-overlay checkbox is on.
+                if cell.view.velocity_overlay_enabled or cinematic:
+                    velocity_frame = self._velocity_overlay_frame_for_cell(cell, index)
+                    cell.view.show_frame(frame, velocity_frame=velocity_frame, **extra)
                 else:
-                    cell.view.show_frame(frame)
+                    cell.view.show_frame(frame, **extra)
         self.timeline.set_index(index)
         current_time = index / self.time_controller.timesteps_per_second
         self.statusBar().showMessage(f"t = {current_time:.1f} s", 2000)
+        self._update_inspector(index)
+
+    def _update_inspector(self, index: int) -> None:
+        """Keeps the Live Inspector (FireLab roadmap Phase 3) in sync with
+        the active cell -- only meaningful for a "slice" cell showing
+        TEMPERATURE (the inspector's sparkline/narration are calibrated to
+        that quantity); any other active cell just gets a neutral/cleared
+        panel rather than stale or misleading numbers."""
+        cell = self.view_grid.active_cell()
+        if (cell is None or cell.cell_type != "slice"
+                or not cell.quantity_key or cell.quantity_key.quantity != "TEMPERATURE"):
+            self.inspector.clear()
+            return
+        key = (cell.case_index, cell.quantity_key)
+        if key != self._inspector_series_key:
+            self._inspector_series_key = key
+            store = self._store_for_cell(cell)
+            data = store.get(cell.case_index, cell.quantity_key)
+            peak_by_frame = data.reshape(data.shape[0], -1).max(axis=1).tolist()
+            door_wide_open = self.controller.params.door == 1
+            self.inspector.set_scenario(peak_by_frame, QUANTITY_DISPLAY["TEMPERATURE"]["vmin"], door_wide_open)
+
+        intensity = self._hrr_intensity_for_cell(cell, index)
+        cached_hrr = self._hrr_cache.get(cell.case_index)
+        hrr_fraction = min(1.0, intensity) if cached_hrr else None
+        self.inspector.set_time(index, hrr_fraction)
 
     def _on_playing_changed(self, playing: bool):
         self.timeline.set_playing(playing)
@@ -1196,6 +1440,75 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self.time_controller.is_playing():
             self._on_time_changed(self.time_controller.index)
 
+    # ------------------------------------------------- Compare page presets
+    def _find_scenario(self, factor: str, value: int):
+        """case_index of the manifest entry matching `factor=value` with
+        every other factor held at its config.py DEFAULT_*, or None if no
+        such scenario exists."""
+        target = {"candles": DEFAULT_CANDLES, "door": DEFAULT_DOOR, "vod": DEFAULT_VOD, "voc": DEFAULT_VOC}
+        target[factor] = value
+        for entry in self.sim_data.manifest or []:
+            if all(getattr(entry, f) == v for f, v in target.items()):
+                return entry.case_index
+        return None
+
+    def _find_quantity_key(self, quantity_name: str):
+        return next((key for _label, key in self._quantity_options() if key.quantity == quantity_name), None)
+
+    def _select_scenario_in_cell(self, cell, case_index: int) -> None:
+        options = self._scenario_options()
+        idx = next((i for i, (_label, ci) in enumerate(options) if ci == case_index), None)
+        combo = getattr(cell, "scenario_combo", None)
+        if idx is not None and combo is not None:
+            combo.setCurrentIndex(idx)
+
+    def _select_difference_scenarios_in_cell(self, cell, case_a: int, case_b: int) -> None:
+        options = self._scenario_options()
+        idx_a = next((i for i, (_l, ci) in enumerate(options) if ci == case_a), None)
+        idx_b = next((i for i, (_l, ci) in enumerate(options) if ci == case_b), None)
+        if idx_a is not None:
+            cell.scenario_combo_a.setCurrentIndex(idx_a)
+        if idx_b is not None:
+            cell.scenario_combo_b.setCurrentIndex(idx_b)
+
+    def _select_quantity_in_cell(self, cell, quantity_key) -> None:
+        options = self._quantity_options()
+        idx = next((i for i, (_label, key) in enumerate(options) if key == quantity_key), None)
+        combo = getattr(cell, "quantity_combo", None)
+        if idx is not None and combo is not None:
+            combo.setCurrentIndex(idx)
+
+    def _apply_compare_preset(self, key: str) -> None:
+        """Compare page (FireLab roadmap Phase 4): jumps into the Live
+        page's own 1x2 grid, pre-configured as scenario A (slice) next to
+        A-B (difference) -- reusing the exact combo-driven signal chain a
+        user's own clicks already go through, not a second rendering path."""
+        preset = _COMPARE_PRESETS.get(key)
+        if preset is None or not self.sim_data.manifest:
+            return
+        quantity_key = self._find_quantity_key(preset["quantity"])
+        case_a = self._find_scenario(preset["factor"], preset["values"][0])
+        case_b = self._find_scenario(preset["factor"], preset["values"][1])
+        if quantity_key is None or case_a is None or case_b is None:
+            return
+
+        self._navigate_to("live")
+        self._set_grid_layout("1x2")
+        cells = self.view_grid.visible_cells()
+        if len(cells) < 2:
+            return
+        cell_a, cell_b = cells[0], cells[1]
+
+        if cell_a.cell_type != "slice":
+            cell_a.set_cell_type("slice")
+        self._select_scenario_in_cell(cell_a, case_a)
+        self._select_quantity_in_cell(cell_a, quantity_key)
+
+        if cell_b.cell_type != "difference":
+            cell_b.set_cell_type("difference")
+        self._select_difference_scenarios_in_cell(cell_b, case_a, case_b)
+        self._select_quantity_in_cell(cell_b, quantity_key)
+
     def _set_link_clim(self, checked: bool):
         """View -> Link color scales toggle (M2.2.3)."""
         self._link_clim = checked
@@ -1226,6 +1539,39 @@ class MainWindow(QtWidgets.QMainWindow):
             self._apply_contour_overlay_state(cell)
         if not self.time_controller.is_playing():
             self._on_time_changed(self.time_controller.index)
+
+    def _set_cinematic_enabled(self, checked: bool):
+        """View -> Cinematic fire view toggle (FireLab roadmap Phase 2.1).
+        Grid-wide like the isotherm/velocity-overlay toggles, but only
+        actually applies to "slice" cells currently showing TEMPERATURE --
+        the FireLUT is calibrated to that quantity's hazard-band window
+        (see cinema/luts.py); other cells are left in science mode."""
+        self._cinematic_enabled = checked
+        for cell in self.view_grid.visible_cells():
+            self._apply_cinematic_state(cell)
+        if not self.time_controller.is_playing():
+            self._on_time_changed(self.time_controller.index)
+
+    def _apply_cinematic_state(self, cell):
+        """Sync one cell's cinematic-mode flag to the global toggle --
+        called for every cell whenever the toggle changes, and once for
+        each cell right after its view is first initialized (mirrors
+        _apply_contour_overlay_state's pattern)."""
+        if not hasattr(cell.view, "set_cinematic_mode"):
+            return  # DifferenceView/EnsembleView: cinematic mode is slice-only for now
+        quantity = cell.quantity_key.quantity if cell.quantity_key else None
+        applies_here = (
+            getattr(self, "_cinematic_enabled", False)
+            and cell.cell_type == "slice"
+            and quantity == "TEMPERATURE"
+        )
+        if applies_here and not cell.view.cinematic_enabled:
+            display = QUANTITY_DISPLAY["TEMPERATURE"]
+            is_active = cell is self.view_grid.active_cell()
+            vmax_init = self.temp_slider.value() if is_active else display["slider_default"]
+            cell.view.set_cinematic_mode(True, vmin=display["vmin"], vmax_init=vmax_init)
+        elif not applies_here and cell.view.cinematic_enabled:
+            cell.view.set_cinematic_mode(False)
 
     def _apply_link_clim(self):
         """When linked, every visible *slice-type* cell showing the same
@@ -1471,6 +1817,7 @@ class MainWindow(QtWidgets.QMainWindow):
         cell.view.set_clim(display['vmin'], display['slider_default'])
         cell.view.set_colorbar_label(f"{display['label']} ({display['unit']})")
         self._apply_contour_overlay_state(cell)  # levels are quantity-specific; quantity may have just changed
+        self._apply_cinematic_state(cell)  # cinematic mode is TEMPERATURE-only; quantity may have just changed
         index = min(self.time_controller.index, data.shape[0] - 1)
         if cell.view.velocity_overlay_enabled:
             cell.view.show_frame(data[index], velocity_frame=self._velocity_overlay_frame_for_cell(cell, index))
@@ -1727,6 +2074,39 @@ class MainWindow(QtWidgets.QMainWindow):
         if was_playing:
             self.time_controller.play()
 
+    def _export_postcard(self):
+        """Export page's "demo postcard" (FireLab roadmap Phase 4): a
+        one-click PNG of the active cell's current frame with a simple
+        FireLab title-card overlay -- a QPainter grab of the live canvas,
+        not a re-render, so it always matches exactly what's on screen."""
+        cell = self.view_grid.active_cell()
+        if cell is None:
+            return
+        default_name = f"firelab_{self.controller.current_case_index()}.png"
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save Demo Postcard", default_name, "PNG Image (*.png)")
+        if not path:
+            return
+        if not path.lower().endswith(".png"):
+            path += ".png"
+
+        pixmap = cell.view.widget().grab()
+        painter = QtGui.QPainter(pixmap)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        band_height = max(36, pixmap.height() // 12)
+        band_rect = QtCore.QRect(0, pixmap.height() - band_height, pixmap.width(), band_height)
+        painter.fillRect(band_rect, QtGui.QColor(11, 13, 18, 200))
+        painter.setPen(QtGui.QColor("#FF6B35"))
+        font = painter.font()
+        font.setPointSizeF(max(font.pointSizeF() * 1.3, 12))
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(band_rect.adjusted(12, 0, -12, 0), QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft,
+                          "FireLab Digital Twin")
+        painter.end()
+        pixmap.save(path, "PNG")
+        self.statusBar().showMessage(f"Saved {path}", 4000)
+
     def _start_simulation(self):
         self.time_controller.play()
 
@@ -1784,12 +2164,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _refresh_toggle_icons(self, palette):
         """Icon color is redrawn per theme so it stays legible against both
-        the light and dark control-panel background (ROADMAP §4 M1.6.4)."""
-        color = palette.text_secondary
-        self.candle_toggle.set_icon(flame_icon(color))
-        self.door_toggle.set_icon(door_icon(color))
-        self.vod_toggle.set_icon(vent_icon(color))
-        self.voc_toggle.set_icon(vent_icon(color))
+        the light and dark control-panel background (ROADMAP §4 M1.6.4).
+        FireLab roadmap Phase 3: these are now animated physical-mirror
+        widgets (CandleCard/DoorWidget/VentWidget), each owning its own
+        icon regeneration -- set_palette() just tells them which colors
+        to use next time they redraw, same intent as the old set_icon()
+        calls this replaces."""
+        self.candle_toggle.set_palette(palette)
+        self.door_toggle.set_palette(palette)
+        self.vod_toggle.set_palette(palette)
+        self.voc_toggle.set_palette(palette)
+        self.inspector.set_palette(palette)
 
     # -------------------------------------------------------- misc/window
     def _setup_shortcuts(self):
@@ -1808,6 +2193,66 @@ class MainWindow(QtWidgets.QMainWindow):
             QtGui.QKeySequence("Shift+Right"), self,
             activated=lambda: self.time_controller.step(self.time_controller.timesteps_per_second),
         )
+        # FireLab roadmap Phase 1: 1-6 jump straight to a nav-rail page, in
+        # the same display order as the rail itself.
+        for i, key in enumerate(("home", "live", "compare", "dataset", "analysis", "export"), start=1):
+            QtWidgets.QShortcut(QtGui.QKeySequence(str(i)), self, activated=lambda k=key: self._navigate_to(k))
+        # Demo-script bookmarks (FireLab roadmap Phase 5): Ctrl+Shift+<n>
+        # records the current (page, scenario, time) into slot n;
+        # Shift+<n> jumps back to it -- lets a presenter move beat-to-beat
+        # without touching a mouse.
+        for slot in range(1, 10):
+            QtWidgets.QShortcut(
+                QtGui.QKeySequence(f"Ctrl+Shift+{slot}"), self,
+                activated=lambda s=slot: self._record_bookmark(s),
+            )
+            QtWidgets.QShortcut(
+                QtGui.QKeySequence(f"Shift+{slot}"), self,
+                activated=lambda s=slot: self._jump_to_bookmark(s),
+            )
+
+    def _record_bookmark(self, slot: int) -> None:
+        cell = self.view_grid.active_cell()
+        self._demo_bookmarks[slot] = {
+            "page": self._active_page_key,
+            "case_index": cell.case_index if cell is not None and cell.cell_type == "slice" else None,
+            "time_index": self.time_controller.index,
+        }
+        self.statusBar().showMessage(f"Bookmark {slot} recorded.", 3000)
+
+    def _jump_to_bookmark(self, slot: int) -> None:
+        bookmark = self._demo_bookmarks.get(slot)
+        if bookmark is None:
+            self.statusBar().showMessage(f"Bookmark {slot} is empty.", 3000)
+            return
+        self._navigate_to(bookmark["page"])
+        if bookmark["page"] == "live" and bookmark["case_index"] is not None:
+            cell = self.view_grid.active_cell()
+            if cell is not None and cell.cell_type == "slice":
+                self._select_scenario_in_cell(cell, bookmark["case_index"])
+        self.time_controller.seek(bookmark["time_index"])
+
+    def _toggle_effects_master_switch(self) -> None:
+        """Esc long-press (FireLab roadmap Phase 5): an emergency "effects
+        off" switch -- toggles the same View -> Cinematic fire view
+        control every cinematic cell already listens to, so this is a
+        thin trigger on existing, tested machinery, not new per-cell
+        bookkeeping."""
+        self.cinematic_action.setChecked(not self.cinematic_action.isChecked())
+        self._set_cinematic_enabled(self.cinematic_action.isChecked())
+        state = "enabled" if self.cinematic_action.isChecked() else "disabled"
+        self.statusBar().showMessage(f"Cinematic effects {state}.", 3000)
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
+        if event.key() == QtCore.Qt.Key_Escape and not event.isAutoRepeat():
+            if not self._esc_hold_timer.isActive():
+                self._esc_hold_timer.start(600)
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event: QtGui.QKeyEvent) -> None:
+        if event.key() == QtCore.Qt.Key_Escape and not event.isAutoRepeat():
+            self._esc_hold_timer.stop()
+        super().keyReleaseEvent(event)
 
     def _toggle_fullscreen(self):
         if self.isFullScreen():
@@ -1850,4 +2295,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # tests, a stale cursor bleeding into whatever runs next).
         if self._busy:
             self._end_busy_state()
+        # Same reasoning as the busy-cursor cleanup above: the kiosk
+        # controller's event filter lives on the process-global
+        # QApplication, not this window, so it must be explicitly removed
+        # here rather than left to Python GC timing (see kiosk.py's
+        # shutdown() docstring for the measured cost of skipping this).
+        self._kiosk.shutdown()
         super().closeEvent(event)

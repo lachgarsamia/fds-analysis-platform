@@ -62,6 +62,157 @@ class TestSliceView:
         assert view.value_at(5, 5) is None, "no extent means no meaningful physical-coordinate lookup"
 
 
+class TestSliceViewCinematicMode:
+    """FireLab roadmap Phase 2.1: cinematic mode is opt-in and reversible,
+    and must not break the probe/isotherm code paths that read the raw
+    (non-RGBA) frame while it's on."""
+
+    def test_disabled_by_default(self, qapp):
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=20.0, vmax=300.0, colorbar_label="Temperature (°C)")
+        assert view.cinematic_enabled is False
+        assert view.heatmap.get_array().shape == (49, 101), "science mode: raw 2D array, not RGBA"
+
+    def test_enable_produces_rgba_frame(self, qapp):
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=20.0, vmax=300.0, colorbar_label="Temperature (°C)")
+        view.set_cinematic_mode(True, vmin=20.0, vmax_init=300.0)
+        assert view.cinematic_enabled is True
+        hot_frame = np.full((49, 101), 250.0, dtype=np.float32)
+        view.show_frame(hot_frame)
+        array = view.heatmap.get_array()
+        assert array.shape[-1] == 4, "cinematic mode hands the heatmap an RGBA image"
+        assert array.dtype == np.uint8
+
+    def test_enabling_over_a_non_black_cmap_does_not_bake_stale_frame_into_background(self, qapp):
+        """Regression: capture_background() used to run right after
+        enabling cinematic mode, before any RGBA show_frame() call --
+        baking the still-present *science-mode* frame (rendered via
+        whatever cmap was active, e.g. a colormap that isn't black at its
+        low end) into the cached blit background. Ambient (alpha=0)
+        cinema pixels then let that stale, wrongly-colored frame show
+        through instead of the near-black backdrop, since blitting
+        composites new draws over the cached background, not over a
+        blank facecolor. Uses 'viridis' (dark blue/purple at its low end,
+        not black) specifically so the bug can't hide behind a
+        coincidentally-black test colormap the way it did originally."""
+        view = SliceView()
+        view.init_plot(FRAME, cmap="viridis", interpolation="nearest",
+                        vmin=20.0, vmax=300.0, colorbar_label="Temperature (°C)")
+        view.set_cinematic_mode(True, vmin=20.0, vmax_init=300.0)
+        # No show_frame() call yet -- this is exactly the window during
+        # which the bug baked a stale frame into the background.
+        bg_rgba = np.asarray(view.canvas.buffer_rgba())
+        center = bg_rgba[bg_rgba.shape[0] // 2, bg_rgba.shape[1] // 2, :3]
+        assert tuple(int(c) for c in center) == (11, 13, 18), (
+            f"expected the near-black CINEMA_BG backdrop, got {tuple(center)} "
+            "-- looks like the stale-frame-in-background bug is back"
+        )
+
+    def test_ambient_frame_is_transparent(self, qapp):
+        """The alpha ramp's whole point: ambient-temperature cells should
+        be see-through, not painted -- so the fire looks like it's
+        floating in a dark room instead of filling a rectangle."""
+        view = SliceView()
+        ambient_frame = np.full((49, 101), 20.0, dtype=np.float32)
+        view.init_plot(ambient_frame, cmap="gist_heat", interpolation="nearest",
+                        vmin=20.0, vmax=300.0, colorbar_label="Temperature (°C)")
+        view.set_cinematic_mode(True, vmin=20.0, vmax_init=300.0)
+        view.show_frame(ambient_frame)
+        alpha = view.heatmap.get_array()[..., 3]
+        assert (alpha == 0).all()
+
+    def test_disable_restores_2d_science_frame(self, qapp):
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=20.0, vmax=300.0, colorbar_label="Temperature (°C)")
+        view.set_cinematic_mode(True, vmin=20.0, vmax_init=300.0)
+        view.show_frame(FRAME)
+        view.set_cinematic_mode(False)
+        assert view.cinematic_enabled is False
+        new_frame = np.full((49, 101), 77.0, dtype=np.float32)
+        view.show_frame(new_frame)
+        assert view.heatmap.get_array().shape == (49, 101)
+        assert (view.heatmap.get_array() == 77.0).all()
+
+    def test_probe_and_isotherms_read_raw_frame_while_cinematic(self, qapp):
+        """value_at()/isotherm redraws must keep reading temperature data,
+        not the RGBA image the heatmap artist holds while this is on."""
+        view = SliceView()
+        frame = np.arange(16, dtype=np.float32).reshape(4, 4)
+        view.init_plot(frame, cmap="gist_heat", interpolation="nearest",
+                        vmin=0.0, vmax=15.0, colorbar_label="x",
+                        extent=(0.0, 1.0, 0.0, 0.48))
+        view.set_cinematic_mode(True, vmin=0.0, vmax_init=15.0)
+        view.show_frame(frame)
+        assert view.value_at(0.0, 0.48) == frame[0, 0]
+        view.set_isotherm_levels([5.0])
+        view.set_isotherms_enabled(True)  # must not raise on an RGBA-backed heatmap
+
+    def test_enable_requires_vmin_and_vmax(self, qapp):
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=20.0, vmax=300.0, colorbar_label="Temperature (°C)")
+        with pytest.raises(ValueError):
+            view.set_cinematic_mode(True)
+
+    def test_next_frame_starts_interpolation_timer(self, qapp):
+        """FireLab roadmap Phase 2.1d: a lookahead frame should arm the
+        sub-frame interpolation timer; no lookahead (end of series) should
+        leave it stopped."""
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=20.0, vmax=300.0, colorbar_label="Temperature (°C)")
+        view.set_cinematic_mode(True, vmin=20.0, vmax_init=300.0)
+        view.show_frame(FRAME, next_frame=FRAME + 5.0)
+        assert view._interp_timer.isActive()
+        view.show_frame(FRAME, next_frame=None)
+        assert not view._interp_timer.isActive()
+
+    def test_disable_stops_interpolation_timer(self, qapp):
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=20.0, vmax=300.0, colorbar_label="Temperature (°C)")
+        view.set_cinematic_mode(True, vmin=20.0, vmax_init=300.0)
+        view.show_frame(FRAME, next_frame=FRAME + 5.0)
+        view.set_cinematic_mode(False)
+        assert not view._interp_timer.isActive()
+
+
+class TestSliceViewEmberParticles:
+    """FireLab roadmap Phase 2.1g. Regression coverage for a real bug
+    found while building this: constructing the scatter artist with
+    c=[] put it into scalar-mappable color mode, where matplotlib's
+    draw() silently reset facecolor back to empty on every blit_update()
+    -- set_facecolor() appeared to work right after being called, then
+    got clobbered on the very next redraw."""
+
+    HOT_FRAME = np.full((49, 101), 400.0, dtype=np.float32)
+
+    def test_hot_frame_spawns_particles_visible_through_multiple_blits(self, qapp):
+        view = SliceView()
+        view.init_plot(self.HOT_FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=20.0, vmax=300.0, colorbar_label="Temperature (°C)")
+        view.set_cinematic_mode(True, vmin=20.0, vmax_init=300.0)
+        for _ in range(20):
+            view.show_frame(self.HOT_FRAME, next_frame=self.HOT_FRAME)
+        assert len(view._ember_sim.pos) > 0
+        assert len(view.ember_scatter.get_facecolor()) == len(view._ember_sim.pos)
+
+    def test_disable_clears_scatter(self, qapp):
+        view = SliceView()
+        view.init_plot(self.HOT_FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=20.0, vmax=300.0, colorbar_label="Temperature (°C)")
+        view.set_cinematic_mode(True, vmin=20.0, vmax_init=300.0)
+        for _ in range(10):
+            view.show_frame(self.HOT_FRAME, next_frame=self.HOT_FRAME)
+        view.set_cinematic_mode(False)
+        assert view._ember_sim is None
+        assert len(view.ember_scatter.get_offsets()) == 0
+
+
 class TestSliceViewProbe:
     """Corner/known-pixel accuracy for value_at() (M2.6.1's DoD: "probe
     accurate at corners"), and the row<->physical-z flip-awareness the
