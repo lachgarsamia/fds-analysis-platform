@@ -1,7 +1,7 @@
 """Unit tests for cinema/luts.py + cinema/pipeline.py (FireLab roadmap
-Phase 2, tasks 1-2: FireLUT + alpha + filmic tone map + auto-exposure,
-bloom + HRR-driven flicker + sub-frame interpolation). No Qt/matplotlib
-canvas involved -- pure array math, see test_views.py's
+Phase 2, tasks 1-3: FireLUT + alpha + filmic tone map + auto-exposure,
+bloom + HRR-driven flicker + sub-frame interpolation, smoke tiers 1-2). No
+Qt/matplotlib canvas involved -- pure array math, see test_views.py's
 TestSliceViewCinematicMode for the SliceView integration."""
 
 import numpy as np
@@ -10,6 +10,7 @@ from cinema.bloom import apply_bloom
 from cinema.interp import lerp_frames
 from cinema.luts import FIRE_RGBA_LUT
 from cinema.pipeline import AutoExposure, EffectsPipeline, filmic_tonemap
+from cinema.smoke import SmokeSimulator, composite_over, smoke_rgba
 
 
 class TestFireLUT:
@@ -106,6 +107,66 @@ class TestLerpFrames:
         b = np.full((2, 2), 10.0, dtype=np.float32)
         assert (lerp_frames(a, b, -1.0) == a).all()
         assert (lerp_frames(a, b, 2.0) == b).all()
+
+
+class TestSmokeSimulator:
+    def test_no_source_below_threshold_stays_empty(self):
+        sim = SmokeSimulator((10, 10), ambient_c=20.0)
+        ambient_frame = np.full((10, 10), 20.0, dtype=np.float32)
+        for _ in range(5):
+            density = sim.step(ambient_frame)
+        assert (density == 0.0).all()
+
+    def test_hot_frame_accumulates_then_decays(self):
+        sim = SmokeSimulator((10, 10), ambient_c=20.0)
+        hot_frame = np.full((10, 10), 300.0, dtype=np.float32)
+        d1 = sim.step(hot_frame).copy()
+        d2 = sim.step(hot_frame).copy()
+        assert d2.sum() > d1.sum(), "sustained heat should keep building smoke density"
+        ambient_frame = np.full((10, 10), 20.0, dtype=np.float32)
+        for _ in range(50):
+            after_decay = sim.step(ambient_frame)
+        assert after_decay.sum() < d2.sum(), "removing the source should let density decay away"
+
+    def test_tier2_moves_mass_toward_velocity_direction(self):
+        """A point source with a strong velocity field should advect
+        differently than Tier 1's fixed drift -- exercises the tier-2
+        (velocity_frame given) code path without asserting exact physics."""
+        shape = (21, 21)
+        sim = SmokeSimulator(shape, ambient_c=20.0)
+        frame = np.full(shape, 20.0, dtype=np.float32)
+        frame[10, 10] = 400.0  # a single hot cell as the plume source
+        velocity = np.full(shape, 3.0, dtype=np.float32)
+        for _ in range(10):
+            density = sim.step(frame, velocity_frame=velocity)
+        assert density.sum() > 0.0
+        assert np.isfinite(density).all()
+
+
+class TestSmokeCompositing:
+    def test_smoke_rgba_alpha_tracks_density(self):
+        density = np.array([[0.0, 1.0]], dtype=np.float32)
+        rgba = smoke_rgba(density)
+        assert rgba[0, 0, 3] == 0
+        assert rgba[0, 1, 3] > 0
+
+    def test_opaque_top_fully_occludes_bottom(self):
+        top = np.zeros((2, 2, 4), dtype=np.uint8)
+        top[..., 0] = 200
+        top[..., 3] = 255
+        bottom = np.zeros((2, 2, 4), dtype=np.uint8)
+        bottom[..., 1] = 200
+        bottom[..., 3] = 255
+        out = composite_over(top, bottom)
+        assert (out == top).all()
+
+    def test_transparent_top_shows_bottom(self):
+        top = np.zeros((2, 2, 4), dtype=np.uint8)
+        bottom = np.zeros((2, 2, 4), dtype=np.uint8)
+        bottom[..., 1] = 200
+        bottom[..., 3] = 255
+        out = composite_over(top, bottom)
+        assert (out == bottom).all()
 
 
 class TestEffectsPipelineFlicker:

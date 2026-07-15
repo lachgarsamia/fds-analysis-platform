@@ -1069,12 +1069,17 @@ class MainWindow(QtWidgets.QMainWindow):
                 logger.warning("failed to fetch frame for grid cell (type=%s): %s", cell.cell_type, e)
                 continue
             if frame is not None:
+                cinematic = cell.cell_type == "slice" and getattr(cell.view, "cinematic_enabled", False)
                 extra = {}
-                if cell.cell_type == "slice" and getattr(cell.view, "cinematic_enabled", False):
+                if cinematic:
                     extra["next_frame"] = self._next_frame_for_slice_cell(cell, index)
                     extra["bloom_intensity"] = self._hrr_intensity_for_cell(cell, index)
-                if cell.view.velocity_overlay_enabled:
-                    cell.view.show_frame(frame, velocity_frame=self._velocity_overlay_frame_for_cell(cell, index), **extra)
+                # Cinematic mode's smoke layer (Tier 2, FireLab roadmap
+                # Phase 2.1f) wants VELOCITY data every tick regardless of
+                # whether the separate contour-overlay checkbox is on.
+                if cell.view.velocity_overlay_enabled or cinematic:
+                    velocity_frame = self._velocity_overlay_frame_for_cell(cell, index)
+                    cell.view.show_frame(frame, velocity_frame=velocity_frame, **extra)
                 else:
                     cell.view.show_frame(frame, **extra)
         self.timeline.set_index(index)

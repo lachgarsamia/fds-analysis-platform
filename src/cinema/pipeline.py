@@ -15,6 +15,7 @@ import numpy as np
 from cinema.bloom import apply_bloom
 from cinema.luts import FIRE_RGBA_LUT
 from cinema.noise import FLICKER_TRACK
+from cinema.smoke import SmokeSimulator, composite_over, smoke_rgba
 
 # 1/f flicker amplitude: fraction of tonemapped intensity the pink-noise
 # track can add/subtract per frame -- subtle on purpose (candle-like
@@ -61,13 +62,20 @@ class EffectsPipeline:
         self.exposure = AutoExposure(vmax_init)
         self.last_cost_ms = 0.0
         self._flicker_i = 0
+        self._smoke: SmokeSimulator = None
 
-    def render(self, frame: np.ndarray, hrr_intensity: float = 1.0) -> np.ndarray:
+    def render(self, frame: np.ndarray, hrr_intensity: float = 1.0,
+               velocity_frame: np.ndarray = None) -> np.ndarray:
         """hrr_intensity: a scenario's current HRR(t) normalized to its own
         peak (1.0 = at-or-near peak), or 1.0 (neutral) if no HRR data is
         available -- scales both the flicker amplitude and the bloom
         strength, so the glow physically tracks the real heat-release
-        curve instead of being a constant cosmetic overlay."""
+        curve instead of being a constant cosmetic overlay.
+
+        velocity_frame: this cell's VELOCITY data at the same timestep, or
+        None -- drives the smoke layer's Tier 2 advection (see
+        cinema/smoke.py); Tier 1 (fixed upward drift) is used when it's
+        absent."""
         t0 = time.perf_counter()
         vmax = self.exposure.update(frame)
         span = max(vmax - self.vmin, 1e-6)
@@ -79,7 +87,13 @@ class EffectsPipeline:
         t = np.clip(t * (1.0 + FLICKER_AMPLITUDE * hrr_intensity * flicker), 0.0, 1.0)
 
         idx = (t * (len(FIRE_RGBA_LUT) - 1)).astype(np.uint8)
-        rgba = FIRE_RGBA_LUT[idx]
-        rgba = apply_bloom(rgba, t, strength=BLOOM_STRENGTH * hrr_intensity)
+        fire_rgba = FIRE_RGBA_LUT[idx]
+        fire_rgba = apply_bloom(fire_rgba, t, strength=BLOOM_STRENGTH * hrr_intensity)
+
+        if self._smoke is None or self._smoke.buffer.shape != frame.shape:
+            self._smoke = SmokeSimulator(frame.shape, ambient_c=self.vmin)
+        density = self._smoke.step(frame, velocity_frame)
+        composited = composite_over(fire_rgba, smoke_rgba(density))
+
         self.last_cost_ms = (time.perf_counter() - t0) * 1000.0
-        return rgba
+        return composited

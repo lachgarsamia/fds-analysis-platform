@@ -109,6 +109,7 @@ class SliceView:
         self._interp_to = None
         self._interp_phase = 1.0
         self._interp_bloom_intensity = 1.0
+        self._interp_velocity_frame = None
 
     def widget(self) -> QtWidgets.QWidget:
         return self.canvas
@@ -137,10 +138,11 @@ class SliceView:
     def show_frame(self, frame: np.ndarray, velocity_frame: np.ndarray = None,
                     next_frame: np.ndarray = None, bloom_intensity: float = 1.0) -> None:
         """velocity_frame (GUI modernization pass, item 6): this cell's
-        VELOCITY data at the same timestep, only meaningful (and only ever
-        passed by MainWindow) when the velocity overlay is on and this
-        cell is showing TEMPERATURE -- None otherwise, the default for
-        every pre-existing caller.
+        VELOCITY data at the same timestep -- meaningful when the velocity
+        overlay is on (drives the contour overlay) and/or cinematic mode
+        is on (drives the smoke layer's Tier 2 advection, FireLab roadmap
+        Phase 2.1f; Tier 1's fixed drift is used when this is None). None
+        otherwise, the default for every pre-existing caller.
 
         next_frame/bloom_intensity (FireLab roadmap Phase 2.1c/d, cinematic
         mode only): next_frame is the frame at the following timestep --
@@ -155,6 +157,7 @@ class SliceView:
         self._last_frame = frame
         if self._cinematic_enabled:
             self._interp_bloom_intensity = bloom_intensity
+            self._interp_velocity_frame = velocity_frame
             if next_frame is not None:
                 self._interp_from = frame
                 self._interp_to = next_frame
@@ -165,7 +168,8 @@ class SliceView:
                 self._interp_timer.stop()
                 self._interp_from = None
                 self._interp_to = None
-            display_data = self._cinema_pipeline.render(frame, hrr_intensity=bloom_intensity)
+            display_data = self._cinema_pipeline.render(
+                frame, hrr_intensity=bloom_intensity, velocity_frame=velocity_frame)
         else:
             display_data = frame
         self.heatmap.set_data(display_data)
@@ -264,7 +268,8 @@ class SliceView:
             return
         self._interp_phase = min(1.0, self._interp_phase + _INTERP_INTERVAL_MS / _NOMINAL_TICK_MS)
         blended = lerp_frames(self._interp_from, self._interp_to, self._interp_phase)
-        rgba = self._cinema_pipeline.render(blended, hrr_intensity=self._interp_bloom_intensity)
+        rgba = self._cinema_pipeline.render(
+            blended, hrr_intensity=self._interp_bloom_intensity, velocity_frame=self._interp_velocity_frame)
         self.heatmap.set_data(rgba)
         self.canvas.blit_update(self.heatmap)
         if self._interp_phase >= 1.0:
