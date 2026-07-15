@@ -1040,6 +1040,7 @@ class TestIntegration:
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         window.show()
+        window._navigate_to("live")  # FireLab nav shell: toolbar lives on the Live page, not shown by default (Home is)
         qapp.processEvents()
         assert window.toolbar.isVisible()
         window._set_grid_layout("2x2")

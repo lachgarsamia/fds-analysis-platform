@@ -42,6 +42,13 @@ from browser import ExperimentBrowserDock, _SummaryTextWorker
 from analytics_panel import AnalyticsPanelDock, _AnalyticsFeatureWorker
 from auto_summary import export_markdown
 from prediction_store import PredictionSource
+from nav import NavRail
+from pages.live import LivePage
+from pages.home import HomePage
+from pages.compare import ComparePage
+from pages.dataset import DatasetPage
+from pages.analysis import AnalysisPage
+from pages.export_page import ExportPage
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +192,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setMinimumSize(MIN_WIDTH, MIN_HEIGHT)
 
         self._build_menu()
-        self._build_central_widget()
+        self._build_shell()
         self._build_experiment_browser()
         self._build_analytics_panel()
         self._build_status_bar()
@@ -215,7 +222,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         theme_menu = view_menu.addMenu("Theme")
         self.theme_action_group = QtWidgets.QActionGroup(self)
-        for key, label in (("light", "Light"), ("dark", "Dark")):
+        for key, label in (("light", "Light"), ("dark", "Dark"), ("theatre", "Theatre (demo)")):
             action = QtWidgets.QAction(label, self, checkable=True)
             action.setChecked(key == self.current_theme_name)
             action.triggered.connect(lambda _checked, k=key: self._set_theme(k))
@@ -474,10 +481,73 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.analytics_panel is not None:
             self.analytics_panel.status_label.setText(message)
 
-    def _build_central_widget(self):
+    def _build_shell(self):
+        """Nav rail + page host (FireLab roadmap Phase 1): replaces the
+        old single setCentralWidget(central) call with a NavRail alongside
+        a QStackedWidget of pages. LivePage wraps _build_central_widget()'s
+        existing content unchanged -- built eagerly, right here, at the
+        exact same point in __init__ as before this shell existed, so
+        every attribute it sets (self.view_grid, self.timeline,
+        self.temp_slider, ...) is available immediately, not deferred
+        behind a page switch. The other pages are lazy placeholders
+        (Phase 4 gives them real content); Home is the page shown first.
+        """
+        self.pages = {
+            "home": HomePage(),
+            "live": LivePage(self._build_central_widget(), self.time_controller),
+            "compare": ComparePage(),
+            "dataset": DatasetPage(),
+            "analysis": AnalysisPage(),
+            "export": ExportPage(),
+        }
+        nav_entries = [
+            ("home", "Home"), ("live", "Live Viewer"), ("compare", "Compare"),
+            ("dataset", "Dataset"), ("analysis", "Analysis"), ("export", "Export"),
+        ]
+
+        self.page_stack = QtWidgets.QStackedWidget()
+        for key, _label in nav_entries:
+            self.page_stack.addWidget(self.pages[key])
+
+        self.nav_rail = NavRail(nav_entries)
+        self.nav_rail.page_selected.connect(self._navigate_to)
+
+        shell = QtWidgets.QWidget()
+        shell.setObjectName("shellWidget")
+        shell_layout = QtWidgets.QHBoxLayout(shell)
+        shell_layout.setContentsMargins(0, 0, 0, 0)
+        shell_layout.setSpacing(0)
+        shell_layout.addWidget(self.nav_rail)
+        shell_layout.addWidget(self.page_stack, 1)
+        self.setCentralWidget(shell)
+
+        self._active_page_key = None
+        self._navigate_to("home")
+
+    def _navigate_to(self, key: str) -> None:
+        page = self.pages.get(key)
+        if page is None or key == self._active_page_key:
+            return
+        old_page = self.pages.get(self._active_page_key)
+        if old_page is not None:
+            old_page.on_leave()
+        self._active_page_key = key
+        self.page_stack.setCurrentWidget(page)
+        self.nav_rail.set_active(key)
+        page.on_enter()
+
+    def _build_central_widget(self) -> QtWidgets.QWidget:
+        """Builds the Live Viewer's content (control panel + plot grid),
+        unchanged from before the nav-rail shell existed -- FireLab
+        roadmap Phase 1 wraps this in a LivePage instead of setting it
+        directly as MainWindow's central widget (see _build_shell()), but
+        every widget built here (self.splitter, self.view_grid,
+        self.timeline, self.temp_slider, ...) is constructed exactly as
+        before, at the same point in __init__, so it's available as a
+        MainWindow attribute immediately -- not lazily -- for every
+        existing call site and test."""
         central = QtWidgets.QWidget()
         central.setObjectName("centralWidget")
-        self.setCentralWidget(central)
         root_layout = QtWidgets.QVBoxLayout(central)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
@@ -493,6 +563,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setSizes([320, 880])
+        return central
 
     def _build_control_panel(self) -> QtWidgets.QWidget:
         panel = QtWidgets.QWidget()
@@ -1903,6 +1974,10 @@ class MainWindow(QtWidgets.QMainWindow):
             QtGui.QKeySequence("Shift+Right"), self,
             activated=lambda: self.time_controller.step(self.time_controller.timesteps_per_second),
         )
+        # FireLab roadmap Phase 1: 1-6 jump straight to a nav-rail page, in
+        # the same display order as the rail itself.
+        for i, key in enumerate(("home", "live", "compare", "dataset", "analysis", "export"), start=1):
+            QtWidgets.QShortcut(QtGui.QKeySequence(str(i)), self, activated=lambda k=key: self._navigate_to(k))
 
     def _toggle_fullscreen(self):
         if self.isFullScreen():
