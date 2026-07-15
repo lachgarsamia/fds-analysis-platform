@@ -251,9 +251,20 @@ class SliceView:
             if vmin is None or vmax_init is None:
                 raise ValueError("vmin and vmax_init are required to enable cinematic mode")
             self._cinema_pipeline = EffectsPipeline(vmin, vmax_init)
-            self._ember_sim = EmberParticles(self.heatmap.get_array().shape[:2])
+            blank_shape = self.heatmap.get_array().shape[:2]
+            self._ember_sim = EmberParticles(blank_shape)
             self.ax.set_facecolor(CINEMA_BG)
             self.colorbar.ax.set_visible(False)
+            # capture_background() below does a full draw right now, before
+            # the first cinematic show_frame() has run -- the heatmap still
+            # holds whatever non-RGBA science-mode frame (and cmap) it last
+            # displayed. Left alone, that stale frame gets baked into the
+            # cached blit background, and every future transparent (ambient)
+            # cinema pixel would let it show through instead of the near-
+            # black facecolor, since blitting composites new draws with
+            # alpha over the cached background, not over a blank facecolor.
+            # A fully transparent placeholder frame sidesteps that entirely.
+            self.heatmap.set_data(np.zeros(blank_shape + (4,), dtype=np.uint8))
         else:
             self._cinema_pipeline = None
             self._ember_sim = None

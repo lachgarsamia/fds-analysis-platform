@@ -86,6 +86,31 @@ class TestSliceViewCinematicMode:
         assert array.shape[-1] == 4, "cinematic mode hands the heatmap an RGBA image"
         assert array.dtype == np.uint8
 
+    def test_enabling_over_a_non_black_cmap_does_not_bake_stale_frame_into_background(self, qapp):
+        """Regression: capture_background() used to run right after
+        enabling cinematic mode, before any RGBA show_frame() call --
+        baking the still-present *science-mode* frame (rendered via
+        whatever cmap was active, e.g. a colormap that isn't black at its
+        low end) into the cached blit background. Ambient (alpha=0)
+        cinema pixels then let that stale, wrongly-colored frame show
+        through instead of the near-black backdrop, since blitting
+        composites new draws over the cached background, not over a
+        blank facecolor. Uses 'viridis' (dark blue/purple at its low end,
+        not black) specifically so the bug can't hide behind a
+        coincidentally-black test colormap the way it did originally."""
+        view = SliceView()
+        view.init_plot(FRAME, cmap="viridis", interpolation="nearest",
+                        vmin=20.0, vmax=300.0, colorbar_label="Temperature (°C)")
+        view.set_cinematic_mode(True, vmin=20.0, vmax_init=300.0)
+        # No show_frame() call yet -- this is exactly the window during
+        # which the bug baked a stale frame into the background.
+        bg_rgba = np.asarray(view.canvas.buffer_rgba())
+        center = bg_rgba[bg_rgba.shape[0] // 2, bg_rgba.shape[1] // 2, :3]
+        assert tuple(int(c) for c in center) == (11, 13, 18), (
+            f"expected the near-black CINEMA_BG backdrop, got {tuple(center)} "
+            "-- looks like the stale-frame-in-background bug is back"
+        )
+
     def test_ambient_frame_is_transparent(self, qapp):
         """The alpha ramp's whole point: ambient-temperature cells should
         be see-through, not painted -- so the fire looks like it's
