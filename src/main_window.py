@@ -59,6 +59,17 @@ logger = logging.getLogger(__name__)
 ORG_NAME = "FZJuelich"
 APP_NAME = "FDSSLCFVisualizer"
 
+# Compare page story presets (FireLab roadmap Phase 4, pages/compare.py):
+# each key resolves to two scenarios differing in exactly one factor
+# (others held at config.py's own DEFAULT_* values) and the quantity that
+# best shows the effect. "door" uses VELOCITY, not TEMPERATURE, per M2.3's
+# verified finding that the door-width effect shows up in airflow, not heat.
+_COMPARE_PRESETS = {
+    "door": {"factor": "door", "values": (1, 0), "quantity": "VELOCITY"},
+    "candles": {"factor": "candles", "values": (0, 1), "quantity": "TEMPERATURE"},
+    "ventilation": {"factor": "vod", "values": (0, 1), "quantity": "TEMPERATURE"},
+}
+
 # Colormap options. Default (gist_heat) confirmed by the M1.3s validation
 # spike (docs/spike-parser-validation.md): already a black-red-orange-yellow-
 # white blackbody/flame progression, kept as-is rather than replaced.
@@ -201,9 +212,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setMinimumSize(MIN_WIDTH, MIN_HEIGHT)
 
         self._build_menu()
-        self._build_shell()
+        # FireLab roadmap Phase 4: experiment_browser/analytics_panel must
+        # exist before _build_shell() builds the Dataset/Analysis pages,
+        # since those pages embed .widget() -- each dock's own inner
+        # content -- rather than duplicating it.
         self._build_experiment_browser()
         self._build_analytics_panel()
+        self._build_shell()
         self._build_status_bar()
         self._apply_theme()
         self._restore_window_state()
@@ -224,15 +239,6 @@ class MainWindow(QtWidgets.QMainWindow):
         menu_bar = self.menuBar()
 
         view_menu = menu_bar.addMenu("&View")
-
-        # Populated later, in _build_experiment_browser()/_build_analytics_panel(),
-        # once those docks actually exist -- each entry is the dock's own
-        # toggleViewAction(), so Qt keeps the checkbox in sync with the
-        # dock's real visibility automatically (closed via the titlebar's
-        # X or reopened via this menu, no custom show/hide bookkeeping
-        # needed here).
-        self.panels_menu = view_menu.addMenu("Panels")
-        view_menu.addSeparator()
 
         theme_menu = view_menu.addMenu("Theme")
         self.theme_action_group = QtWidgets.QActionGroup(self)
@@ -388,9 +394,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.experiment_browser.export_summaries_requested.connect(self._export_summaries_markdown)
         if self.experiment_browser.open_model_eval_button is not None:
             self.experiment_browser.open_model_eval_requested.connect(self._open_browser_model_eval)
-        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.experiment_browser)
-        self.panels_menu.addAction(self.experiment_browser.toggleViewAction())
-
+        # FireLab roadmap Phase 4: re-hosted as the Dataset page's content
+        # (see pages/dataset.py) instead of a QDockWidget -- never added to
+        # a dock area. The dock class itself is unchanged (still a
+        # QDockWidget internally; only .widget() -- its own inner content
+        # -- gets mounted elsewhere), which is why every signal/attribute
+        # wired below still works unmodified. Row-selection is what
+        # triggers the deferred summary-text load (see summary_texts_needed
+        # below), not dock visibility, so no extra on-enter wiring is
+        # needed here the way the analytics panel below needs.
         self._summary_texts_loaded = False
         self._summary_text_workers: list = []  # kept alive until each worker's own finished signal fires, same reasoning as SimulationController._prefetch_workers
         self.experiment_browser.summary_texts_needed.connect(self._on_summary_texts_needed)
@@ -454,23 +466,24 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self.analytics_panel = AnalyticsPanelDock(parent=self)
         self.analytics_panel.scenario_activated.connect(self._open_browser_scenario)
-        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.analytics_panel)
-        self.panels_menu.addAction(self.analytics_panel.toggleViewAction())
-        if self.experiment_browser is not None:
-            self.tabifyDockWidget(self.experiment_browser, self.analytics_panel)
-            self.experiment_browser.raise_()  # experiment browser is the default-visible tab
-
+        # FireLab roadmap Phase 4: re-hosted as the Analysis page's content
+        # (see pages/analysis.py) instead of a QDockWidget/tab -- never
+        # added to a dock area, never tabified. The one-shot feature-index
+        # load used to be triggered by the dock's own visibilityChanged
+        # (tab raised); that trigger doesn't exist for a plain page, so
+        # AnalysisPage.on_enter() calls _on_analytics_panel_visibility_changed(True)
+        # directly instead -- same guarded, one-shot method, new caller.
         self._analytics_features_loaded = False
         self._analytics_workers: list = []  # kept alive until each worker's own finished signal fires, same reasoning as SimulationController._prefetch_workers
-        self.analytics_panel.visibilityChanged.connect(self._on_analytics_panel_visibility_changed)
 
     def _on_analytics_panel_visibility_changed(self, visible: bool):
-        """One-shot trigger: the first time the analytics tab is actually
-        raised (not at construction, which starts hidden behind the
-        experiment browser's tab), kick off the background feature-index
-        load. Later visibility toggles (switching tabs back and forth)
-        are no-ops once loaded."""
-        if not visible or self._analytics_features_loaded:
+        """One-shot trigger, called from AnalysisPage.on_enter() the first
+        time the Analysis page is actually shown (not at construction).
+        Later calls (revisiting the page) are no-ops once loaded. Also a
+        no-op in demo mode (self.analytics_panel is None, and the
+        _analytics_features_loaded/_analytics_workers attrs below are
+        never set in that branch of _build_analytics_panel)."""
+        if self.analytics_panel is None or not visible or self._analytics_features_loaded:
             return
         self._analytics_features_loaded = True
         worker = _AnalyticsFeatureWorker(
@@ -496,24 +509,45 @@ class MainWindow(QtWidgets.QMainWindow):
             self.analytics_panel.status_label.setText(message)
 
     def _build_shell(self):
-        """Nav rail + page host (FireLab roadmap Phase 1): replaces the
-        old single setCentralWidget(central) call with a NavRail alongside
-        a QStackedWidget of pages. LivePage wraps _build_central_widget()'s
-        existing content unchanged -- built eagerly, right here, at the
-        exact same point in __init__ as before this shell existed, so
-        every attribute it sets (self.view_grid, self.timeline,
-        self.temp_slider, ...) is available immediately, not deferred
-        behind a page switch. The other pages are lazy placeholders
-        (Phase 4 gives them real content); Home is the page shown first.
-        """
+        """Nav rail + page host (FireLab roadmap Phase 1, pages given real
+        content in Phase 4): replaces the old single setCentralWidget(central)
+        call with a NavRail alongside a QStackedWidget of pages. LivePage
+        wraps _build_central_widget()'s existing content unchanged -- built
+        eagerly, right here, at the exact same point in __init__ as before
+        this shell existed, so every attribute it sets (self.view_grid,
+        self.timeline, self.temp_slider, ...) is available immediately, not
+        deferred behind a page switch. Dataset/Analysis embed the
+        experiment_browser/analytics_panel docks' own inner content
+        (already built -- see __init__'s ordering comment); Home is the
+        page shown first."""
+        live_content = self._build_central_widget()
+
+        dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
+        analysis_content = self.analytics_panel.widget() if self.analytics_panel is not None else None
+        # The dock objects themselves are now empty shells (their content
+        # was just reparented onto a page) -- never added to a dock area,
+        # but still MainWindow-parented QWidgets, so hide them explicitly
+        # rather than leave them as stray unlaid-out children.
+        if self.experiment_browser is not None:
+            self.experiment_browser.hide()
+        if self.analytics_panel is not None:
+            self.analytics_panel.hide()
+
         self.pages = {
-            "home": HomePage(),
-            "live": LivePage(self._build_central_widget(), self.time_controller),
-            "compare": ComparePage(),
-            "dataset": DatasetPage(),
-            "analysis": AnalysisPage(),
-            "export": ExportPage(),
+            "home": HomePage(on_start=lambda: self._navigate_to("live")),
+            "live": LivePage(live_content, self.time_controller),
+            "compare": ComparePage(on_preset=self._apply_compare_preset),
+            "dataset": DatasetPage(dataset_content),
+            "analysis": AnalysisPage(
+                analysis_content, on_shown=lambda: self._on_analytics_panel_visibility_changed(True)),
+            "export": ExportPage(
+                on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
         }
+        has_manifest = bool(self.sim_data.manifest)
+        self.pages["home"].set_stats(
+            len(self.sim_data.manifest or []), self._current_n_frames, len(self.quantity_infos))
+        self.pages["compare"].set_available(has_manifest)
+
         nav_entries = [
             ("home", "Home"), ("live", "Live Viewer"), ("compare", "Compare"),
             ("dataset", "Dataset"), ("analysis", "Analysis"), ("export", "Export"),
@@ -1385,6 +1419,75 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self.time_controller.is_playing():
             self._on_time_changed(self.time_controller.index)
 
+    # ------------------------------------------------- Compare page presets
+    def _find_scenario(self, factor: str, value: int):
+        """case_index of the manifest entry matching `factor=value` with
+        every other factor held at its config.py DEFAULT_*, or None if no
+        such scenario exists."""
+        target = {"candles": DEFAULT_CANDLES, "door": DEFAULT_DOOR, "vod": DEFAULT_VOD, "voc": DEFAULT_VOC}
+        target[factor] = value
+        for entry in self.sim_data.manifest or []:
+            if all(getattr(entry, f) == v for f, v in target.items()):
+                return entry.case_index
+        return None
+
+    def _find_quantity_key(self, quantity_name: str):
+        return next((key for _label, key in self._quantity_options() if key.quantity == quantity_name), None)
+
+    def _select_scenario_in_cell(self, cell, case_index: int) -> None:
+        options = self._scenario_options()
+        idx = next((i for i, (_label, ci) in enumerate(options) if ci == case_index), None)
+        combo = getattr(cell, "scenario_combo", None)
+        if idx is not None and combo is not None:
+            combo.setCurrentIndex(idx)
+
+    def _select_difference_scenarios_in_cell(self, cell, case_a: int, case_b: int) -> None:
+        options = self._scenario_options()
+        idx_a = next((i for i, (_l, ci) in enumerate(options) if ci == case_a), None)
+        idx_b = next((i for i, (_l, ci) in enumerate(options) if ci == case_b), None)
+        if idx_a is not None:
+            cell.scenario_combo_a.setCurrentIndex(idx_a)
+        if idx_b is not None:
+            cell.scenario_combo_b.setCurrentIndex(idx_b)
+
+    def _select_quantity_in_cell(self, cell, quantity_key) -> None:
+        options = self._quantity_options()
+        idx = next((i for i, (_label, key) in enumerate(options) if key == quantity_key), None)
+        combo = getattr(cell, "quantity_combo", None)
+        if idx is not None and combo is not None:
+            combo.setCurrentIndex(idx)
+
+    def _apply_compare_preset(self, key: str) -> None:
+        """Compare page (FireLab roadmap Phase 4): jumps into the Live
+        page's own 1x2 grid, pre-configured as scenario A (slice) next to
+        A-B (difference) -- reusing the exact combo-driven signal chain a
+        user's own clicks already go through, not a second rendering path."""
+        preset = _COMPARE_PRESETS.get(key)
+        if preset is None or not self.sim_data.manifest:
+            return
+        quantity_key = self._find_quantity_key(preset["quantity"])
+        case_a = self._find_scenario(preset["factor"], preset["values"][0])
+        case_b = self._find_scenario(preset["factor"], preset["values"][1])
+        if quantity_key is None or case_a is None or case_b is None:
+            return
+
+        self._navigate_to("live")
+        self._set_grid_layout("1x2")
+        cells = self.view_grid.visible_cells()
+        if len(cells) < 2:
+            return
+        cell_a, cell_b = cells[0], cells[1]
+
+        if cell_a.cell_type != "slice":
+            cell_a.set_cell_type("slice")
+        self._select_scenario_in_cell(cell_a, case_a)
+        self._select_quantity_in_cell(cell_a, quantity_key)
+
+        if cell_b.cell_type != "difference":
+            cell_b.set_cell_type("difference")
+        self._select_difference_scenarios_in_cell(cell_b, case_a, case_b)
+        self._select_quantity_in_cell(cell_b, quantity_key)
+
     def _set_link_clim(self, checked: bool):
         """View -> Link color scales toggle (M2.2.3)."""
         self._link_clim = checked
@@ -1949,6 +2052,39 @@ class MainWindow(QtWidgets.QMainWindow):
         self.statusBar().showMessage("Export cancelled.", 3000)
         if was_playing:
             self.time_controller.play()
+
+    def _export_postcard(self):
+        """Export page's "demo postcard" (FireLab roadmap Phase 4): a
+        one-click PNG of the active cell's current frame with a simple
+        FireLab title-card overlay -- a QPainter grab of the live canvas,
+        not a re-render, so it always matches exactly what's on screen."""
+        cell = self.view_grid.active_cell()
+        if cell is None:
+            return
+        default_name = f"firelab_{self.controller.current_case_index()}.png"
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save Demo Postcard", default_name, "PNG Image (*.png)")
+        if not path:
+            return
+        if not path.lower().endswith(".png"):
+            path += ".png"
+
+        pixmap = cell.view.widget().grab()
+        painter = QtGui.QPainter(pixmap)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        band_height = max(36, pixmap.height() // 12)
+        band_rect = QtCore.QRect(0, pixmap.height() - band_height, pixmap.width(), band_height)
+        painter.fillRect(band_rect, QtGui.QColor(11, 13, 18, 200))
+        painter.setPen(QtGui.QColor("#FF6B35"))
+        font = painter.font()
+        font.setPointSizeF(max(font.pointSizeF() * 1.3, 12))
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(band_rect.adjusted(12, 0, -12, 0), QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft,
+                          "FireLab Digital Twin")
+        painter.end()
+        pixmap.save(path, "PNG")
+        self.statusBar().showMessage(f"Saved {path}", 4000)
 
     def _start_simulation(self):
         self.time_controller.play()
