@@ -12,7 +12,17 @@ import time
 
 import numpy as np
 
+from cinema.bloom import apply_bloom
 from cinema.luts import FIRE_RGBA_LUT
+from cinema.noise import FLICKER_TRACK
+
+# 1/f flicker amplitude: fraction of tonemapped intensity the pink-noise
+# track can add/subtract per frame -- subtle on purpose (candle-like
+# breathing, not a strobing screen).
+FLICKER_AMPLITUDE = 0.05
+
+# Bloom strength at hrr_intensity=1.0 (see EffectsPipeline.render).
+BLOOM_STRENGTH = 0.8
 
 
 class AutoExposure:
@@ -50,14 +60,26 @@ class EffectsPipeline:
         self.vmin = float(vmin)
         self.exposure = AutoExposure(vmax_init)
         self.last_cost_ms = 0.0
+        self._flicker_i = 0
 
-    def render(self, frame: np.ndarray) -> np.ndarray:
+    def render(self, frame: np.ndarray, hrr_intensity: float = 1.0) -> np.ndarray:
+        """hrr_intensity: a scenario's current HRR(t) normalized to its own
+        peak (1.0 = at-or-near peak), or 1.0 (neutral) if no HRR data is
+        available -- scales both the flicker amplitude and the bloom
+        strength, so the glow physically tracks the real heat-release
+        curve instead of being a constant cosmetic overlay."""
         t0 = time.perf_counter()
         vmax = self.exposure.update(frame)
         span = max(vmax - self.vmin, 1e-6)
         t = np.clip((frame - self.vmin) / span, 0.0, 1.0)
         t = filmic_tonemap(t)
+
+        flicker = FLICKER_TRACK[self._flicker_i % len(FLICKER_TRACK)]
+        self._flicker_i += 1
+        t = np.clip(t * (1.0 + FLICKER_AMPLITUDE * hrr_intensity * flicker), 0.0, 1.0)
+
         idx = (t * (len(FIRE_RGBA_LUT) - 1)).astype(np.uint8)
         rgba = FIRE_RGBA_LUT[idx]
+        rgba = apply_bloom(rgba, t, strength=BLOOM_STRENGTH * hrr_intensity)
         self.last_cost_ms = (time.perf_counter() - t0) * 1000.0
         return rgba

@@ -133,6 +133,28 @@ class TestSliceViewCinematicMode:
         with pytest.raises(ValueError):
             view.set_cinematic_mode(True)
 
+    def test_next_frame_starts_interpolation_timer(self, qapp):
+        """FireLab roadmap Phase 2.1d: a lookahead frame should arm the
+        sub-frame interpolation timer; no lookahead (end of series) should
+        leave it stopped."""
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=20.0, vmax=300.0, colorbar_label="Temperature (°C)")
+        view.set_cinematic_mode(True, vmin=20.0, vmax_init=300.0)
+        view.show_frame(FRAME, next_frame=FRAME + 5.0)
+        assert view._interp_timer.isActive()
+        view.show_frame(FRAME, next_frame=None)
+        assert not view._interp_timer.isActive()
+
+    def test_disable_stops_interpolation_timer(self, qapp):
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=20.0, vmax=300.0, colorbar_label="Temperature (°C)")
+        view.set_cinematic_mode(True, vmin=20.0, vmax_init=300.0)
+        view.show_frame(FRAME, next_frame=FRAME + 5.0)
+        view.set_cinematic_mode(False)
+        assert not view._interp_timer.isActive()
+
 
 class TestSliceViewProbe:
     """Corner/known-pixel accuracy for value_at() (M2.6.1's DoD: "probe

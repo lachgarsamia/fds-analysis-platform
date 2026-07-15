@@ -1,10 +1,13 @@
 """Unit tests for cinema/luts.py + cinema/pipeline.py (FireLab roadmap
-Phase 2, task 1: FireLUT + alpha + filmic tone map + auto-exposure). No
-Qt/matplotlib canvas involved -- pure array math, see test_views.py's
+Phase 2, tasks 1-2: FireLUT + alpha + filmic tone map + auto-exposure,
+bloom + HRR-driven flicker + sub-frame interpolation). No Qt/matplotlib
+canvas involved -- pure array math, see test_views.py's
 TestSliceViewCinematicMode for the SliceView integration."""
 
 import numpy as np
 
+from cinema.bloom import apply_bloom
+from cinema.interp import lerp_frames
 from cinema.luts import FIRE_RGBA_LUT
 from cinema.pipeline import AutoExposure, EffectsPipeline, filmic_tonemap
 
@@ -63,6 +66,67 @@ class TestAutoExposure:
             exp.update(np.full((10, 10), 900.0))
         assert exp.vmax > vmax_before
         assert abs(exp.vmax - 900.0) < 1.0, "should converge close to the sustained percentile"
+
+
+class TestBloom:
+    def test_shape_and_dtype_preserved(self):
+        rgba = FIRE_RGBA_LUT[np.full((20, 20), 255, dtype=np.uint8)]
+        intensity = np.ones((20, 20), dtype=np.float32)
+        out = apply_bloom(rgba, intensity)
+        assert out.shape == rgba.shape
+        assert out.dtype == np.uint8
+
+    def test_hot_spot_raises_alpha_in_neighboring_ambient_pixels(self):
+        """The glow's whole point: light spills into pixels that were
+        fully transparent (ambient), not just brightens already-hot ones."""
+        intensity = np.zeros((21, 21), dtype=np.float32)
+        intensity[10, 10] = 1.0
+        rgba = np.zeros((21, 21, 4), dtype=np.uint8)
+        rgba[10, 10] = FIRE_RGBA_LUT[-1]
+        out = apply_bloom(rgba, intensity, strength=1.0)
+        assert out[10, 8, 3] > 0, "a nearby ambient pixel should pick up some halo alpha"
+
+    def test_zero_intensity_no_glow(self):
+        rgba = FIRE_RGBA_LUT[np.zeros((10, 10), dtype=np.uint8)]
+        intensity = np.zeros((10, 10), dtype=np.float32)
+        out = apply_bloom(rgba, intensity)
+        assert (out == rgba).all()
+
+
+class TestLerpFrames:
+    def test_endpoints_and_midpoint(self):
+        a = np.zeros((3, 3), dtype=np.float32)
+        b = np.full((3, 3), 10.0, dtype=np.float32)
+        assert (lerp_frames(a, b, 0.0) == a).all()
+        assert (lerp_frames(a, b, 1.0) == b).all()
+        assert (lerp_frames(a, b, 0.5) == 5.0).all()
+
+    def test_clamps_out_of_range_t(self):
+        a = np.zeros((2, 2), dtype=np.float32)
+        b = np.full((2, 2), 10.0, dtype=np.float32)
+        assert (lerp_frames(a, b, -1.0) == a).all()
+        assert (lerp_frames(a, b, 2.0) == b).all()
+
+
+class TestEffectsPipelineFlicker:
+    def test_zero_hrr_intensity_gives_deterministic_repeated_output(self):
+        """hrr_intensity=0 should mean no flicker modulation at all --
+        with exposure locked (isolating flicker from auto-exposure's own
+        frame-to-frame adaptation), a constant input frame should render
+        identically every call."""
+        pipeline = EffectsPipeline(vmin=20.0, vmax_init=250.0)
+        pipeline.exposure.locked = True
+        frame = np.full((30, 30), 250.0, dtype=np.float32)
+        first = pipeline.render(frame, hrr_intensity=0.0)
+        second = pipeline.render(frame, hrr_intensity=0.0)
+        assert (first == second).all()
+
+    def test_nonzero_hrr_intensity_varies_frame_to_frame(self):
+        pipeline = EffectsPipeline(vmin=20.0, vmax_init=250.0)
+        pipeline.exposure.locked = True
+        frame = np.full((30, 30), 250.0, dtype=np.float32)
+        renders = [pipeline.render(frame, hrr_intensity=1.0) for _ in range(5)]
+        assert any(not (renders[0] == r).all() for r in renders[1:])
 
 
 class TestEffectsPipeline:

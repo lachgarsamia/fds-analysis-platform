@@ -14,9 +14,17 @@ import numpy as np
 from PyQt5 import QtCore, QtWidgets
 
 from widgets import MplCanvas
-from config import QUANTITY_DISPLAY
+from config import QUANTITY_DISPLAY, FRAMES_PER_SECOND
 from theme import RADIUS
 from cinema.pipeline import EffectsPipeline
+from cinema.interp import lerp_frames
+
+# Sub-frame interpolation (FireLab roadmap Phase 2.1d): visual refresh
+# rate while cinematic mode is on, decoupled from the data's native
+# FRAMES_PER_SECOND sample rate.
+_INTERP_HZ = 30
+_INTERP_INTERVAL_MS = round(1000 / _INTERP_HZ)
+_NOMINAL_TICK_MS = 1000.0 / FRAMES_PER_SECOND
 
 # Dark cinema backdrop (FireLab roadmap Phase 2): the FireLUT's alpha ramp
 # only reads as "fire floating in a dark room" against a near-black axes
@@ -92,6 +100,15 @@ class SliceView:
         self._cinematic_enabled = False
         self._cinema_pipeline: EffectsPipeline = None
         self._last_frame = None
+        # Sub-frame interpolation state: blends _interp_from -> _interp_to
+        # over the interval between real show_frame() calls, ticking a
+        # timer independent of TimeController's own (data-rate) clock.
+        self._interp_timer = QtCore.QTimer(self.canvas)
+        self._interp_timer.timeout.connect(self._interp_tick)
+        self._interp_from = None
+        self._interp_to = None
+        self._interp_phase = 1.0
+        self._interp_bloom_intensity = 1.0
 
     def widget(self) -> QtWidgets.QWidget:
         return self.canvas
@@ -117,14 +134,40 @@ class SliceView:
         self.heatmap.set_clim(vmin=vmin, vmax=vmax)
         self.canvas.capture_background()
 
-    def show_frame(self, frame: np.ndarray, velocity_frame: np.ndarray = None) -> None:
+    def show_frame(self, frame: np.ndarray, velocity_frame: np.ndarray = None,
+                    next_frame: np.ndarray = None, bloom_intensity: float = 1.0) -> None:
         """velocity_frame (GUI modernization pass, item 6): this cell's
         VELOCITY data at the same timestep, only meaningful (and only ever
         passed by MainWindow) when the velocity overlay is on and this
         cell is showing TEMPERATURE -- None otherwise, the default for
-        every pre-existing caller."""
+        every pre-existing caller.
+
+        next_frame/bloom_intensity (FireLab roadmap Phase 2.1c/d, cinematic
+        mode only): next_frame is the frame at the following timestep --
+        already resident in the same cached array MainWindow just indexed
+        `frame` out of, so this costs nothing to look up -- used to blend
+        smoothly toward it between real ticks (see _interp_tick). None
+        means no lookahead available (e.g. at the end of the series);
+        interpolation is simply skipped that tick. bloom_intensity scales
+        the pipeline's bloom/flicker strength (typically the scenario's
+        current HRR normalized to its own peak); ignored outside cinematic
+        mode."""
         self._last_frame = frame
-        display_data = self._cinema_pipeline.render(frame) if self._cinematic_enabled else frame
+        if self._cinematic_enabled:
+            self._interp_bloom_intensity = bloom_intensity
+            if next_frame is not None:
+                self._interp_from = frame
+                self._interp_to = next_frame
+                self._interp_phase = 0.0
+                if not self._interp_timer.isActive():
+                    self._interp_timer.start(_INTERP_INTERVAL_MS)
+            else:
+                self._interp_timer.stop()
+                self._interp_from = None
+                self._interp_to = None
+            display_data = self._cinema_pipeline.render(frame, hrr_intensity=bloom_intensity)
+        else:
+            display_data = frame
         self.heatmap.set_data(display_data)
         self._velocity_frame = velocity_frame
         overlay_active = (
@@ -193,6 +236,9 @@ class SliceView:
             self.colorbar.ax.set_visible(False)
         else:
             self._cinema_pipeline = None
+            self._interp_timer.stop()
+            self._interp_from = None
+            self._interp_to = None
             self.ax.set_facecolor(MplCanvas.PLOT_BG)
             self.colorbar.ax.set_visible(True)
         self.canvas.capture_background()
@@ -206,6 +252,23 @@ class SliceView:
         """Last render() call's cost in ms -- 0.0 if cinematic mode is off
         or no frame has been rendered yet. For bench/telemetry use."""
         return self._cinema_pipeline.last_cost_ms if self._cinema_pipeline else 0.0
+
+    def _interp_tick(self) -> None:
+        """Sub-frame interpolation timer callback (~30 Hz while cinematic
+        mode is on and a lookahead frame is available): advances the blend
+        phase toward _interp_to and blits the result, independent of
+        TimeController's own (data-rate) tick. Never touches _last_frame
+        or overlays -- those stay tied to the last *real* frame only."""
+        if not self._cinematic_enabled or self._interp_to is None:
+            self._interp_timer.stop()
+            return
+        self._interp_phase = min(1.0, self._interp_phase + _INTERP_INTERVAL_MS / _NOMINAL_TICK_MS)
+        blended = lerp_frames(self._interp_from, self._interp_to, self._interp_phase)
+        rgba = self._cinema_pipeline.render(blended, hrr_intensity=self._interp_bloom_intensity)
+        self.heatmap.set_data(rgba)
+        self.canvas.blit_update(self.heatmap)
+        if self._interp_phase >= 1.0:
+            self._interp_timer.stop()
 
     # -------------------------------------------------- isotherms (M2.6.2)
     def set_isotherm_levels(self, levels: list) -> None:

@@ -37,7 +37,7 @@ from export import AnimationExporter, ffmpeg_available
 from load_data import SIM_ROOT
 from slice_key import SliceInfo, SliceKey, DEFAULT_SLICE_KEY, available_slices
 from views import ViewGrid, DifferenceView, EnsembleView
-from summary_stats import build_summary_index
+from summary_stats import build_summary_index, _read_hrr_csv
 from browser import ExperimentBrowserDock, _SummaryTextWorker
 from analytics_panel import AnalyticsPanelDock, _AnalyticsFeatureWorker
 from auto_summary import export_markdown
@@ -147,6 +147,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.controller.prefetch_finished.connect(self._on_grid_prefetch_finished)
         self.controller.prefetch_error.connect(self._on_grid_prefetch_error)
         self._pending_cell_prefetches = set()  # GridCells awaiting their own background load
+        # FireLab roadmap Phase 2.1c: case_index -> (times, hrr_kw) from
+        # that scenario's *_hrr.csv, or () if none was found -- read once
+        # per scenario, not once per playback tick.
+        self._hrr_cache = {}
 
         # M3.2.5: trained-model predictions, if ml/train.py + ml/rollout.py
         # have ever been run -- absent/empty otherwise (predictions/ simply
@@ -993,6 +997,42 @@ class MainWindow(QtWidgets.QMainWindow):
         every other cell rather than a parallel display system."""
         return cell.store_override if cell.store_override is not None else self.controller.store
 
+    def _next_frame_for_slice_cell(self, cell, index: int):
+        """Frame at index+1 for a "slice" cell, or None past the end of
+        the series -- only used for cinematic mode's sub-frame
+        interpolation (FireLab roadmap Phase 2.1d), which needs a
+        lookahead endpoint to blend toward. Free: store.get() already
+        returns the whole cached array, this is just one more index into
+        it, not an extra load."""
+        store = self._store_for_cell(cell)
+        data = store.get(cell.case_index, cell.quantity_key)
+        nxt = index + 1
+        return data[nxt] if nxt < data.shape[0] else None
+
+    def _hrr_intensity_for_cell(self, cell, index: int) -> float:
+        """cell's current HRR(t) normalized to that scenario's own peak
+        (FireLab roadmap Phase 2.1c) -- 1.0 (neutral) if there's no
+        manifest entry, no *_hrr.csv, or a zero peak, so demo-data mode
+        and any scenario missing the CSV still renders bloom/flicker, just
+        without the extra data-driven modulation."""
+        if not self.sim_data.manifest:
+            return 1.0
+        cached = self._hrr_cache.get(cell.case_index)
+        if cached is None:
+            entry = next((e for e in self.sim_data.manifest if e.case_index == cell.case_index), None)
+            hrr_data = _read_hrr_csv(entry.path) if entry else None
+            cached = hrr_data if hrr_data is not None else ()
+            self._hrr_cache[cell.case_index] = cached
+        if cached == ():
+            return 1.0
+        times, hrr_kw = cached
+        peak = float(np.max(hrr_kw)) if len(hrr_kw) else 0.0
+        if peak <= 0:
+            return 1.0
+        t_now = index / self.time_controller.timesteps_per_second
+        current = float(np.interp(t_now, times, hrr_kw))
+        return max(0.15, min(1.5, current / peak))
+
     def _frame_for_cell(self, cell, index: int):
         """The frame `cell` should show at timeline `index`, dispatched by
         cell_type (M2.3.3): a plain slice, an A-B difference, or an
@@ -1029,10 +1069,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 logger.warning("failed to fetch frame for grid cell (type=%s): %s", cell.cell_type, e)
                 continue
             if frame is not None:
+                extra = {}
+                if cell.cell_type == "slice" and getattr(cell.view, "cinematic_enabled", False):
+                    extra["next_frame"] = self._next_frame_for_slice_cell(cell, index)
+                    extra["bloom_intensity"] = self._hrr_intensity_for_cell(cell, index)
                 if cell.view.velocity_overlay_enabled:
-                    cell.view.show_frame(frame, velocity_frame=self._velocity_overlay_frame_for_cell(cell, index))
+                    cell.view.show_frame(frame, velocity_frame=self._velocity_overlay_frame_for_cell(cell, index), **extra)
                 else:
-                    cell.view.show_frame(frame)
+                    cell.view.show_frame(frame, **extra)
         self.timeline.set_index(index)
         current_time = index / self.time_controller.timesteps_per_second
         self.statusBar().showMessage(f"t = {current_time:.1f} s", 2000)
