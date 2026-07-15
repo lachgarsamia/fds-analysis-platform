@@ -53,6 +53,7 @@ from pages.compare import ComparePage
 from pages.dataset import DatasetPage
 from pages.analysis import AnalysisPage
 from pages.export_page import ExportPage
+from kiosk import KioskController
 
 logger = logging.getLogger(__name__)
 
@@ -228,6 +229,26 @@ class MainWindow(QtWidgets.QMainWindow):
         # the Live Inspector once here so it isn't blank until the user's
         # first interaction.
         self._update_inspector(self.time_controller.index)
+
+        # Kiosk / attract mode (FireLab roadmap Phase 5): idle -> Home,
+        # any input -> Live. Needs a live QApplication instance, which
+        # exists by construction time (main.py creates it before MainWindow).
+        self._kiosk = KioskController(
+            on_idle=lambda: self._navigate_to("home"),
+            on_wake=lambda: self._navigate_to("live"),
+            app=QtWidgets.QApplication.instance(),
+            cursor_target=self,
+            parent=self,
+        )
+        # Demo-script bookmarks (FireLab roadmap Phase 5): slot -> {page,
+        # case_index, time_index}; Ctrl+Shift+<1-9> records, Shift+<1-9> jumps.
+        self._demo_bookmarks: dict = {}
+        # Esc long-press: "effects off" master switch, tracked via
+        # keyPressEvent/keyReleaseEvent below (QShortcut has no notion of
+        # hold-duration).
+        self._esc_hold_timer = QtCore.QTimer(self)
+        self._esc_hold_timer.setSingleShot(True)
+        self._esc_hold_timer.timeout.connect(self._toggle_effects_master_switch)
 
         if sim_data.is_demo:
             self.statusBar().showMessage(
@@ -535,7 +556,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.pages = {
             "home": HomePage(on_start=lambda: self._navigate_to("live")),
-            "live": LivePage(live_content, self.time_controller),
+            "live": LivePage(live_content, self.time_controller, settings=self.settings),
             "compare": ComparePage(on_preset=self._apply_compare_preset),
             "dataset": DatasetPage(dataset_content),
             "analysis": AnalysisPage(
@@ -2176,6 +2197,62 @@ class MainWindow(QtWidgets.QMainWindow):
         # the same display order as the rail itself.
         for i, key in enumerate(("home", "live", "compare", "dataset", "analysis", "export"), start=1):
             QtWidgets.QShortcut(QtGui.QKeySequence(str(i)), self, activated=lambda k=key: self._navigate_to(k))
+        # Demo-script bookmarks (FireLab roadmap Phase 5): Ctrl+Shift+<n>
+        # records the current (page, scenario, time) into slot n;
+        # Shift+<n> jumps back to it -- lets a presenter move beat-to-beat
+        # without touching a mouse.
+        for slot in range(1, 10):
+            QtWidgets.QShortcut(
+                QtGui.QKeySequence(f"Ctrl+Shift+{slot}"), self,
+                activated=lambda s=slot: self._record_bookmark(s),
+            )
+            QtWidgets.QShortcut(
+                QtGui.QKeySequence(f"Shift+{slot}"), self,
+                activated=lambda s=slot: self._jump_to_bookmark(s),
+            )
+
+    def _record_bookmark(self, slot: int) -> None:
+        cell = self.view_grid.active_cell()
+        self._demo_bookmarks[slot] = {
+            "page": self._active_page_key,
+            "case_index": cell.case_index if cell is not None and cell.cell_type == "slice" else None,
+            "time_index": self.time_controller.index,
+        }
+        self.statusBar().showMessage(f"Bookmark {slot} recorded.", 3000)
+
+    def _jump_to_bookmark(self, slot: int) -> None:
+        bookmark = self._demo_bookmarks.get(slot)
+        if bookmark is None:
+            self.statusBar().showMessage(f"Bookmark {slot} is empty.", 3000)
+            return
+        self._navigate_to(bookmark["page"])
+        if bookmark["page"] == "live" and bookmark["case_index"] is not None:
+            cell = self.view_grid.active_cell()
+            if cell is not None and cell.cell_type == "slice":
+                self._select_scenario_in_cell(cell, bookmark["case_index"])
+        self.time_controller.seek(bookmark["time_index"])
+
+    def _toggle_effects_master_switch(self) -> None:
+        """Esc long-press (FireLab roadmap Phase 5): an emergency "effects
+        off" switch -- toggles the same View -> Cinematic fire view
+        control every cinematic cell already listens to, so this is a
+        thin trigger on existing, tested machinery, not new per-cell
+        bookkeeping."""
+        self.cinematic_action.setChecked(not self.cinematic_action.isChecked())
+        self._set_cinematic_enabled(self.cinematic_action.isChecked())
+        state = "enabled" if self.cinematic_action.isChecked() else "disabled"
+        self.statusBar().showMessage(f"Cinematic effects {state}.", 3000)
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
+        if event.key() == QtCore.Qt.Key_Escape and not event.isAutoRepeat():
+            if not self._esc_hold_timer.isActive():
+                self._esc_hold_timer.start(600)
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event: QtGui.QKeyEvent) -> None:
+        if event.key() == QtCore.Qt.Key_Escape and not event.isAutoRepeat():
+            self._esc_hold_timer.stop()
+        super().keyReleaseEvent(event)
 
     def _toggle_fullscreen(self):
         if self.isFullScreen():
@@ -2218,4 +2295,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # tests, a stale cursor bleeding into whatever runs next).
         if self._busy:
             self._end_busy_state()
+        # Same reasoning as the busy-cursor cleanup above: the kiosk
+        # controller's event filter lives on the process-global
+        # QApplication, not this window, so it must be explicitly removed
+        # here rather than left to Python GC timing (see kiosk.py's
+        # shutdown() docstring for the measured cost of skipping this).
+        self._kiosk.shutdown()
         super().closeEvent(event)
