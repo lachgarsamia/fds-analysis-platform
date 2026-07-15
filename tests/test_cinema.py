@@ -1,15 +1,18 @@
 """Unit tests for cinema/luts.py + cinema/pipeline.py (FireLab roadmap
-Phase 2, tasks 1-3: FireLUT + alpha + filmic tone map + auto-exposure,
-bloom + HRR-driven flicker + sub-frame interpolation, smoke tiers 1-2). No
-Qt/matplotlib canvas involved -- pure array math, see test_views.py's
-TestSliceViewCinematicMode for the SliceView integration."""
+Phase 2, tasks 1-4: FireLUT + alpha + filmic tone map + auto-exposure,
+bloom + HRR-driven flicker + sub-frame interpolation, smoke tiers 1-2,
+heat shimmer + ember particles). No Qt/matplotlib canvas involved -- pure
+array math, see test_views.py's TestSliceViewCinematicMode for the
+SliceView/scatter-artist integration."""
 
 import numpy as np
 
 from cinema.bloom import apply_bloom
 from cinema.interp import lerp_frames
 from cinema.luts import FIRE_RGBA_LUT
+from cinema.particles import EmberParticles
 from cinema.pipeline import AutoExposure, EffectsPipeline, filmic_tonemap
+from cinema.shimmer import HeatShimmer
 from cinema.smoke import SmokeSimulator, composite_over, smoke_rgba
 
 
@@ -213,3 +216,69 @@ class TestEffectsPipeline:
         for _ in range(20):
             pipeline.render(frame)
         assert pipeline.last_cost_ms < 4.0
+
+
+class TestHeatShimmer:
+    def test_ambient_frame_is_unwarped(self):
+        shimmer = HeatShimmer()
+        image = np.zeros((30, 30, 4), dtype=np.uint8)
+        image[10, 10] = [255, 0, 0, 255]
+        ambient = np.full((30, 30), 20.0, dtype=np.float32)
+        out = shimmer.warp(image, ambient, ambient_c=20.0)
+        assert (out == image).all(), "no heat above ambient should mean no displacement at all"
+
+    def test_hot_frame_shape_and_dtype_preserved(self):
+        shimmer = HeatShimmer()
+        image = np.full((30, 30, 4), 128, dtype=np.uint8)
+        hot = np.full((30, 30), 300.0, dtype=np.float32)
+        out = shimmer.warp(image, hot, ambient_c=20.0)
+        assert out.shape == image.shape
+        assert out.dtype == np.uint8
+
+    def test_advances_over_time(self):
+        """Successive calls should scroll the noise field, not repeat the
+        exact same warp every frame."""
+        shimmer = HeatShimmer()
+        image = np.zeros((40, 40, 4), dtype=np.uint8)
+        image[20, 20] = [255, 255, 0, 255]
+        hot = np.full((40, 40), 300.0, dtype=np.float32)
+        first = shimmer.warp(image.copy(), hot, ambient_c=20.0)
+        second = shimmer.warp(image.copy(), hot, ambient_c=20.0)
+        assert not (first == second).all()
+
+
+class TestEmberParticles:
+    def test_no_spawn_below_threshold(self):
+        sim = EmberParticles((20, 20))
+        cool_frame = np.full((20, 20), 100.0, dtype=np.float32)  # well under the 150C-above-ambient knee
+        for _ in range(10):
+            sim.step(cool_frame, ambient_c=20.0)
+        assert len(sim.pos) == 0
+
+    def test_hot_frame_spawns_and_caps_at_max(self):
+        sim = EmberParticles((20, 20), max_particles=15)
+        hot_frame = np.full((20, 20), 400.0, dtype=np.float32)
+        for _ in range(60):
+            sim.step(hot_frame, ambient_c=20.0)
+        assert 0 < len(sim.pos) <= 15
+
+    def test_particles_die_of_old_age(self):
+        sim = EmberParticles((20, 20), max_particles=10)
+        hot_frame = np.full((20, 20), 400.0, dtype=np.float32)
+        sim.step(hot_frame, ambient_c=20.0)
+        assert len(sim.pos) > 0
+        cool_frame = np.full((20, 20), 20.0, dtype=np.float32)
+        for _ in range(200):  # far past any particle's max lifetime, no new spawns
+            sim.step(cool_frame, ambient_c=20.0)
+        assert len(sim.pos) == 0
+
+    def test_render_arrays_shapes_match_particle_count(self):
+        sim = EmberParticles((20, 20), max_particles=10)
+        hot_frame = np.full((20, 20), 400.0, dtype=np.float32)
+        for _ in range(20):
+            sim.step(hot_frame, ambient_c=20.0)
+        offsets, sizes, colors = sim.render_arrays()
+        n = len(sim.pos)
+        assert offsets.shape == (n, 2)
+        assert sizes.shape == (n,)
+        assert colors.shape == (n, 4)

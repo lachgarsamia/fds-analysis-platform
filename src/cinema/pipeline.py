@@ -15,6 +15,7 @@ import numpy as np
 from cinema.bloom import apply_bloom
 from cinema.luts import FIRE_RGBA_LUT
 from cinema.noise import FLICKER_TRACK
+from cinema.shimmer import HeatShimmer
 from cinema.smoke import SmokeSimulator, composite_over, smoke_rgba
 
 # 1/f flicker amplitude: fraction of tonemapped intensity the pink-noise
@@ -63,6 +64,7 @@ class EffectsPipeline:
         self.last_cost_ms = 0.0
         self._flicker_i = 0
         self._smoke: SmokeSimulator = None
+        self._shimmer = HeatShimmer()
 
     def render(self, frame: np.ndarray, hrr_intensity: float = 1.0,
                velocity_frame: np.ndarray = None) -> np.ndarray:
@@ -94,6 +96,7 @@ class EffectsPipeline:
             self._smoke = SmokeSimulator(frame.shape, ambient_c=self.vmin)
         density = self._smoke.step(frame, velocity_frame)
         composited = composite_over(fire_rgba, smoke_rgba(density))
+        composited = self._shimmer.warp(composited, frame, self.vmin)
 
         self.last_cost_ms = (time.perf_counter() - t0) * 1000.0
         return composited

@@ -71,13 +71,17 @@ class MplCanvas(FigureCanvas):
 
     def blit_update(self, artist):
         """Fast per-frame redraw: restore the cached background, draw only
-        `artist` on top, blit to screen. Falls back to a full draw+capture
-        if there's no cached background yet (e.g. before the first paint)."""
+        `artist` -- or, since the ember-particle scatter (FireLab roadmap
+        Phase 2.1g), each artist in an iterable of artists -- on top, blit
+        to screen. Falls back to a full draw+capture if there's no cached
+        background yet (e.g. before the first paint)."""
         if self._background is None:
             self.capture_background()
             return
         self.restore_region(self._background)
-        artist.axes.draw_artist(artist)
+        artists = artist if isinstance(artist, (list, tuple)) else (artist,)
+        for a in artists:
+            a.axes.draw_artist(a)
         self.blit(self.fig.bbox)
 
     def resizeEvent(self, event):

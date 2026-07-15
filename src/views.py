@@ -18,6 +18,7 @@ from config import QUANTITY_DISPLAY, FRAMES_PER_SECOND
 from theme import RADIUS
 from cinema.pipeline import EffectsPipeline
 from cinema.interp import lerp_frames
+from cinema.particles import EmberParticles
 
 # Sub-frame interpolation (FireLab roadmap Phase 2.1d): visual refresh
 # rate while cinematic mode is on, decoupled from the data's native
@@ -110,6 +111,11 @@ class SliceView:
         self._interp_phase = 1.0
         self._interp_bloom_intensity = 1.0
         self._interp_velocity_frame = None
+        # Ember particles (FireLab roadmap Phase 2.1g): a second,
+        # independently blit-tracked artist -- see widgets.py's
+        # multi-artist blit_update() extension.
+        self.ember_scatter = None
+        self._ember_sim: EmberParticles = None
 
     def widget(self) -> QtWidgets.QWidget:
         return self.canvas
@@ -127,6 +133,14 @@ class SliceView:
         if extent is not None:
             imshow_kwargs["extent"] = extent
         self.heatmap = self.ax.imshow(first_frame, **imshow_kwargs)
+        # Ember particles (Phase 2.1g): always present, empty/invisible
+        # outside cinematic mode -- zorder puts it above the heatmap.
+        # Deliberately no c=... at construction: passing a color arg (even
+        # an empty list) puts the collection into scalar-mappable mode,
+        # where draw() recomputes (and clobbers) facecolor from the
+        # colormap on every redraw -- set_facecolor() below would get
+        # silently overwritten back to empty on the very next blit.
+        self.ember_scatter = self.ax.scatter([], [], s=[], zorder=5)
         self.ax.set_xticks([])
         self.ax.set_yticks([])
         self.canvas.fig.subplots_adjust(top=0.97, bottom=0.03, left=0.02, right=0.95)
@@ -170,6 +184,7 @@ class SliceView:
                 self._interp_to = None
             display_data = self._cinema_pipeline.render(
                 frame, hrr_intensity=bloom_intensity, velocity_frame=velocity_frame)
+            self._update_ember_scatter(frame, velocity_frame)
         else:
             display_data = frame
         self.heatmap.set_data(display_data)
@@ -190,7 +205,7 @@ class SliceView:
             self.canvas.draw_idle()
             self.canvas.capture_background()
         else:
-            self.canvas.blit_update(self.heatmap)
+            self.canvas.blit_update([self.heatmap, self.ember_scatter])
 
     def set_cmap(self, name: str) -> None:
         self.heatmap.set_cmap(mpl.colormaps[name])
@@ -236,16 +251,28 @@ class SliceView:
             if vmin is None or vmax_init is None:
                 raise ValueError("vmin and vmax_init are required to enable cinematic mode")
             self._cinema_pipeline = EffectsPipeline(vmin, vmax_init)
+            self._ember_sim = EmberParticles(self.heatmap.get_array().shape[:2])
             self.ax.set_facecolor(CINEMA_BG)
             self.colorbar.ax.set_visible(False)
         else:
             self._cinema_pipeline = None
+            self._ember_sim = None
+            self.ember_scatter.set_offsets(np.empty((0, 2)))
+            self.ember_scatter.set_sizes([])
+            self.ember_scatter.set_facecolor([])
             self._interp_timer.stop()
             self._interp_from = None
             self._interp_to = None
             self.ax.set_facecolor(MplCanvas.PLOT_BG)
             self.colorbar.ax.set_visible(True)
         self.canvas.capture_background()
+
+    def _update_ember_scatter(self, temperature_frame: np.ndarray, velocity_frame: np.ndarray) -> None:
+        self._ember_sim.step(temperature_frame, self._cinema_pipeline.vmin, velocity_frame)
+        offsets, sizes, colors = self._ember_sim.render_arrays()
+        self.ember_scatter.set_offsets(offsets)
+        self.ember_scatter.set_sizes(sizes)
+        self.ember_scatter.set_facecolor(colors)
 
     @property
     def cinematic_enabled(self) -> bool:
@@ -270,8 +297,9 @@ class SliceView:
         blended = lerp_frames(self._interp_from, self._interp_to, self._interp_phase)
         rgba = self._cinema_pipeline.render(
             blended, hrr_intensity=self._interp_bloom_intensity, velocity_frame=self._interp_velocity_frame)
+        self._update_ember_scatter(blended, self._interp_velocity_frame)
         self.heatmap.set_data(rgba)
-        self.canvas.blit_update(self.heatmap)
+        self.canvas.blit_update([self.heatmap, self.ember_scatter])
         if self._interp_phase >= 1.0:
             self._interp_timer.stop()
 
