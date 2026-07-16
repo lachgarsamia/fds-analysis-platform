@@ -1,6 +1,9 @@
-"""Analysis page (FireLab roadmap Phase 4): re-hosts the analytics
-panel's existing content (analytics_panel.py's AnalyticsPanelDock,
-unchanged) as page content instead of a QDockWidget/tab.
+"""Analysis page (FireLab roadmap Phase 4; extended into the app's
+combined "analysis workspace" by the scientific-visualization completion
+pass, item 7): re-hosts the analytics panel's existing content
+(analytics_panel.py's AnalyticsPanelDock, unchanged) as page content
+instead of a QDockWidget/tab, with the new static/playback-independent
+ForecastingPanel (forecasting_panel.py) stacked below it.
 
 The one-shot background feature-index load used to be triggered by the
 dock's own visibilityChanged signal (tab raised) -- a plain page has no
@@ -22,7 +25,8 @@ class AnalysisPage(Page):
     title = "Analysis"
 
     def __init__(self, content: QtWidgets.QWidget = None,
-                 on_shown: Optional[Callable[[], None]] = None, parent=None):
+                 on_shown: Optional[Callable[[], None]] = None,
+                 forecasting_content: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self._on_shown = on_shown
         layout = QtWidgets.QVBoxLayout(self)
@@ -33,13 +37,20 @@ class AnalysisPage(Page):
         header.setProperty("role", "title")
         layout.addWidget(header)
 
-        if content is not None:
-            layout.addWidget(content, 1)
-        else:
+        if content is None and forecasting_content is None:
             # Demo mode: no manifest, nothing to analyze.
             label = QtWidgets.QLabel("No experiment data available (demo mode).")
             label.setAlignment(QtCore.Qt.AlignCenter)
             layout.addWidget(label)
+        elif content is not None and forecasting_content is not None:
+            splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+            splitter.addWidget(content)
+            splitter.addWidget(forecasting_content)
+            splitter.setStretchFactor(0, 1)
+            splitter.setStretchFactor(1, 1)
+            layout.addWidget(splitter, 1)
+        else:
+            layout.addWidget(content or forecasting_content, 1)
 
     def on_enter(self) -> None:
         if self._on_shown is not None:

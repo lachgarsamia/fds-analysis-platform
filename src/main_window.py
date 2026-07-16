@@ -47,6 +47,7 @@ from browser import ExperimentBrowserDock, _SummaryTextWorker
 from analytics_panel import AnalyticsPanelDock, _AnalyticsFeatureWorker
 from auto_summary import export_markdown
 from prediction_store import PredictionSource
+from forecasting_panel import ForecastingPanel
 from nav import NavRail
 from pages.live import LivePage
 from pages.home import HomePage
@@ -572,7 +573,9 @@ class MainWindow(QtWidgets.QMainWindow):
             "compare": ComparePage(on_preset=self._apply_compare_preset),
             "dataset": DatasetPage(dataset_content),
             "analysis": AnalysisPage(
-                analysis_content, on_shown=lambda: self._on_analytics_panel_visibility_changed(True)),
+                analysis_content, on_shown=lambda: self._on_analytics_panel_visibility_changed(True),
+                forecasting_content=ForecastingPanel(
+                    self.prediction_store, self.controller.store, self.sim_data.manifest)),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
             "about": AboutPage(),
