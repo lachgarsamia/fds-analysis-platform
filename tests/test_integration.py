@@ -173,7 +173,7 @@ class TestIntegration:
         be unconfigured (it may well already have a saved preference from
         another test run)."""
         from PyQt5 import QtCore
-        monkeypatch.setattr(QtCore.QSettings, "value", lambda self, key, default=None: default)
+        monkeypatch.setattr(QtCore.QSettings, "value", lambda self, key, default=None, **kw: default)
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         assert window.current_interpolation == "bilinear"

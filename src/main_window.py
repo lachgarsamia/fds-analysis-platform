@@ -54,6 +54,7 @@ from pages.compare import ComparePage
 from pages.dataset import DatasetPage
 from pages.analysis import AnalysisPage
 from pages.export_page import ExportPage
+from pages.placeholder import PlaceholderPage
 from kiosk import KioskController
 
 logger = logging.getLogger(__name__)
@@ -544,8 +545,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.timeline, self.temp_slider, ...) is available immediately, not
         deferred behind a page switch. Dataset/Analysis embed the
         experiment_browser/analytics_panel docks' own inner content
-        (already built -- see __init__'s ordering comment); Home is the
-        page shown first."""
+        (already built -- see __init__'s ordering comment); the Simulation
+        Viewer (LivePage) is the page shown first, per the UI/UX
+        modernization spec -- Home remains reachable from the nav rail."""
         live_content = self._build_central_widget()
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
@@ -568,7 +570,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 analysis_content, on_shown=lambda: self._on_analytics_panel_visibility_changed(True)),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
+            "about": PlaceholderPage(),
         }
+        self.pages["about"].message = "About FireLab Digital Twin -- coming soon."
         has_manifest = bool(self.sim_data.manifest)
         self.pages["home"].set_stats(
             len(self.sim_data.manifest or []), self._current_n_frames, len(self.quantity_infos))
@@ -576,7 +580,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         nav_entries = [
             ("home", "Home"), ("live", "Live Viewer"), ("compare", "Compare"),
-            ("dataset", "Dataset"), ("analysis", "Analysis"), ("export", "Export"),
+            ("dataset", "Dataset Explorer"), ("analysis", "Analysis"), ("export", "Export"),
+            ("about", "About"),
         ]
 
         self.page_stack = QtWidgets.QStackedWidget()
@@ -596,7 +601,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(shell)
 
         self._active_page_key = None
-        self._navigate_to("home")
+        self._navigate_to("live")
 
     def _navigate_to(self, key: str) -> None:
         page = self.pages.get(key)
@@ -2225,9 +2230,9 @@ class MainWindow(QtWidgets.QMainWindow):
             QtGui.QKeySequence("Shift+Right"), self,
             activated=lambda: self.time_controller.step(self.time_controller.timesteps_per_second),
         )
-        # FireLab roadmap Phase 1: 1-6 jump straight to a nav-rail page, in
+        # FireLab roadmap Phase 1: 1-7 jump straight to a nav-rail page, in
         # the same display order as the rail itself.
-        for i, key in enumerate(("home", "live", "compare", "dataset", "analysis", "export"), start=1):
+        for i, key in enumerate(("home", "live", "compare", "dataset", "analysis", "export", "about"), start=1):
             QtWidgets.QShortcut(QtGui.QKeySequence(str(i)), self, activated=lambda k=key: self._navigate_to(k))
         # Demo-script bookmarks (FireLab roadmap Phase 5): Ctrl+Shift+<n>
         # records the current (page, scenario, time) into slot n;
