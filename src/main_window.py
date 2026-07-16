@@ -313,7 +313,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         grid_menu = view_menu.addMenu("Grid Layout")
         self.grid_layout_action_group = QtWidgets.QActionGroup(self)
-        for label, layout_name in (("1 view", "1x1"), ("2 views (side by side)", "1x2"), ("4 views (2x2)", "2x2")):
+        for label, layout_name in (("1 view", "1x1"), ("2 views (side by side)", "1x2"),
+                                   ("4 views (2x2)", "2x2"), ("9 views (3x3)", "3x3")):
             action = QtWidgets.QAction(label, self, checkable=True)
             action.setChecked(layout_name == "1x1")
             action.triggered.connect(lambda _checked, l=layout_name: self._set_grid_layout(l))
@@ -1782,11 +1783,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_manifest_case_to_controller(case_index)
 
     def _open_browser_grid(self, case_indices: list):
-        """Open up to four browser-selected scenarios in the grid."""
+        """Open up to nine browser-selected scenarios in the grid."""
         if not case_indices:
             return
-        selected = case_indices[:4]
-        layout_name = "1x1" if len(selected) == 1 else ("1x2" if len(selected) == 2 else "2x2")
+        selected = case_indices[:9]
+        if len(selected) == 1:
+            layout_name = "1x1"
+        elif len(selected) == 2:
+            layout_name = "1x2"
+        elif len(selected) <= 4:
+            layout_name = "2x2"
+        else:
+            layout_name = "3x3"
         self.view_grid.set_layout(layout_name)
         self.toolbar.setVisible(layout_name == "1x1")
         for cell, case_index in zip(self.view_grid.visible_cells(), selected):

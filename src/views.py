@@ -1212,6 +1212,7 @@ class ViewGrid(QtWidgets.QWidget):
         "1x2": (1, 2),
         "1x3": (1, 3),
         "2x2": (2, 2),
+        "3x3": (3, 3),
     }
 
     cell_created = QtCore.pyqtSignal(object)             # a newly-instantiated GridCell, needs init_plot
