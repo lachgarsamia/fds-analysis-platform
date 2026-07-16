@@ -1,7 +1,17 @@
-"""Live Inspector (FireLab roadmap Phase 3): a right-hand panel on the
+"""Live Inspector (FireLab roadmap Phase 3; static/dynamic split added in
+the scientific-visualization completion pass): a right-hand panel on the
 Live page showing a large-type cursor-probe readout, a peak-temperature
 sparkline scrubbed in sync with TimeController, an HRR gauge, and a
 deterministic live-narration line (auto_summary.narrate_frame).
+
+Split into two groups so the panel reads as stable during playback
+instead of "continuously refreshing": static metadata (scenario,
+quantity, grid size, slice location, duration, frame count) only changes
+when MainWindow's `key != self._inspector_series_key` guard fires (a
+scenario/quantity switch), via set_static_info(); dynamic info (frame,
+time, min/max, probe) changes every tick via set_time()/set_probe(), but
+only as text mutations on pre-built QLabels -- nothing here is ever
+recreated mid-playback.
 
 Pure presentation, same split as schematic.py/views.py: state arrives via
 setters MainWindow calls, nothing here fetches data itself.
@@ -91,6 +101,44 @@ class InspectorPanel(QtWidgets.QWidget):
         title.setProperty("role", "title")
         layout.addWidget(title)
 
+        # --- Static metadata: set once per scenario/quantity change (see
+        # MainWindow._update_inspector's key != self._inspector_series_key
+        # guard), never touched per playback tick. One pre-built QLabel per
+        # field, text-only updates -- never recreated. ---------------------
+        static_caption = QtWidgets.QLabel("Scenario")
+        static_caption.setProperty("role", "caption")
+        layout.addWidget(static_caption)
+
+        self._static_labels: dict = {}
+        static_grid = QtWidgets.QFormLayout()
+        static_grid.setContentsMargins(0, 0, 0, 0)
+        static_grid.setSpacing(4)
+        static_grid.setLabelAlignment(QtCore.Qt.AlignLeft)
+        for field in ("Scenario", "Quantity", "Grid size", "Slice", "Duration", "Frames"):
+            key_label = QtWidgets.QLabel(f"{field}:")
+            key_label.setProperty("role", "caption")
+            value_label = QtWidgets.QLabel("—")
+            value_label.setProperty("role", "value")
+            value_label.setWordWrap(True)
+            self._static_labels[field] = value_label
+            static_grid.addRow(key_label, value_label)
+        layout.addLayout(static_grid)
+
+        layout.addWidget(_divider())
+
+        # --- Dynamic: updated every playback tick, text-only. ---------------
+        dynamic_caption = QtWidgets.QLabel("Live")
+        dynamic_caption.setProperty("role", "caption")
+        layout.addWidget(dynamic_caption)
+
+        self.frame_label = QtWidgets.QLabel("—")
+        self.frame_label.setProperty("role", "value")
+        layout.addWidget(self.frame_label)
+
+        self.range_label = QtWidgets.QLabel("—")
+        self.range_label.setProperty("role", "value")
+        layout.addWidget(self.range_label)
+
         self.probe_label = QtWidgets.QLabel("Hover the plot to inspect a point.")
         self.probe_label.setProperty("role", "value")
         self.probe_label.setWordWrap(True)
@@ -120,9 +168,27 @@ class InspectorPanel(QtWidgets.QWidget):
         self._series: list = []
         self._ambient_c = AMBIENT_DEFAULT_C
         self._door_wide_open = True
+        self._n_frames = 0
+        self._fps = 1.0
 
     def set_palette(self, palette) -> None:
         self.sparkline.set_color(palette.accent)
+
+    def set_static_info(self, scenario: str, quantity: str, grid_size: str,
+                        slice_location: str, n_frames: int, fps: float) -> None:
+        """Called only on scenario/quantity change (see module docstring)
+        -- never per tick. Duration is derived from n_frames/fps rather
+        than taking a precomputed string, so this stays the single source
+        of truth set_time()'s frame counter also uses."""
+        self._n_frames = n_frames
+        self._fps = max(fps, 1e-6)
+        duration_s = (n_frames - 1) / self._fps if n_frames > 0 else 0.0
+        self._static_labels["Scenario"].setText(scenario)
+        self._static_labels["Quantity"].setText(quantity)
+        self._static_labels["Grid size"].setText(grid_size)
+        self._static_labels["Slice"].setText(slice_location)
+        self._static_labels["Duration"].setText(f"{duration_s:.1f} s")
+        self._static_labels["Frames"].setText(str(n_frames))
 
     def set_probe(self, x, z, value, unit: str = "") -> None:
         if x is None:
@@ -139,14 +205,25 @@ class InspectorPanel(QtWidgets.QWidget):
         self._door_wide_open = door_wide_open
         self.sparkline.set_series(self._series)
 
-    def set_time(self, index: int, hrr_fraction: float = None) -> None:
+    def set_time(self, index: int, hrr_fraction: float = None,
+                 frame_min: float = None, frame_max: float = None, unit: str = "") -> None:
         """Called every playback tick: scrubs the sparkline marker, updates
         the HRR gauge (0-100%, None leaves it at its last value -- no HRR
-        data available for this scenario), and regenerates the narration
-        line from already-computed numbers."""
+        data available for this scenario), regenerates the narration line
+        from already-computed numbers, and refreshes the frame/time/min-
+        max readout -- frame_min/frame_max are the caller's already-
+        computed current-frame extremes (this widget never touches the
+        data array itself)."""
         self.sparkline.set_index(index)
         if hrr_fraction is not None:
             self.hrr_gauge.setValue(int(round(max(0.0, min(1.0, hrr_fraction)) * 100)))
+
+        t_now = index / self._fps if self._fps else 0.0
+        self.frame_label.setText(f"Frame {index + 1} / {max(self._n_frames, 1)}   ·   t = {t_now:.1f} s")
+        if frame_min is not None and frame_max is not None:
+            self.range_label.setText(f"min = {frame_min:.1f}{unit}   max = {frame_max:.1f}{unit}")
+        else:
+            self.range_label.setText("—")
 
         if not self._series:
             self.narration_label.setText("")
@@ -167,3 +244,11 @@ class InspectorPanel(QtWidgets.QWidget):
         self.sparkline.set_series([])
         self.hrr_gauge.setValue(0)
         self.narration_label.setText("")
+
+
+def _divider() -> QtWidgets.QFrame:
+    line = QtWidgets.QFrame()
+    line.setObjectName("divider")
+    line.setFrameShape(QtWidgets.QFrame.HLine)
+    line.setFixedHeight(1)
+    return line

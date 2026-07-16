@@ -102,6 +102,11 @@ INTERPOLATIONS = [
 MIN_WIDTH = 900
 MIN_HEIGHT = 600
 
+# Inspector "Slice" field (scientific-visualization completion pass):
+# SliceKey.direction is 0-indexed per slice_key.py's own convention
+# (direction=1 is documented there as "normal to y").
+_AXIS_NAMES = {0: "x", 1: "y", 2: "z"}
+
 
 class ExportRangeDialog(QtWidgets.QDialog):
     """Lets the user pick fps and a frame range before exporting (M1.5.1).
@@ -1249,12 +1254,16 @@ class MainWindow(QtWidgets.QMainWindow):
         Relies on M1.2's disk cache making an already-warm store.get()
         ~1-6ms -- cheap enough to call directly here without stalling the
         GUI thread on every tick, for however many cells are visible."""
+        active_cell = self.view_grid.active_cell()
+        active_frame = None
         for cell in self.view_grid.visible_cells():
             try:
                 frame = self._frame_for_cell(cell, index)
             except Exception as e:  # noqa: BLE001 - one bad cell must not blank the rest
                 logger.warning("failed to fetch frame for grid cell (type=%s): %s", cell.cell_type, e)
                 continue
+            if cell is active_cell:
+                active_frame = frame
             if frame is not None:
                 cinematic = cell.cell_type == "slice" and getattr(cell.view, "cinematic_enabled", False)
                 extra = {}
@@ -1272,32 +1281,77 @@ class MainWindow(QtWidgets.QMainWindow):
         self.timeline.set_index(index)
         current_time = index / self.time_controller.timesteps_per_second
         self.statusBar().showMessage(f"t = {current_time:.1f} s", 2000)
-        self._update_inspector(index)
+        self._update_inspector(index, active_frame)
 
-    def _update_inspector(self, index: int) -> None:
-        """Keeps the Live Inspector (FireLab roadmap Phase 3) in sync with
-        the active cell -- only meaningful for a "slice" cell showing
-        TEMPERATURE (the inspector's sparkline/narration are calibrated to
-        that quantity); any other active cell just gets a neutral/cleared
-        panel rather than stale or misleading numbers."""
+    def _scenario_label(self, case_index: int) -> str:
+        for entry in (self.sim_data.manifest or []):
+            if entry.case_index == case_index:
+                return entry.folder
+        return f"scenario {case_index}"
+
+    def _slice_location_label(self, slice_key) -> str:
+        axis = _AXIS_NAMES.get(slice_key.direction, f"axis {slice_key.direction}")
+        return f"{axis}-normal, offset {slice_key.offset}"
+
+    def _update_inspector(self, index: int, active_frame=None) -> None:
+        """Keeps the Live Inspector in sync with the active cell. Static
+        metadata (scenario/quantity/grid size/slice/duration/frames) is
+        only rebuilt inside the `key != self._inspector_series_key` guard
+        below -- i.e. on a scenario/quantity/cell-type change, never per
+        tick. `active_frame` is the same array _on_time_changed's own loop
+        already computed via _frame_for_cell for this exact cell/index --
+        reused here for the dynamic min/max readout instead of re-fetching.
+        The peak-temperature sparkline/HRR gauge/narration stay calibrated
+        to "slice" cells showing TEMPERATURE specifically, same as before;
+        any other active cell (ensemble, or a quantity/cell-type combo the
+        narration isn't calibrated for) just leaves those three neutral."""
         cell = self.view_grid.active_cell()
-        if (cell is None or cell.cell_type != "slice"
-                or not cell.quantity_key or cell.quantity_key.quantity != "TEMPERATURE"):
+        if cell is None or cell.cell_type not in ("slice", "difference") or not cell.quantity_key:
             self.inspector.clear()
+            if self._inspector_series_key is not None:
+                self.inspector.set_static_info("—", "—", "—", "—", 0, 1.0)
+            self.inspector.set_time(index)
+            self._inspector_series_key = None
             return
-        key = (cell.case_index, cell.quantity_key)
+
+        quantity = cell.quantity_key.quantity
+        display = QUANTITY_DISPLAY.get(quantity, {})
+        if cell.cell_type == "slice":
+            key = ("slice", cell.case_index, cell.quantity_key)
+            scenario_label = self._scenario_label(cell.case_index)
+        else:
+            key = ("difference", cell.case_index_a, cell.case_index_b, cell.quantity_key)
+            scenario_label = f"{self._scenario_label(cell.case_index_a)} − {self._scenario_label(cell.case_index_b)}"
+
         if key != self._inspector_series_key:
             self._inspector_series_key = key
-            store = self._store_for_cell(cell)
-            data = store.get(cell.case_index, cell.quantity_key)
-            peak_by_frame = data.reshape(data.shape[0], -1).max(axis=1).tolist()
-            door_wide_open = self.controller.params.door == 1
-            self.inspector.set_scenario(peak_by_frame, QUANTITY_DISPLAY["TEMPERATURE"]["vmin"], door_wide_open)
+            if cell.cell_type == "slice":
+                ref_data = self._store_for_cell(cell).get(cell.case_index, cell.quantity_key)
+            else:
+                ref_data = self.controller.store.get(cell.case_index_a, cell.quantity_key)
+            self.inspector.set_static_info(
+                scenario_label, display.get('label', quantity.title()),
+                f"{ref_data.shape[1]} × {ref_data.shape[2]}",
+                self._slice_location_label(cell.quantity_key),
+                ref_data.shape[0], self.time_controller.timesteps_per_second,
+            )
+            if cell.cell_type == "slice" and quantity == "TEMPERATURE":
+                peak_by_frame = ref_data.reshape(ref_data.shape[0], -1).max(axis=1).tolist()
+                door_wide_open = self.controller.params.door == 1
+                self.inspector.set_scenario(peak_by_frame, QUANTITY_DISPLAY["TEMPERATURE"]["vmin"], door_wide_open)
+            else:
+                self.inspector.clear()
 
-        intensity = self._hrr_intensity_for_cell(cell, index)
-        cached_hrr = self._hrr_cache.get(cell.case_index)
-        hrr_fraction = min(1.0, intensity) if cached_hrr else None
-        self.inspector.set_time(index, hrr_fraction)
+        hrr_fraction = None
+        if cell.cell_type == "slice" and quantity == "TEMPERATURE":
+            intensity = self._hrr_intensity_for_cell(cell, index)
+            cached_hrr = self._hrr_cache.get(cell.case_index)
+            hrr_fraction = min(1.0, intensity) if cached_hrr else None
+
+        frame_min = frame_max = None
+        if active_frame is not None:
+            frame_min, frame_max = float(np.min(active_frame)), float(np.max(active_frame))
+        self.inspector.set_time(index, hrr_fraction, frame_min, frame_max, display.get('unit', ''))
 
     def _on_playing_changed(self, playing: bool):
         self.timeline.set_playing(playing)
