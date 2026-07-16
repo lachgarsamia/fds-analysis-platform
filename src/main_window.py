@@ -54,7 +54,7 @@ from pages.compare import ComparePage
 from pages.dataset import DatasetPage
 from pages.analysis import AnalysisPage
 from pages.export_page import ExportPage
-from pages.placeholder import PlaceholderPage
+from pages.about import AboutPage
 from kiosk import KioskController
 
 logger = logging.getLogger(__name__)
@@ -570,9 +570,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 analysis_content, on_shown=lambda: self._on_analytics_panel_visibility_changed(True)),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
-            "about": PlaceholderPage(),
+            "about": AboutPage(),
         }
-        self.pages["about"].message = "About FireLab Digital Twin -- coming soon."
         has_manifest = bool(self.sim_data.manifest)
         self.pages["home"].set_stats(
             len(self.sim_data.manifest or []), self._current_n_frames, len(self.quantity_infos))

@@ -26,9 +26,15 @@ class AnalysisPage(Page):
         super().__init__(parent)
         self._on_shown = on_shown
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        header = QtWidgets.QLabel("Analysis")
+        header.setProperty("role", "title")
+        layout.addWidget(header)
+
         if content is not None:
-            layout.addWidget(content)
+            layout.addWidget(content, 1)
         else:
             # Demo mode: no manifest, nothing to analyze.
             label = QtWidgets.QLabel("No experiment data available (demo mode).")
