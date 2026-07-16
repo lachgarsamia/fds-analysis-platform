@@ -11,7 +11,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 from schematic import _icon_from_painter
 
-ICON_SIZE = 40
+ICON_SIZE = 20
 FLOW_FPS = 12
 N_SLATS = 4
 

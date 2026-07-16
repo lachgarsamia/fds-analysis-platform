@@ -668,7 +668,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setStretchFactor(2, 0)
-        self.splitter.setSizes([320, 720, 240])
+        self.splitter.setSizes([380, 700, 280])
         return central
 
     def _build_inspector_panel(self) -> QtWidgets.QWidget:

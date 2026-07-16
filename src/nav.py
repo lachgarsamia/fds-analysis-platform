@@ -13,7 +13,7 @@ from branding import build_logo_widget
 
 EXPANDED_WIDTH = 168
 COLLAPSED_WIDTH = 48
-LOGO_HEIGHT = 28
+LOGO_HEIGHT = 48
 
 
 class NavRail(QtWidgets.QWidget):
