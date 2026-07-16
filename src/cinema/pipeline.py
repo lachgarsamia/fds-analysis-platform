@@ -19,12 +19,36 @@ from cinema.shimmer import HeatShimmer
 from cinema.smoke import SmokeSimulator, composite_over, smoke_rgba
 
 # 1/f flicker amplitude: fraction of tonemapped intensity the pink-noise
-# track can add/subtract per frame -- subtle on purpose (candle-like
-# breathing, not a strobing screen).
-FLICKER_AMPLITUDE = 0.05
+# track can add/subtract per frame -- candle-like breathing, not a
+# strobing screen. Bumped slightly from the original 0.05 for a more
+# visibly "alive" flame per the fire-realism pass.
+FLICKER_AMPLITUDE = 0.07
 
 # Bloom strength at hrr_intensity=1.0 (see EffectsPipeline.render).
-BLOOM_STRENGTH = 0.8
+# Bumped from the original 0.8 -- a stronger glow reads as a hotter,
+# more incandescent flame instead of a flat-edged hot spot.
+BLOOM_STRENGTH = 1.3
+
+# Ambient backdrop (fire-realism pass): a very dim, warm radial falloff
+# behind the fire so it reads as "floating in a dim room" rather than a
+# pure black void -- centered low/wide like ambient floor-bounce light,
+# composited under smoke and fire.
+AMBIENT_STRENGTH = 0.05
+AMBIENT_TINT = np.array([46.0, 32.0, 24.0], dtype=np.float32)  # dim warm ember-brown
+
+
+def _ambient_backdrop(shape: tuple) -> np.ndarray:
+    ny, nx = shape
+    yy, xx = np.mgrid[0:ny, 0:nx].astype(np.float32)
+    cx, cy = nx / 2.0, ny * 0.85
+    dist = np.hypot((xx - cx) / (nx * 0.65), (yy - cy) / (ny * 0.65))
+    falloff = np.clip(1.0 - dist, 0.0, 1.0) ** 2
+    out = np.empty(shape + (4,), dtype=np.uint8)
+    out[..., 0] = AMBIENT_TINT[0]
+    out[..., 1] = AMBIENT_TINT[1]
+    out[..., 2] = AMBIENT_TINT[2]
+    out[..., 3] = (falloff * AMBIENT_STRENGTH * 255.0).astype(np.uint8)
+    return out
 
 
 class AutoExposure:
@@ -65,6 +89,7 @@ class EffectsPipeline:
         self._flicker_i = 0
         self._smoke: SmokeSimulator = None
         self._shimmer = HeatShimmer()
+        self._ambient_backdrop: np.ndarray = None
 
     def render(self, frame: np.ndarray, hrr_intensity: float = 1.0,
                velocity_frame: np.ndarray = None) -> np.ndarray:
@@ -94,8 +119,11 @@ class EffectsPipeline:
 
         if self._smoke is None or self._smoke.buffer.shape != frame.shape:
             self._smoke = SmokeSimulator(frame.shape, ambient_c=self.vmin)
+        if self._ambient_backdrop is None or self._ambient_backdrop.shape[:2] != frame.shape:
+            self._ambient_backdrop = _ambient_backdrop(frame.shape)
         density = self._smoke.step(frame, velocity_frame)
-        composited = composite_over(fire_rgba, smoke_rgba(density))
+        composited = composite_over(smoke_rgba(density), self._ambient_backdrop)
+        composited = composite_over(fire_rgba, composited)
         composited = self._shimmer.warp(composited, frame, self.vmin)
 
         self.last_cost_ms = (time.perf_counter() - t0) * 1000.0

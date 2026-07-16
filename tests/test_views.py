@@ -111,10 +111,12 @@ class TestSliceViewCinematicMode:
             "-- looks like the stale-frame-in-background bug is back"
         )
 
-    def test_ambient_frame_is_transparent(self, qapp):
+    def test_ambient_frame_is_nearly_transparent(self, qapp):
         """The alpha ramp's whole point: ambient-temperature cells should
-        be see-through, not painted -- so the fire looks like it's
-        floating in a dark room instead of filling a rectangle."""
+        be mostly see-through, not painted -- so the fire looks like it's
+        floating in a dim room instead of filling a rectangle. Not
+        *exactly* zero alpha since the fire-realism pass added a subtle
+        (~5% max strength) ambient backdrop glow so it isn't pure black."""
         view = SliceView()
         ambient_frame = np.full((49, 101), 20.0, dtype=np.float32)
         view.init_plot(ambient_frame, cmap="gist_heat", interpolation="nearest",
@@ -122,7 +124,7 @@ class TestSliceViewCinematicMode:
         view.set_cinematic_mode(True, vmin=20.0, vmax_init=300.0)
         view.show_frame(ambient_frame)
         alpha = view.heatmap.get_array()[..., 3]
-        assert (alpha == 0).all()
+        assert alpha.max() <= 15
 
     def test_disable_restores_2d_science_frame(self, qapp):
         view = SliceView()

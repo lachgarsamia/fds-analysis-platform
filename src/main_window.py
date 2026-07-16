@@ -38,6 +38,7 @@ from controls.door_widget import DoorWidget
 from controls.vent_widget import VentWidget
 from inspector import InspectorPanel
 from export import AnimationExporter, ffmpeg_available
+from branding import build_logo_widget
 from load_data import SIM_ROOT
 from slice_key import SliceInfo, SliceKey, DEFAULT_SLICE_KEY, available_slices
 from views import ViewGrid, DifferenceView, EnsembleView
@@ -243,6 +244,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # Demo-script bookmarks (FireLab roadmap Phase 5): slot -> {page,
         # case_index, time_index}; Ctrl+Shift+<1-9> records, Shift+<1-9> jumps.
         self._demo_bookmarks: dict = {}
+        # Guards the Compare -> Home/Live grid-reset bugfix (_navigate_to)
+        # from firing on _apply_compare_preset's own internal jump to Live.
+        self._applying_compare_preset = False
         # Esc long-press: "effects off" master switch, tracked via
         # keyPressEvent/keyReleaseEvent below (QShortcut has no notion of
         # hold-duration).
@@ -258,6 +262,7 @@ class MainWindow(QtWidgets.QMainWindow):
     # ------------------------------------------------------------------ UI
     def _build_menu(self):
         menu_bar = self.menuBar()
+        menu_bar.setCornerWidget(build_logo_widget(24), QtCore.Qt.TopLeftCorner)
 
         view_menu = menu_bar.addMenu("&View")
 
@@ -600,10 +605,29 @@ class MainWindow(QtWidgets.QMainWindow):
         old_page = self.pages.get(self._active_page_key)
         if old_page is not None:
             old_page.on_leave()
+        if (self._active_page_key == "compare" and key in ("home", "live")
+                and not getattr(self, "_applying_compare_preset", False)):
+            self._reset_grid_after_compare()
         self._active_page_key = key
         self.page_stack.setCurrentWidget(page)
         self.nav_rail.set_active(key)
         page.on_enter()
+
+    def _reset_grid_after_compare(self) -> None:
+        """Bugfix: leaving Compare (which sets up a 1x2 scenario-A /
+        difference grid, see _apply_compare_preset) back to Home or Live
+        must not leave that comparison setup behind -- reset to a plain
+        1x1 view of whichever scenario was being compared."""
+        cells = self.view_grid.visible_cells()
+        if not cells:
+            return
+        cell = cells[0]
+        case_index = cell.case_index if cell.cell_type == "slice" else cell.case_index_a
+        self._set_grid_layout("1x1")
+        cell = self.view_grid.visible_cells()[0]
+        if cell.cell_type != "slice":
+            cell.set_cell_type("slice")
+        self._select_scenario_in_cell(cell, case_index)
 
     def _build_central_widget(self) -> QtWidgets.QWidget:
         """Builds the Live Viewer's content (control panel + plot grid),
@@ -1492,22 +1516,30 @@ class MainWindow(QtWidgets.QMainWindow):
         if quantity_key is None or case_a is None or case_b is None:
             return
 
-        self._navigate_to("live")
-        self._set_grid_layout("1x2")
-        cells = self.view_grid.visible_cells()
-        if len(cells) < 2:
-            return
-        cell_a, cell_b = cells[0], cells[1]
+        # Guards _navigate_to()'s Compare -> Home/Live grid reset (bugfix
+        # below) from firing on *this* internal jump to Live -- that reset
+        # is for a user manually leaving Compare later, not for the preset
+        # setting up its own comparison grid.
+        self._applying_compare_preset = True
+        try:
+            self._navigate_to("live")
+            self._set_grid_layout("1x2")
+            cells = self.view_grid.visible_cells()
+            if len(cells) < 2:
+                return
+            cell_a, cell_b = cells[0], cells[1]
 
-        if cell_a.cell_type != "slice":
-            cell_a.set_cell_type("slice")
-        self._select_scenario_in_cell(cell_a, case_a)
-        self._select_quantity_in_cell(cell_a, quantity_key)
+            if cell_a.cell_type != "slice":
+                cell_a.set_cell_type("slice")
+            self._select_scenario_in_cell(cell_a, case_a)
+            self._select_quantity_in_cell(cell_a, quantity_key)
 
-        if cell_b.cell_type != "difference":
-            cell_b.set_cell_type("difference")
-        self._select_difference_scenarios_in_cell(cell_b, case_a, case_b)
-        self._select_quantity_in_cell(cell_b, quantity_key)
+            if cell_b.cell_type != "difference":
+                cell_b.set_cell_type("difference")
+            self._select_difference_scenarios_in_cell(cell_b, case_a, case_b)
+            self._select_quantity_in_cell(cell_b, quantity_key)
+        finally:
+            self._applying_compare_preset = False
 
     def _set_link_clim(self, checked: bool):
         """View -> Link color scales toggle (M2.2.3)."""

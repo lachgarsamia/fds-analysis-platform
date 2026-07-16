@@ -19,6 +19,7 @@ from theme import RADIUS
 from cinema.pipeline import EffectsPipeline
 from cinema.interp import lerp_frames
 from cinema.particles import EmberParticles
+from cinema.velocity_arrows import sample_points, compute_deltas
 
 # Sub-frame interpolation (FireLab roadmap Phase 2.1d): visual refresh
 # rate while cinematic mode is on, decoupled from the data's native
@@ -116,6 +117,12 @@ class SliceView:
         # multi-artist blit_update() extension.
         self.ember_scatter = None
         self._ember_sim: EmberParticles = None
+        # Velocity flow arrows: same lazy, blit-tracked-artist treatment
+        # as embers. Sample grid positions (_arrow_rows/_arrow_cols) are
+        # fixed once computed; only direction/magnitude change per frame.
+        self.velocity_quiver = None
+        self._arrow_rows = None
+        self._arrow_cols = None
 
     def widget(self) -> QtWidgets.QWidget:
         return self.canvas
@@ -185,6 +192,7 @@ class SliceView:
             display_data = self._cinema_pipeline.render(
                 frame, hrr_intensity=bloom_intensity, velocity_frame=velocity_frame)
             self._update_ember_scatter(frame, velocity_frame)
+            self._update_velocity_arrows(frame, velocity_frame)
         else:
             display_data = frame
         self.heatmap.set_data(display_data)
@@ -205,7 +213,13 @@ class SliceView:
             self.canvas.draw_idle()
             self.canvas.capture_background()
         else:
-            self.canvas.blit_update([self.heatmap, self.ember_scatter])
+            self.canvas.blit_update(self._animated_artists())
+
+    def _animated_artists(self) -> list:
+        artists = [self.heatmap, self.ember_scatter]
+        if self.velocity_quiver is not None:
+            artists.append(self.velocity_quiver)
+        return artists
 
     def set_cmap(self, name: str) -> None:
         self.heatmap.set_cmap(mpl.colormaps[name])
@@ -271,6 +285,11 @@ class SliceView:
             self.ember_scatter.set_offsets(np.empty((0, 2)))
             self.ember_scatter.set_sizes([])
             self.ember_scatter.set_facecolor([])
+            if self.velocity_quiver is not None:
+                self.velocity_quiver.remove()
+                self.velocity_quiver = None
+            self._arrow_rows = None
+            self._arrow_cols = None
             self._interp_timer.stop()
             self._interp_from = None
             self._interp_to = None
@@ -278,12 +297,55 @@ class SliceView:
             self.colorbar.ax.set_visible(True)
         self.canvas.capture_background()
 
+    def _index_to_display_xy(self, rows, cols):
+        """(row, col) array-index coordinates -> (x, y) display
+        coordinates matching the heatmap's own coordinate system
+        (physical meters if extent is set, else raw pixel indices) --
+        shared by ember offsets and velocity arrows, same convention
+        _redraw_isotherms' own xs/zs construction already uses. rows/cols
+        may be non-integer (e.g. an arrow's head position)."""
+        rows = np.asarray(rows, dtype=float)
+        cols = np.asarray(cols, dtype=float)
+        if self._extent is not None and self._last_frame is not None:
+            x0, x1, z0, z1 = self._extent
+            n_z, n_x = self._last_frame.shape
+            xs = x0 + (cols / max(n_x - 1, 1)) * (x1 - x0)
+            ys = z1 - (rows / max(n_z - 1, 1)) * (z1 - z0)  # row 0 = z1 (top), matching origin='upper'
+            return xs, ys
+        return cols, rows
+
     def _update_ember_scatter(self, temperature_frame: np.ndarray, velocity_frame: np.ndarray) -> None:
         self._ember_sim.step(temperature_frame, self._cinema_pipeline.vmin, velocity_frame)
         offsets, sizes, colors = self._ember_sim.render_arrays()
+        if len(offsets):
+            xs, ys = self._index_to_display_xy(offsets[:, 1], offsets[:, 0])
+            offsets = np.column_stack([xs, ys])
         self.ember_scatter.set_offsets(offsets)
         self.ember_scatter.set_sizes(sizes)
         self.ember_scatter.set_facecolor(colors)
+
+    def _update_velocity_arrows(self, temperature_frame: np.ndarray, velocity_frame) -> None:
+        """Sparse directional flow arrows (heuristic direction -- see
+        cinema/velocity_arrows.py's own docstring for why: the stored
+        VELOCITY slice is speed magnitude only, no true vector)."""
+        if velocity_frame is None:
+            if self.velocity_quiver is not None:
+                zeros = np.zeros(len(self._arrow_rows))
+                self.velocity_quiver.set_UVC(zeros, zeros)
+            return
+        if self._arrow_rows is None:
+            self._arrow_rows, self._arrow_cols = sample_points(temperature_frame.shape)
+        d_row, d_col = compute_deltas(temperature_frame, velocity_frame, self._arrow_rows, self._arrow_cols)
+        tail_x, tail_y = self._index_to_display_xy(self._arrow_rows, self._arrow_cols)
+        head_x, head_y = self._index_to_display_xy(self._arrow_rows + d_row, self._arrow_cols + d_col)
+        u, v = head_x - tail_x, head_y - tail_y
+        if self.velocity_quiver is None:
+            self.velocity_quiver = self.ax.quiver(
+                tail_x, tail_y, u, v, color="#CFE8FF", alpha=0.8,
+                angles="xy", scale_units="xy", scale=1.0, width=0.004, zorder=6,
+            )
+        else:
+            self.velocity_quiver.set_UVC(u, v)
 
     @property
     def cinematic_enabled(self) -> bool:
@@ -309,8 +371,9 @@ class SliceView:
         rgba = self._cinema_pipeline.render(
             blended, hrr_intensity=self._interp_bloom_intensity, velocity_frame=self._interp_velocity_frame)
         self._update_ember_scatter(blended, self._interp_velocity_frame)
+        self._update_velocity_arrows(blended, self._interp_velocity_frame)
         self.heatmap.set_data(rgba)
-        self.canvas.blit_update([self.heatmap, self.ember_scatter])
+        self.canvas.blit_update(self._animated_artists())
         if self._interp_phase >= 1.0:
             self._interp_timer.stop()
 

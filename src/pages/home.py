@@ -10,6 +10,7 @@ from typing import Callable, Optional
 
 from PyQt5 import QtCore, QtWidgets
 
+from branding import build_logo_widget
 from pages.base import Page
 
 
@@ -24,6 +25,12 @@ class HomePage(Page):
         layout.setContentsMargins(48, 48, 48, 48)
         layout.setSpacing(16)
         layout.addStretch(1)
+
+        logo_row = QtWidgets.QHBoxLayout()
+        logo_row.addStretch(1)
+        logo_row.addWidget(build_logo_widget(40))
+        logo_row.addStretch(1)
+        layout.addLayout(logo_row)
 
         title = QtWidgets.QLabel("FireLab Digital Twin")
         title.setProperty("role", "display")

@@ -201,11 +201,16 @@ class TestEffectsPipeline:
         assert rgba.shape == (49, 101, 4)
         assert rgba.dtype == np.uint8
 
-    def test_ambient_frame_fully_transparent(self):
+    def test_ambient_frame_nearly_transparent(self):
+        """Fire-realism pass: a subtle ambient backdrop glow (~5% max
+        strength) means ambient pixels are no longer *exactly* alpha=0,
+        just very close to it -- "doesn't float in pure black" is the
+        point, not full opacity."""
         pipeline = EffectsPipeline(vmin=20.0, vmax_init=300.0)
         frame = np.full((49, 101), 20.0, dtype=np.float32)
         rgba = pipeline.render(frame)
-        assert (rgba[..., 3] == 0).all()
+        assert rgba[..., 3].max() <= 15
+        assert rgba[..., 3].min() == 0
 
     def test_render_cost_within_budget(self):
         """DoD (ROADMAP-FIRELAB.md Phase 2 task 1): full chain should be
