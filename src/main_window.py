@@ -1308,6 +1308,7 @@ class MainWindow(QtWidgets.QMainWindow):
         cell = self.view_grid.active_cell()
         if cell is None or cell.cell_type not in ("slice", "difference") or not cell.quantity_key:
             self.inspector.clear()
+            self.inspector.clear_difference_stats()
             if self._inspector_series_key is not None:
                 self.inspector.set_static_info("—", "—", "—", "—", 0, 1.0)
             self.inspector.set_time(index)
@@ -1352,6 +1353,13 @@ class MainWindow(QtWidgets.QMainWindow):
         if active_frame is not None:
             frame_min, frame_max = float(np.min(active_frame)), float(np.max(active_frame))
         self.inspector.set_time(index, hrr_fraction, frame_min, frame_max, display.get('unit', ''))
+
+        if cell.cell_type == "difference" and active_frame is not None:
+            mean_v = float(np.mean(active_frame))
+            rms_v = float(np.sqrt(np.mean(np.square(active_frame))))
+            self.inspector.set_difference_stats(frame_min, frame_max, mean_v, rms_v, display.get('unit', ''))
+        else:
+            self.inspector.clear_difference_stats()
 
     def _on_playing_changed(self, playing: bool):
         self.timeline.set_playing(playing)

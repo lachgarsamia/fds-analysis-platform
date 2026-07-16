@@ -139,6 +139,19 @@ class InspectorPanel(QtWidgets.QWidget):
         self.range_label.setProperty("role", "value")
         layout.addWidget(self.range_label)
 
+        # Difference cells only (A-B) -- hidden/blank for a plain slice
+        # cell, never recreated, just shown/hidden + text-updated.
+        self.diff_stats_caption = QtWidgets.QLabel("Difference statistics (A − B)")
+        self.diff_stats_caption.setProperty("role", "caption")
+        self.diff_stats_caption.setVisible(False)
+        layout.addWidget(self.diff_stats_caption)
+
+        self.diff_stats_label = QtWidgets.QLabel("")
+        self.diff_stats_label.setProperty("role", "value")
+        self.diff_stats_label.setWordWrap(True)
+        self.diff_stats_label.setVisible(False)
+        layout.addWidget(self.diff_stats_label)
+
         self.probe_label = QtWidgets.QLabel("Hover the plot to inspect a point.")
         self.probe_label.setProperty("role", "value")
         self.probe_label.setWordWrap(True)
@@ -189,6 +202,23 @@ class InspectorPanel(QtWidgets.QWidget):
         self._static_labels["Slice"].setText(slice_location)
         self._static_labels["Duration"].setText(f"{duration_s:.1f} s")
         self._static_labels["Frames"].setText(str(n_frames))
+
+    def set_difference_stats(self, min_v: float, max_v: float, mean_v: float, rms_v: float,
+                              unit: str = "") -> None:
+        """Called every tick a difference cell is active -- min_v/max_v/
+        mean_v/rms_v are computed by the caller from the same A-B array
+        already fetched for display, never re-read here."""
+        self.diff_stats_caption.setVisible(True)
+        self.diff_stats_label.setVisible(True)
+        self.diff_stats_label.setText(
+            f"min = {min_v:.1f}{unit}   max = {max_v:.1f}{unit}\n"
+            f"mean = {mean_v:.1f}{unit}   RMS = {rms_v:.1f}{unit}"
+        )
+
+    def clear_difference_stats(self) -> None:
+        self.diff_stats_caption.setVisible(False)
+        self.diff_stats_label.setVisible(False)
+        self.diff_stats_label.setText("")
 
     def set_probe(self, x, z, value, unit: str = "") -> None:
         if x is None:
