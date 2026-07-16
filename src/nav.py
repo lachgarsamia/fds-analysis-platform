@@ -9,8 +9,11 @@ from __future__ import annotations
 
 from PyQt5 import QtCore, QtWidgets
 
+from branding import build_logo_widget
+
 EXPANDED_WIDTH = 168
 COLLAPSED_WIDTH = 48
+LOGO_HEIGHT = 28
 
 
 class NavRail(QtWidgets.QWidget):
@@ -29,6 +32,14 @@ class NavRail(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(4, 8, 4, 8)
         layout.setSpacing(2)
+
+        self._logo_row = QtWidgets.QHBoxLayout()
+        self._logo_row.addStretch(1)
+        self._logo = build_logo_widget(LOGO_HEIGHT)
+        self._logo_row.addWidget(self._logo)
+        self._logo_row.addStretch(1)
+        layout.addLayout(self._logo_row)
+        layout.addSpacing(8)
 
         self._group = QtWidgets.QButtonGroup(self)
         self._group.setExclusive(True)
@@ -69,6 +80,7 @@ class NavRail(QtWidgets.QWidget):
     def set_collapsed(self, collapsed: bool) -> None:
         self._collapsed = collapsed
         self.setFixedWidth(COLLAPSED_WIDTH if collapsed else EXPANDED_WIDTH)
+        self._logo.setVisible(not collapsed)
         self._relabel()
 
     def _relabel(self) -> None:

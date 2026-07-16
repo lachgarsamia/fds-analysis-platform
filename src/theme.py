@@ -274,6 +274,19 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
         font-size: {caption};
     }}
 
+    /* Inspector panel (the right-hand bar): text there reads at normal
+    body/caption size everywhere else in the app, but the Inspector is
+    read at a glance during playback, so it gets a size bump of its own
+    rather than changing the global "value"/"caption" roles used
+    everywhere else (control panel, home page stat tiles, timeline). */
+    QWidget#inspectorPanel QLabel[role="value"] {{
+        font-size: {subtitle};
+    }}
+
+    QWidget#inspectorPanel QLabel[role="caption"] {{
+        font-size: {body};
+    }}
+
     QFrame#divider {{
         background-color: {p.border};
         max-height: 1px;

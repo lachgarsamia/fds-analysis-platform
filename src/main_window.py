@@ -38,7 +38,6 @@ from controls.door_widget import DoorWidget
 from controls.vent_widget import VentWidget
 from inspector import InspectorPanel
 from export import AnimationExporter, ffmpeg_available
-from branding import build_logo_widget
 from load_data import SIM_ROOT
 from slice_key import SliceInfo, SliceKey, DEFAULT_SLICE_KEY, available_slices
 from views import ViewGrid, DifferenceView, EnsembleView
@@ -269,7 +268,6 @@ class MainWindow(QtWidgets.QMainWindow):
     # ------------------------------------------------------------------ UI
     def _build_menu(self):
         menu_bar = self.menuBar()
-        menu_bar.setCornerWidget(build_logo_widget(24), QtCore.Qt.TopLeftCorner)
 
         view_menu = menu_bar.addMenu("&View")
 

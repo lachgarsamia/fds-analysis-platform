@@ -43,7 +43,7 @@ class AboutPage(Page):
 
         logo_row = QtWidgets.QHBoxLayout()
         logo_row.addStretch(1)
-        logo_row.addWidget(build_logo_widget(40))
+        logo_row.addWidget(build_logo_widget(72))
         logo_row.addStretch(1)
         layout.addLayout(logo_row)
 
