@@ -709,9 +709,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.schematic.set_room_extent(room_extent)
         self.schematic.update_state(DEFAULT_CANDLES, DEFAULT_DOOR, DEFAULT_VOD, DEFAULT_VOC)
 
-        outer.addWidget(self._divider())
-
-        # --- Simulation transport controls ---------------------------------
+        # --- Simulation transport controls (UI/UX modernization Phase 4:
+        # wrapped in a card like every other control-panel section below,
+        # instead of sitting bare between two manual dividers) ---------------
+        playback_section = CollapsibleSection("Playback")
         transport_row = QtWidgets.QHBoxLayout()
         transport_row.setSpacing(8)
         self.start_button = QtWidgets.QPushButton("Start")
@@ -733,7 +734,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         for b in (self.start_button, self.stop_button, self.restart_button):
             transport_row.addWidget(b)
-        outer.addLayout(transport_row)
+        transport_container = QtWidgets.QWidget()
+        transport_container.setLayout(transport_row)
+        playback_section.add_row(transport_container)
 
         # M1.4: interactive scrubber (play/pause + seek slider + time label +
         # loop toggle), replacing the old read-only QProgressBar.
@@ -741,9 +744,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.timeline.play_pause_clicked.connect(self._toggle_play_pause)
         self.timeline.seek_requested.connect(self._on_seek_requested)
         self.timeline.loop_toggled.connect(self.time_controller.set_loop)
-        outer.addWidget(self.timeline)
-
-        outer.addWidget(self._divider())
+        playback_section.add_row(self.timeline)
+        outer.addWidget(playback_section)
 
         # --- Scenario sections ----------------------------------------------
         speed_section = CollapsibleSection("Playback speed")

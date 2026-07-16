@@ -96,11 +96,15 @@ class InspectorPanel(QtWidgets.QWidget):
         self.probe_label.setWordWrap(True)
         layout.addWidget(self.probe_label)
 
-        layout.addWidget(QtWidgets.QLabel("Peak temperature over time"))
+        sparkline_caption = QtWidgets.QLabel("Peak temperature over time")
+        sparkline_caption.setProperty("role", "caption")
+        layout.addWidget(sparkline_caption)
         self.sparkline = _Sparkline()
         layout.addWidget(self.sparkline)
 
-        layout.addWidget(QtWidgets.QLabel("Heat release rate"))
+        hrr_caption = QtWidgets.QLabel("Heat release rate")
+        hrr_caption.setProperty("role", "caption")
+        layout.addWidget(hrr_caption)
         self.hrr_gauge = QtWidgets.QProgressBar()
         self.hrr_gauge.setRange(0, 100)
         self.hrr_gauge.setTextVisible(False)
