@@ -164,6 +164,84 @@ class ToggleGroup(QtWidgets.QWidget):
             b.setIconSize(QtCore.QSize(size, size))
 
 
+class EventMarkerBar(QtWidgets.QWidget):
+    """Thin clickable strip of event markers above the timeline slider
+    (V2 roadmap M1.3): each marker is a small triangle at a frame index,
+    with a tooltip naming the event (threshold crossing, peak
+    temperature, ...) and click-to-seek. Pure UI, like TimelineWidget:
+    MainWindow computes the (frame, label) list from summary stats and
+    pushes it in via set_markers()."""
+
+    marker_clicked = QtCore.pyqtSignal(int)  # frame index of the clicked marker
+
+    BAR_HEIGHT = 12
+    CLICK_TOLERANCE_PX = 8
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._markers: List[Tuple[int, str]] = []
+        self._n_frames = 0
+        self.setFixedHeight(self.BAR_HEIGHT)
+        self.setMouseTracking(True)
+        self.setAccessibleName("Timeline event markers")
+
+    def set_markers(self, markers: Sequence[Tuple[int, str]]):
+        self._markers = list(markers)
+        self.update()
+
+    def set_range(self, n_frames: int):
+        self._n_frames = n_frames
+        self.update()
+
+    @property
+    def markers(self) -> List[Tuple[int, str]]:
+        return list(self._markers)
+
+    def _x_for_frame(self, frame: int) -> float:
+        if self._n_frames <= 1:
+            return 0.0
+        return frame / (self._n_frames - 1) * max(self.width() - 1, 1)
+
+    def _marker_near(self, x: float):
+        best = None
+        best_dist = self.CLICK_TOLERANCE_PX + 1
+        for frame, label in self._markers:
+            dist = abs(self._x_for_frame(frame) - x)
+            if dist < best_dist:
+                best_dist = dist
+                best = (frame, label)
+        return best
+
+    def paintEvent(self, event):
+        if not self._markers or self._n_frames <= 1:
+            return
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        color = self.palette().color(QtGui.QPalette.Highlight)
+        painter.setBrush(color)
+        painter.setPen(QtGui.QPen(color, 1))
+        h = self.height()
+        for frame, _label in self._markers:
+            x = self._x_for_frame(frame)
+            triangle = QtGui.QPolygonF([
+                QtCore.QPointF(x - 4, 1),
+                QtCore.QPointF(x + 4, 1),
+                QtCore.QPointF(x, h - 1),
+            ])
+            painter.drawPolygon(triangle)
+
+    def mousePressEvent(self, event):
+        hit = self._marker_near(event.pos().x())
+        if hit is not None:
+            self.marker_clicked.emit(hit[0])
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        hit = self._marker_near(event.pos().x())
+        self.setToolTip(hit[1] if hit is not None else "")
+        super().mouseMoveEvent(event)
+
+
 class TimelineWidget(QtWidgets.QWidget):
     """Playback scrubber: play/pause + draggable position slider + time
     label + loop toggle (M1.4.2). Replaces the old read-only QProgressBar --
@@ -196,7 +274,17 @@ class TimelineWidget(QtWidgets.QWidget):
         self.slider.setToolTip("Drag to seek to any point in the simulation")
         self.slider.setRange(0, 0)
         self.slider.sliderMoved.connect(self.seek_requested.emit)
-        layout.addWidget(self.slider, 1)
+        # Event markers (V2 roadmap M1.3) sit directly above the slider,
+        # sharing its width so frame->x positions line up; a marker click
+        # is just another seek request.
+        self.marker_bar = EventMarkerBar()
+        self.marker_bar.marker_clicked.connect(self.seek_requested.emit)
+        slider_column = QtWidgets.QVBoxLayout()
+        slider_column.setContentsMargins(0, 0, 0, 0)
+        slider_column.setSpacing(0)
+        slider_column.addWidget(self.marker_bar)
+        slider_column.addWidget(self.slider)
+        layout.addLayout(slider_column, 1)
 
         self.time_label = QtWidgets.QLabel("t = 0.0 s / 0.0 s")
         self.time_label.setProperty("role", "value")
@@ -218,6 +306,11 @@ class TimelineWidget(QtWidgets.QWidget):
         self._n_frames = n_frames
         self._fps = max(fps, 1)
         self.slider.setRange(0, max(n_frames - 1, 0))
+        self.marker_bar.set_range(n_frames)
+
+    def set_event_markers(self, markers):
+        """[(frame_index, label), ...] -- see EventMarkerBar."""
+        self.marker_bar.set_markers(markers)
 
     def set_index(self, index: int):
         """Reflect the controller's current index -- skipped while the user

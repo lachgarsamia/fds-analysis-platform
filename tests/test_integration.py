@@ -1651,3 +1651,52 @@ class TestIntegration:
         assert not hasattr(window.analytics_panel, "show_frame")
         assert not hasattr(window.analytics_panel, "_on_time_changed")
         window.close()
+
+
+class TestEventTimeline:
+    """V2 roadmap M1.3: auto-detected event markers on the scrubber."""
+
+    def test_real_scenario_gets_markers_including_peak(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert window.timeline.marker_bar.markers == []
+            window.close()
+            return
+        markers = window.timeline.marker_bar.markers
+        assert markers, "real data must produce at least the peak-temperature marker"
+        labels = [label for _f, label in markers]
+        assert any("Peak temperature" in label for label in labels)
+        n = window._current_n_frames
+        assert all(0 <= frame < n for frame, _l in markers)
+        window.close()
+
+    def test_velocity_quantity_clears_markers(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        velocity_idx = next((i for i, info in enumerate(window.quantity_infos)
+                             if info.key.quantity == "VELOCITY"), None)
+        if velocity_idx is None:
+            window.close()
+            return
+        window.quantity_combo.setCurrentIndex(velocity_idx)
+        _drain_workers(qapp, window.controller._prefetch_workers)
+        qapp.processEvents()
+        assert window.timeline.marker_bar.markers == []
+        window.close()
+
+    def test_marker_click_seeks_playback(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        markers = window.timeline.marker_bar.markers
+        assert markers
+        target_frame = markers[-1][0]
+        window.timeline.marker_bar.marker_clicked.emit(target_frame)
+        assert window.time_controller.index == target_frame
+        window.close()

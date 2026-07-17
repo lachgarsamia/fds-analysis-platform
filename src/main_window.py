@@ -1190,6 +1190,34 @@ class MainWindow(QtWidgets.QMainWindow):
         self._current_n_frames = self._init_cell_view(cell)
         self.timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
         self.timeline.set_index(0)
+        self._update_event_markers()
+
+    def _update_event_markers(self) -> None:
+        """Event Timeline (V2 roadmap M1.3): auto-detected markers on the
+        scrubber for the active cell's scenario, from stats the summary
+        index already computed (M2.5) -- threshold crossings and the
+        peak-temperature frame. TEMPERATURE-only by construction (the
+        stats are temperature stats); any other quantity, non-slice cell
+        type, or demo mode (no summary index) clears the bar."""
+        summaries = getattr(self, "_scenario_summaries", None)
+        markers = []
+        cell = self.view_grid.active_cell()
+        if (summaries and cell.cell_type == "slice" and cell.quantity_key is not None
+                and cell.quantity_key.quantity == "TEMPERATURE"):
+            summary = next((s for s in summaries if s.case_index == cell.case_index), None)
+            if summary is not None:
+                fps = self.time_controller.timesteps_per_second
+                for time_s, label in (
+                    (summary.time_to_100c_s, "First frame above 100 °C"),
+                    (summary.time_to_300c_s, "First frame above 300 °C"),
+                    (summary.time_to_600c_s, "First frame above 600 °C"),
+                ):
+                    if time_s is not None:
+                        markers.append((int(round(time_s * fps)), label))
+                if summary.max_temp_by_frame_c:
+                    peak_frame = int(np.argmax(summary.max_temp_by_frame_c))
+                    markers.append((peak_frame, f"Peak temperature ({summary.max_temp_c:.0f} °C)"))
+        self.timeline.set_event_markers(markers)
 
     def _on_cell_created(self, cell):
         """A new grid cell was instantiated because the grid grew (M2.2.2).
@@ -1517,6 +1545,7 @@ class MainWindow(QtWidgets.QMainWindow):
         caller decides whether to resume playback."""
         self._current_n_frames = self.controller.store.get(case_idx, self.current_quantity_key).shape[0]
         self.timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
+        self._update_event_markers()
         if not self.time_controller.is_playing():
             self._on_time_changed(self.time_controller.index)
 
@@ -1779,6 +1808,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._current_n_frames = self.controller.store.get(cell.case_index, cell.quantity_key).shape[0]
         self.timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
+        self._update_event_markers()
 
     def _apply_manifest_case_to_controller(self, case_index: int):
         """The active cell's own scenario combo picked a different
@@ -2032,6 +2062,8 @@ class MainWindow(QtWidgets.QMainWindow):
         elif new_type == "ensemble" and cell.ensemble_case_indices:
             self._render_ensemble_cell(cell)
         self._apply_link_clim()
+        if cell is self.view_grid.active_cell():
+            self._update_event_markers()  # markers are slice-cell-only (M1.3)
 
     def _render_difference_cell(self, cell):
         """(Re)renders a difference-type cell for its current

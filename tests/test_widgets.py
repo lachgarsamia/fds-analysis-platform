@@ -44,3 +44,54 @@ class TestCollapsibleSectionCard:
         row = QtWidgets.QPushButton("1x")
         section.add_row(row)
         assert row.parentWidget() is section.card
+
+
+# ---------------------------------------------------------------- V2 M1.3
+from PyQt5 import QtCore, QtTest  # noqa: E402
+
+from widgets import EventMarkerBar, TimelineWidget  # noqa: E402
+
+
+class TestEventMarkerBar:
+    def test_set_markers_and_range(self, qapp):
+        bar = EventMarkerBar()
+        bar.set_range(100)
+        bar.set_markers([(10, "First frame above 100 °C"), (50, "Peak")])
+        assert bar.markers == [(10, "First frame above 100 °C"), (50, "Peak")]
+
+    def test_click_near_marker_emits_frame(self, qapp):
+        bar = EventMarkerBar()
+        bar.resize(200, bar.BAR_HEIGHT)
+        bar.set_range(101)
+        bar.set_markers([(50, "Peak")])
+        clicked = []
+        bar.marker_clicked.connect(clicked.append)
+        x = bar._x_for_frame(50)
+        QtTest.QTest.mouseClick(bar, QtCore.Qt.LeftButton, pos=QtCore.QPoint(int(x), 5))
+        assert clicked == [50]
+
+    def test_click_far_from_any_marker_emits_nothing(self, qapp):
+        bar = EventMarkerBar()
+        bar.resize(200, bar.BAR_HEIGHT)
+        bar.set_range(101)
+        bar.set_markers([(100, "Peak")])
+        clicked = []
+        bar.marker_clicked.connect(clicked.append)
+        QtTest.QTest.mouseClick(bar, QtCore.Qt.LeftButton, pos=QtCore.QPoint(2, 5))
+        assert clicked == []
+
+
+class TestTimelineEventMarkers:
+    def test_marker_click_is_a_seek_request(self, qapp):
+        timeline = TimelineWidget()
+        timeline.set_range(100, fps=4)
+        timeline.set_event_markers([(25, "event")])
+        seeks = []
+        timeline.seek_requested.connect(seeks.append)
+        timeline.marker_bar.marker_clicked.emit(25)
+        assert seeks == [25]
+
+    def test_set_range_propagates_to_marker_bar(self, qapp):
+        timeline = TimelineWidget()
+        timeline.set_range(77, fps=4)
+        assert timeline.marker_bar._n_frames == 77
