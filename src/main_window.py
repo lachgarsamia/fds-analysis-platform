@@ -47,6 +47,7 @@ from analytics_panel import AnalyticsPanelDock, _AnalyticsFeatureWorker
 from auto_summary import export_markdown
 from prediction_store import PredictionSource
 from forecasting_panel import ForecastingPanel
+from timeseries import TimeSeriesPanel
 from nav import NavRail
 from pages.live import LivePage
 from pages.home import HomePage
@@ -555,6 +556,16 @@ class MainWindow(QtWidgets.QMainWindow):
         modernization spec -- Home remains reachable from the nav rail."""
         live_content = self._build_central_widget()
 
+        # Time-Series Workspace (V2 roadmap M1.1): real-data only (needs a
+        # manifest for scenario identity), lazy-loaded via the Analysis
+        # page's on_enter -- never touches the store at construction.
+        if self.sim_data.manifest:
+            self.timeseries_panel = TimeSeriesPanel(
+                self.controller.store, self.sim_data.manifest,
+                self._quantity_options(), self.sim_data.timesteps_per_second)
+        else:
+            self.timeseries_panel = None
+
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
         analysis_content = self.analytics_panel.widget() if self.analytics_panel is not None else None
         # The dock objects themselves are now empty shells (their content
@@ -572,9 +583,10 @@ class MainWindow(QtWidgets.QMainWindow):
             "compare": ComparePage(on_preset=self._apply_compare_preset),
             "dataset": DatasetPage(dataset_content),
             "analysis": AnalysisPage(
-                analysis_content, on_shown=lambda: self._on_analytics_panel_visibility_changed(True),
+                analysis_content, on_shown=self._on_analysis_page_shown,
                 forecasting_content=ForecastingPanel(
-                    self.prediction_store, self.controller.store, self.sim_data.manifest)),
+                    self.prediction_store, self.controller.store, self.sim_data.manifest),
+                timeseries_content=self.timeseries_panel),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
             "about": AboutPage(),
@@ -608,6 +620,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._active_page_key = None
         self._navigate_to("live")
+
+    def _on_analysis_page_shown(self) -> None:
+        """Analysis page on_enter: kick the analytics panel's one-shot
+        background feature load (pre-existing behavior) and the
+        time-series workspace's lazy first load (V2 M1.1)."""
+        self._on_analytics_panel_visibility_changed(True)
+        if self.timeseries_panel is not None:
+            self.timeseries_panel.ensure_loaded()
 
     def _navigate_to(self, key: str) -> None:
         page = self.pages.get(key)

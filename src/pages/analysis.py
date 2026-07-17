@@ -26,7 +26,9 @@ class AnalysisPage(Page):
 
     def __init__(self, content: QtWidgets.QWidget = None,
                  on_shown: Optional[Callable[[], None]] = None,
-                 forecasting_content: QtWidgets.QWidget = None, parent=None):
+                 forecasting_content: QtWidgets.QWidget = None,
+                 timeseries_content: QtWidgets.QWidget = None,
+                 energy_content: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self._on_shown = on_shown
         layout = QtWidgets.QVBoxLayout(self)
@@ -37,20 +39,30 @@ class AnalysisPage(Page):
         header.setProperty("role", "title")
         layout.addWidget(header)
 
-        if content is None and forecasting_content is None:
+        # V2 roadmap M1.1: the page grew from a two-way splitter to a tab
+        # per analysis surface (PCA/clustering, time-series workspace,
+        # forecasting) -- a 3+-way vertical splitter would starve every
+        # pane at once. Only supplied (non-None) surfaces get a tab; demo
+        # mode supplies none.
+        sections = [
+            ("Ensemble analytics", content),
+            ("Time series", timeseries_content),
+            ("Energy budget", energy_content),
+            ("Forecasting", forecasting_content),
+        ]
+        available = [(label, w) for label, w in sections if w is not None]
+        if not available:
             # Demo mode: no manifest, nothing to analyze.
             label = QtWidgets.QLabel("No experiment data available (demo mode).")
             label.setAlignment(QtCore.Qt.AlignCenter)
             layout.addWidget(label)
-        elif content is not None and forecasting_content is not None:
-            splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-            splitter.addWidget(content)
-            splitter.addWidget(forecasting_content)
-            splitter.setStretchFactor(0, 1)
-            splitter.setStretchFactor(1, 1)
-            layout.addWidget(splitter, 1)
+        elif len(available) == 1:
+            layout.addWidget(available[0][1], 1)
         else:
-            layout.addWidget(content or forecasting_content, 1)
+            self.tabs = QtWidgets.QTabWidget()
+            for label, w in available:
+                self.tabs.addTab(w, label)
+            layout.addWidget(self.tabs, 1)
 
     def on_enter(self) -> None:
         if self._on_shown is not None:
