@@ -49,6 +49,7 @@ from prediction_store import PredictionSource
 from forecasting_panel import ForecastingPanel
 from timeseries import TimeSeriesPanel
 from energy_panel import EnergyBudgetPanel
+from figure_export import PublicationExportDialog, export_publication_figure, provenance_line
 from nav import NavRail
 from pages.live import LivePage
 from pages.home import HomePage
@@ -372,6 +373,12 @@ class MainWindow(QtWidgets.QMainWindow):
         export_animation_action.setToolTip("Export the current scenario's playback as a video or GIF")
         export_animation_action.triggered.connect(self._export_animation)
         export_menu.addAction(export_animation_action)
+
+        export_figure_action = QtWidgets.QAction("Publication figure (SVG/PDF/PNG)…", self)
+        export_figure_action.setToolTip(
+            "Export the active cell's current frame as a vector or high-DPI figure")
+        export_figure_action.triggered.connect(self._export_publication_figure)
+        export_menu.addAction(export_figure_action)
 
     def _build_experiment_browser(self):
         """M2.5: docked sortable/filterable index of all real scenarios.
@@ -2272,6 +2279,63 @@ class MainWindow(QtWidgets.QMainWindow):
                           "FireLab Digital Twin")
         painter.end()
         pixmap.save(path, "PNG")
+        self.statusBar().showMessage(f"Saved {path}", 4000)
+
+    def _export_publication_figure(self):
+        """Export -> Publication figure… (V2 roadmap M1.4): a real
+        re-render (not a screen grab, unlike _export_postcard) through
+        figure_export.export_publication_figure, at a chosen journal
+        width/format, with proper physical axes, labeled isotherms, and
+        an optional provenance footer parsed from the scenario's `.out`/
+        `.fds` files. "Slice"-type cells only -- a difference/ensemble
+        cell's frame data doesn't map to one scenario's provenance."""
+        cell = self.view_grid.active_cell()
+        if cell is None or cell.cell_type != "slice":
+            QtWidgets.QMessageBox.information(
+                self, "Publication Figure",
+                "Publication export is only available for a plain slice cell "
+                "(not a difference or ensemble view).")
+            return
+
+        dialog = PublicationExportDialog(self)
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        options = dialog.options()
+
+        default_name = f"figure_{cell.case_index}{options['extension']}"
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export Publication Figure", default_name,
+            f"Figure ({'*' + options['extension']})")
+        if not path:
+            return
+        if not path.lower().endswith(options["extension"]):
+            path += options["extension"]
+
+        data = self.controller.store.get(cell.case_index, cell.quantity_key)
+        index = min(self.time_controller.index, data.shape[0] - 1)
+        frame = np.asarray(data[index])
+        display = QUANTITY_DISPLAY[cell.quantity_key.quantity]
+        vmin, vmax = cell.view.heatmap.get_clim()
+        extent = self._extent_for(cell.case_index, cell.quantity_key)
+        entry = next((e for e in (self.sim_data.manifest or []) if e.case_index == cell.case_index), None)
+
+        provenance = None
+        if options["provenance"] and entry is not None:
+            time_s = index / self.time_controller.timesteps_per_second
+            provenance = provenance_line(entry.path, entry.folder, time_s)
+
+        isotherm_levels = ISOTHERM_LEVELS.get(cell.quantity_key.quantity, []) if options["contours"] else None
+
+        try:
+            export_publication_figure(
+                frame, path, cmap=self.current_colormap, vmin=vmin, vmax=vmax,
+                extent=extent, colorbar_label=f"{display['label']} ({display['unit']})",
+                title=entry.folder if entry is not None else "",
+                width_in=options["width_in"], font_pt=options["font_pt"],
+                dpi=options["dpi"], isotherm_levels=isotherm_levels, provenance=provenance)
+        except Exception as e:  # noqa: BLE001 - report, don't crash the app
+            QtWidgets.QMessageBox.warning(self, "Publication Figure", f"Export failed: {e}")
+            return
         self.statusBar().showMessage(f"Saved {path}", 4000)
 
     def _start_simulation(self):

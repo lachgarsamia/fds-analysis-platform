@@ -1700,3 +1700,39 @@ class TestEventTimeline:
         window.timeline.marker_bar.marker_clicked.emit(target_frame)
         assert window.time_controller.index == target_frame
         window.close()
+
+
+class TestPublicationFigureExport:
+    """V2 roadmap M1.4: Export -> Publication figure… menu action."""
+
+    def test_export_writes_svg_for_active_slice_cell(self, qapp, tmp_path, monkeypatch):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+
+        from figure_export import PublicationExportDialog
+        out_path = str(tmp_path / "fig.svg")
+        monkeypatch.setattr(
+            PublicationExportDialog, "exec_", lambda self: QtWidgets.QDialog.Accepted)
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog, "getSaveFileName", lambda *a, **k: (out_path, ""))
+
+        window._export_publication_figure()
+        assert (tmp_path / "fig.svg").exists()
+        window.close()
+
+    def test_export_on_difference_cell_shows_message_not_crash(self, qapp, monkeypatch):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        cell = window.view_grid.active_cell()
+        cell.set_cell_type("difference")
+        window._on_cell_type_changed(cell, "difference")
+
+        monkeypatch.setattr(QtWidgets.QMessageBox, "information", lambda *a, **k: None)
+        window._export_publication_figure()  # must not raise
+        window.close()
