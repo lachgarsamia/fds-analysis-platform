@@ -1736,3 +1736,49 @@ class TestPublicationFigureExport:
         monkeypatch.setattr(QtWidgets.QMessageBox, "information", lambda *a, **k: None)
         window._export_publication_figure()  # must not raise
         window.close()
+
+
+class TestDifferenceOverTimeButton:
+    """V2 roadmap M1.5: Inspector's "Plot difference over time…" button."""
+
+    def test_button_visible_only_for_difference_cell(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        window._navigate_to("live")
+        qapp.processEvents()
+        assert not window.inspector.diff_plot_button.isVisible()
+        cell = window.view_grid.active_cell()
+        cell.set_cell_type("difference")
+        window._on_cell_type_changed(cell, "difference")
+        window._on_time_changed(window.time_controller.index)
+        assert window.inspector.diff_plot_button.isVisible()
+        window.close()
+
+    def test_button_click_opens_dialog_without_crash(self, qapp, monkeypatch):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        cell = window.view_grid.active_cell()
+        cell.set_cell_type("difference")
+        window._on_cell_type_changed(cell, "difference")
+
+        from diff_analysis import DifferenceOverTimeDialog
+        monkeypatch.setattr(DifferenceOverTimeDialog, "exec_", lambda self: None)
+        window._show_difference_over_time()  # must not raise
+        window.close()
+
+    def test_no_op_when_active_cell_is_a_plain_slice(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        assert window.view_grid.active_cell().cell_type == "slice"
+        window._show_difference_over_time()  # must not raise
+        window.close()

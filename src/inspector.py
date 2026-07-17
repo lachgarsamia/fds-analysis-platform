@@ -152,6 +152,14 @@ class InspectorPanel(QtWidgets.QWidget):
         self.diff_stats_label.setVisible(False)
         layout.addWidget(self.diff_stats_label)
 
+        # V2 roadmap M1.5: the stats above are one frame's snapshot; this
+        # button opens a curve of RMS/max|delta| across the whole
+        # timeline, showing *when* two scenarios diverge, not just by how
+        # much right now.
+        self.diff_plot_button = QtWidgets.QPushButton("Plot difference over time…")
+        self.diff_plot_button.setVisible(False)
+        layout.addWidget(self.diff_plot_button)
+
         self.probe_label = QtWidgets.QLabel("Hover the plot to inspect a point.")
         self.probe_label.setProperty("role", "value")
         self.probe_label.setWordWrap(True)
@@ -210,6 +218,7 @@ class InspectorPanel(QtWidgets.QWidget):
         already fetched for display, never re-read here."""
         self.diff_stats_caption.setVisible(True)
         self.diff_stats_label.setVisible(True)
+        self.diff_plot_button.setVisible(True)
         self.diff_stats_label.setText(
             f"min = {min_v:.1f}{unit}   max = {max_v:.1f}{unit}\n"
             f"mean = {mean_v:.1f}{unit}   RMS = {rms_v:.1f}{unit}"
@@ -218,6 +227,7 @@ class InspectorPanel(QtWidgets.QWidget):
     def clear_difference_stats(self) -> None:
         self.diff_stats_caption.setVisible(False)
         self.diff_stats_label.setVisible(False)
+        self.diff_plot_button.setVisible(False)
         self.diff_stats_label.setText("")
 
     def set_probe(self, x, z, value, unit: str = "") -> None:

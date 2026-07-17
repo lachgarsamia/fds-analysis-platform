@@ -50,6 +50,7 @@ from forecasting_panel import ForecastingPanel
 from timeseries import TimeSeriesPanel
 from energy_panel import EnergyBudgetPanel
 from figure_export import PublicationExportDialog, export_publication_figure, provenance_line
+from diff_analysis import DifferenceOverTimeDialog
 from nav import NavRail
 from pages.live import LivePage
 from pages.home import HomePage
@@ -709,6 +710,7 @@ class MainWindow(QtWidgets.QMainWindow):
         readout, peak-temperature sparkline, HRR gauge, live narration --
         see _update_inspector() for how it's kept in sync with playback."""
         self.inspector = InspectorPanel()
+        self.inspector.diff_plot_button.clicked.connect(self._show_difference_over_time)
         return self.inspector
 
     def _build_control_panel(self) -> QtWidgets.QWidget:
@@ -2129,6 +2131,26 @@ class MainWindow(QtWidgets.QMainWindow):
             cell.view.set_colorbar_label(colorbar_label)
             self._apply_contour_overlay_state(cell)  # quantity may have just changed
             cell.view.show_frame(frame)
+
+    def _show_difference_over_time(self):
+        """Inspector's "Plot difference over time…" button (V2 roadmap
+        M1.5): opens DifferenceOverTimeDialog for the active cell's
+        current A/B pair and quantity. Only meaningful while a difference
+        cell is active -- the button is hidden otherwise (see
+        InspectorPanel.clear_difference_stats), so this is a defensive
+        guard, not the primary gate."""
+        cell = self.view_grid.active_cell()
+        if cell is None or cell.cell_type != "difference":
+            return
+        key = cell.quantity_key
+        data_a = self.controller.store.get(cell.case_index_a, key)
+        data_b = self.controller.store.get(cell.case_index_b, key)
+        display = QUANTITY_DISPLAY[key.quantity]
+        dialog = DifferenceOverTimeDialog(
+            data_a, data_b, self.time_controller.timesteps_per_second,
+            self._scenario_label(cell.case_index_a), self._scenario_label(cell.case_index_b),
+            unit=display.get('unit', ''), parent=self)
+        dialog.exec_()
 
     def _on_cell_difference_scenarios_changed(self, cell, case_a: int, case_b: int):
         self._render_difference_cell(cell)
