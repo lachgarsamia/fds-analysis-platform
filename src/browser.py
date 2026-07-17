@@ -29,6 +29,7 @@ class SummaryTableModel(QtCore.QAbstractTableModel):
         ("mean_upper_temp_c", "Mean upper T (C)"),
         ("peak_hrr_kw", "Peak HRR (kW)"),
         ("total_energy_kj", "Energy (kJ)"),
+        ("growth_alpha_kw_s2", "α fit (kW/s²)"),
     )
 
     def __init__(self, summaries: list, parent=None):
@@ -71,6 +72,10 @@ class SummaryTableModel(QtCore.QAbstractTableModel):
             return "n/a"
         if key in FACTOR_LABELS:
             return FACTOR_LABELS[key].get(value, str(value))
+        if key == "growth_alpha_kw_s2":
+            # Alpha values for these small fires are tiny (~1e-5 kW/s²);
+            # fixed .1f would show a useless "0.0".
+            return f"{value:.2g}"
         if isinstance(value, float):
             return f"{value:.1f}"
         return str(value)

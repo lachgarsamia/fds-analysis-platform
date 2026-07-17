@@ -39,6 +39,7 @@ def _summary(case_index, candles, door, vod, voc, max_temp_c, max_by_frame, time
         max_temp_c=max_temp_c, max_temp_by_frame_c=max_by_frame,
         time_to_100c_s=None, time_to_300c_s=time_to_300c_s, time_to_600c_s=None,
         mean_upper_temp_c=50.0, peak_hrr_kw=None, total_energy_kj=None,
+        growth_alpha_kw_s2=None,
     )
 
 

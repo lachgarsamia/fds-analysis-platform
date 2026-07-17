@@ -48,6 +48,7 @@ from auto_summary import export_markdown
 from prediction_store import PredictionSource
 from forecasting_panel import ForecastingPanel
 from timeseries import TimeSeriesPanel
+from energy_panel import EnergyBudgetPanel
 from nav import NavRail
 from pages.live import LivePage
 from pages.home import HomePage
@@ -563,8 +564,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.timeseries_panel = TimeSeriesPanel(
                 self.controller.store, self.sim_data.manifest,
                 self._quantity_options(), self.sim_data.timesteps_per_second)
+            self.energy_panel = EnergyBudgetPanel(self.sim_data.manifest)
         else:
             self.timeseries_panel = None
+            self.energy_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
         analysis_content = self.analytics_panel.widget() if self.analytics_panel is not None else None
@@ -586,7 +589,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 analysis_content, on_shown=self._on_analysis_page_shown,
                 forecasting_content=ForecastingPanel(
                     self.prediction_store, self.controller.store, self.sim_data.manifest),
-                timeseries_content=self.timeseries_panel),
+                timeseries_content=self.timeseries_panel,
+                energy_content=self.energy_panel),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
             "about": AboutPage(),
@@ -628,6 +632,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._on_analytics_panel_visibility_changed(True)
         if self.timeseries_panel is not None:
             self.timeseries_panel.ensure_loaded()
+        if self.energy_panel is not None:
+            self.energy_panel.ensure_loaded()
 
     def _navigate_to(self, key: str) -> None:
         page = self.pages.get(key)
