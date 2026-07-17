@@ -104,7 +104,12 @@ def generate_summary(entry, summary, all_summaries: list, store,
     alpha = getattr(summary, "growth_alpha_kw_s2", None)
     growth_sentence = f" Fire growth fit: α = {alpha:.2g} kW/s²." if alpha is not None else ""
 
-    return sentence1 + sentence2 + comparison_sentence + growth_sentence
+    # V2 roadmap M2.3: worst-case (lowest) smoke-layer height, when the
+    # summary index was built with geometry available.
+    layer_min = getattr(summary, "layer_min_height_m", None)
+    layer_sentence = f" Smoke layer descended to {layer_min:.2f} m at its lowest." if layer_min is not None else ""
+
+    return sentence1 + sentence2 + comparison_sentence + growth_sentence + layer_sentence
 
 
 def generate_all_summaries(entries: list, summaries: list, store, fps: int,

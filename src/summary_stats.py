@@ -16,6 +16,8 @@ from dataclasses import asdict, dataclass
 import numpy as np
 
 from slice_key import DEFAULT_SLICE_KEY
+from layer_height import smoke_layer_height_series
+from config import AMBIENT_C
 
 
 THRESHOLDS_C = (100.0, 300.0, 600.0)
@@ -42,6 +44,10 @@ class ScenarioSummary:
     # phase (see fit_growth_alpha). None when no HRR CSV exists or the
     # curve has no usable growth segment.
     growth_alpha_kw_s2: float | None
+    # V2 roadmap M2.3: minimum smoke-layer height reached (meters) -- the
+    # worst-case (lowest) point of layer_height.smoke_layer_height_series,
+    # a single hazard-ranking number for the browser.
+    layer_min_height_m: float | None
 
 
 def _source_files(entries: list) -> list:
@@ -70,9 +76,9 @@ def _summary_from_payload(payload: dict) -> list:
 def _write_cache(cache_path: str, summaries: list[ScenarioSummary]) -> None:
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
     payload = {
-        # v2 (V2 roadmap M1.2): added growth_alpha_kw_s2. Old v1 caches
-        # fail the version check below and are silently rebuilt.
-        "version": 2,
+        # v3 (V2 roadmap M2.3): added layer_min_height_m. Old caches fail
+        # the version check below and are silently rebuilt.
+        "version": 3,
         "thresholds_c": list(THRESHOLDS_C),
         "summaries": [asdict(summary) for summary in summaries],
     }
@@ -86,7 +92,7 @@ def load_cached_summaries(cache_path: str, entries: list) -> list[ScenarioSummar
     try:
         with open(cache_path, "r") as f:
             payload = json.load(f)
-        if payload.get("version") != 2:
+        if payload.get("version") != 3:
             return None
         summaries = _summary_from_payload(payload)
         expected_cases = [e.case_index for e in sorted(entries, key=lambda e: e.case_index)]
@@ -218,6 +224,15 @@ def compute_scenario_summary(entry, store, fps: int) -> ScenarioSummary:
     max_by_frame = np.max(data, axis=(1, 2))
     upper = data[:, : max(1, data.shape[1] // 2), :]
 
+    try:
+        extent = store.get_extent(entry.case_index, DEFAULT_SLICE_KEY)
+    except AttributeError:  # a store without geometry support (e.g. a test double)
+        extent = None
+    if extent is None:
+        layer_min_height_m = None
+    else:
+        layer_min_height_m = float(np.min(smoke_layer_height_series(data, extent, AMBIENT_C)))
+
     hrr_data = _read_hrr_csv(entry.path)
     if hrr_data is None:
         peak_hrr_kw = None
@@ -245,6 +260,7 @@ def compute_scenario_summary(entry, store, fps: int) -> ScenarioSummary:
         peak_hrr_kw=peak_hrr_kw,
         total_energy_kj=total_energy_kj,
         growth_alpha_kw_s2=growth_alpha_kw_s2,
+        layer_min_height_m=layer_min_height_m,
     )
 
 
