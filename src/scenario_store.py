@@ -122,13 +122,22 @@ class ScenarioStore:
 
     def _cache_path(self, folder: str, key: SliceKey) -> str:
         case = os.path.basename(os.path.normpath(folder))
-        return os.path.join(self.cache_dir, f"{case}_{key.quantity}_dir{key.direction}_off{key.offset}.npy")
+        name = f"{case}_{key.quantity}_dir{key.direction}_off{key.offset}"
+        # plane_pos (M2.2 `.s3d` planes) only appended when set, so every
+        # pre-M2.2 `.sf` cache filename is byte-for-byte unchanged.
+        if key.plane_pos is not None:
+            name += f"_p{key.plane_pos}"
+        return os.path.join(self.cache_dir, f"{name}.npy")
 
     @staticmethod
     def _is_cache_fresh(folder: str, cache_path: str) -> bool:
         if not os.path.exists(cache_path):
             return False
-        source_files = glob.glob(os.path.join(folder, '*.sf')) + glob.glob(os.path.join(folder, '*.smv'))
+        # `.s3d` included (M2.2) so a SOOT plane's cache invalidates when
+        # its volumetric source changes, not only its `.smv`.
+        source_files = (glob.glob(os.path.join(folder, '*.sf'))
+                        + glob.glob(os.path.join(folder, '*.smv'))
+                        + glob.glob(os.path.join(folder, '*.s3d')))
         if not source_files:
             return False
         cache_mtime = os.path.getmtime(cache_path)

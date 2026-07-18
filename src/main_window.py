@@ -39,7 +39,8 @@ from controls.vent_widget import VentWidget
 from inspector import InspectorPanel
 from export import AnimationExporter, ffmpeg_available
 from load_data import SIM_ROOT
-from slice_key import SliceInfo, SliceKey, DEFAULT_SLICE_KEY, available_slices
+from slice_key import (SliceInfo, SliceKey, DEFAULT_SLICE_KEY, available_slices,
+                        SOOT_QUANTITY, AXIS_TO_DIRECTION)
 from views import ViewGrid, DifferenceView, EnsembleView
 from summary_stats import build_summary_index, _read_hrr_csv
 from browser import ExperimentBrowserDock, _SummaryTextWorker
@@ -888,8 +889,7 @@ class MainWindow(QtWidgets.QMainWindow):
             tooltip += " (Only temperature is available in demo-data mode.)"
         self.quantity_combo.setToolTip(tooltip)
         for info in self.quantity_infos:
-            label = QUANTITY_DISPLAY.get(info.key.quantity, {}).get('label', info.key.quantity.title())
-            self.quantity_combo.addItem(label)
+            self.quantity_combo.addItem(self._quantity_label(info))
         self.quantity_combo.setEnabled(multiple_available)
         self.quantity_combo.currentIndexChanged.connect(self._on_quantity_changed)
         quantity_section.add_row(self.quantity_combo)
@@ -942,10 +942,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """[(label, SliceKey), ...] for a grid cell's per-cell quantity
         combo -- same entries/labels as the control panel's own quantity
         combo (self.quantity_infos, computed in _build_control_panel)."""
-        return [
-            (QUANTITY_DISPLAY.get(info.key.quantity, {}).get('label', info.key.quantity.title()), info.key)
-            for info in self.quantity_infos
-        ]
+        return [(self._quantity_label(info), info.key) for info in self.quantity_infos]
 
     def _build_plot_panel(self) -> QtWidgets.QWidget:
         panel = QtWidgets.QWidget()
@@ -1030,22 +1027,57 @@ class MainWindow(QtWidgets.QMainWindow):
         """Which (quantity, direction, offset) slices the current dataset
         actually offers, restricted to the slice plane the app has always
         rendered (DEFAULT_SLICE_KEY's direction/offset) so the combo box
-        only ever changes *what* is shown, not *where*. Demo mode has no
-        real .smv to inspect, so it falls back to a single TEMPERATURE
-        entry -- switching quantity is simply unavailable there."""
+        only ever changes *what* is shown, not *where* -- plus, when
+        volumetric `.s3d` SOOT DENSITY data is present (M2.2), one or more
+        smoke planes (a side view and a vertical doorway slice), which
+        *do* change where by design. Demo mode has no real .smv to
+        inspect, so it falls back to a single TEMPERATURE entry."""
         if self.sim_data.manifest:
             try:
-                infos = available_slices(self.sim_data.manifest[0].path)
+                path = self.sim_data.manifest[0].path
+                infos = available_slices(path)
                 matching = [i for i in infos
                             if i.key.direction == DEFAULT_SLICE_KEY.direction
                             and i.key.offset == DEFAULT_SLICE_KEY.offset]
                 if matching:
                     matching.sort(key=lambda i: i.key.quantity != DEFAULT_SLICE_KEY.quantity)
-                    return matching
+                    return matching + self._discover_soot_planes(path)
             except (FileNotFoundError, OSError) as e:
                 logger.warning("could not discover available quantities (%s); "
                                 "falling back to TEMPERATURE only", e)
         return [SliceInfo(DEFAULT_SLICE_KEY, 'temp', QUANTITY_DISPLAY[DEFAULT_SLICE_KEY.quantity]['unit'])]
+
+    # SOOT planes surfaced in the quantity combo when `.s3d` data exists
+    # (M2.2 any-plane slicing): a side view on the app's usual y=0 plane,
+    # and a vertical slice through the doorway (x=0.25 m mesh boundary,
+    # the roadmap's named demo case). Each is a distinct SliceKey carrying
+    # its physical plane_pos, so it flows through the store/extent/probe/
+    # isotherm machinery exactly like any other quantity.
+    _SOOT_PLANES = (
+        (SliceKey(SOOT_QUANTITY, AXIS_TO_DIRECTION['y'], 0, 0.0), 'Smoke — side view (y = 0)'),
+        (SliceKey(SOOT_QUANTITY, AXIS_TO_DIRECTION['x'], 0, 0.25), 'Smoke — doorway (x = 0.25 m)'),
+    )
+
+    def _discover_soot_planes(self, scenario_path: str) -> list:
+        """SliceInfo entries for the SOOT planes, but only if the scenario
+        actually ships `.s3d` files (they aren't in demo data or a trimmed
+        fixture)."""
+        import glob
+        if not glob.glob(os.path.join(scenario_path, '*.s3d')):
+            return []
+        unit = QUANTITY_DISPLAY[SOOT_QUANTITY]['unit']
+        return [SliceInfo(key, label, unit) for key, label in self._SOOT_PLANES]
+
+    @staticmethod
+    def _quantity_label(info) -> str:
+        """Combo label for a quantity entry. SOOT planes carry their own
+        plane-specific label on the SliceInfo (two entries share the
+        'SOOT DENSITY' quantity, so the QUANTITY_DISPLAY label alone
+        wouldn't distinguish them); every other quantity uses its
+        QUANTITY_DISPLAY label."""
+        if info.key.quantity == SOOT_QUANTITY:
+            return info.label
+        return QUANTITY_DISPLAY.get(info.key.quantity, {}).get('label', info.key.quantity.title())
 
     def _apply_quantity_display_defaults(self, quantity: str):
         """Re-applies the colormap/clim/label defaults for `quantity`
@@ -1090,6 +1122,17 @@ class MainWindow(QtWidgets.QMainWindow):
             logger.warning("could not fetch extent for case=%s key=%s: %s", case_index, quantity_key, e)
             return None
         return tuple(extent) if extent is not None else None
+
+    def _sync_cell_extent(self, cell):
+        """Update a cell's plotted extent if its current (case, quantity)
+        lives on a different physical plane than what the view was last
+        drawn with (M2.2 -- SOOT's doorway slice differs from the standard
+        side view). A no-op for every same-plane change (the extents
+        compare equal), so scenario switches and TEMPERATURE/VELOCITY/
+        SOOT-side toggles cost nothing here."""
+        new_extent = self._extent_for(cell.case_index, cell.quantity_key)
+        if new_extent != getattr(cell.view, "_extent", None):
+            cell.view.set_extent(new_extent)
 
     def _setup_cell_probe_and_isotherms(self, cell):
         """Wire the cursor probe and sync isotherm state (M2.6) -- call
@@ -1567,6 +1610,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._current_n_frames = self.controller.store.get(case_idx, self.current_quantity_key).shape[0]
         self.timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
         self._update_event_markers()
+        active = self.view_grid.active_cell()
+        if active.cell_type == "slice":
+            self._sync_cell_extent(active)  # M2.2: a SOOT-plane switch may change the extent
         if not self.time_controller.is_playing():
             self._on_time_changed(self.time_controller.index)
 
@@ -2002,6 +2048,7 @@ class MainWindow(QtWidgets.QMainWindow):
         cell.view.set_cmap(display['cmap'])
         cell.view.set_clim(display['vmin'], display['slider_default'])
         cell.view.set_colorbar_label(f"{display['label']} ({display['unit']})")
+        self._sync_cell_extent(cell)  # M2.2: a SOOT-plane switch may change the extent
         self._apply_contour_overlay_state(cell)  # levels are quantity-specific; quantity may have just changed
         self._apply_cinematic_state(cell)  # cinematic mode is TEMPERATURE-only; quantity may have just changed
         index = min(self.time_controller.index, data.shape[0] - 1)
@@ -2110,6 +2157,9 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             cell.view.set_clim(vmin, vmax)
             cell.view.set_colorbar_label(colorbar_label)
+            new_extent = self._extent_for(cell.case_index_a, key)  # M2.2: SOOT plane may differ
+            if new_extent != getattr(cell.view, "_extent", None):
+                cell.view.set_extent(new_extent)
             self._apply_contour_overlay_state(cell)  # quantity may have just changed
             cell.view.show_frame(frame)
 
@@ -2141,6 +2191,9 @@ class MainWindow(QtWidgets.QMainWindow):
             cell.view.set_cmap(cmap)
             cell.view.set_clim(vmin, vmax)
             cell.view.set_colorbar_label(colorbar_label)
+            new_extent = self._extent_for(cell.ensemble_case_indices[0], key)  # M2.2: SOOT plane may differ
+            if new_extent != getattr(cell.view, "_extent", None):
+                cell.view.set_extent(new_extent)
             self._apply_contour_overlay_state(cell)  # quantity may have just changed
             cell.view.show_frame(frame)
 

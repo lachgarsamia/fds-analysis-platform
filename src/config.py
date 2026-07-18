@@ -59,6 +59,17 @@ QUANTITY_DISPLAY = {
         'vmin': 0.0,
         'slider_min': 1, 'slider_max': 10, 'slider_default': 2,
     },
+    # SOOT DENSITY (M2.2, from volumetric `.s3d` data) is shown in mg/m3
+    # (load_data.SOOT_DISPLAY_SCALE); grayscale reads as smoke. Slider
+    # range spans the observed ~0-8000 mg/m3 across sampled scenarios --
+    # an engineering estimate like VELOCITY's, adjustable via the slider.
+    'SOOT DENSITY': {
+        'label': 'Smoke (soot)',
+        'unit': 'mg/m³',
+        'cmap': 'gray_r',
+        'vmin': 0.0,
+        'slider_min': 100, 'slider_max': 10000, 'slider_default': 3000,
+    },
 }
 
 # Default isotherm/contour levels per quantity (M2.6.2), keyed the same way

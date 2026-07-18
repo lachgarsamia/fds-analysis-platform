@@ -818,7 +818,9 @@ class TestIntegration:
         if sim_data.is_demo:
             pytest.skip("real dataset not present; demo mode only exposes TEMPERATURE")
         labels = {window.quantity_combo.itemText(i) for i in range(window.quantity_combo.count())}
-        assert labels == {"Temperature", "Air speed"}
+        # M2.2 adds SOOT any-plane entries when .s3d data is present; the
+        # original .sf quantities remain.
+        assert {"Temperature", "Air speed"} <= labels
         assert window.quantity_combo.isEnabled()
         window.close()
 
@@ -1840,4 +1842,52 @@ class TestSessionSaveLoad:
             QtWidgets.QFileDialog, "getOpenFileName", lambda *a, **k: (str(path), ""))
         monkeypatch.setattr(QtWidgets.QMessageBox, "warning", lambda *a, **k: None)
         window._load_session()  # must not raise
+        window.close()
+
+
+class TestSootAnyPlaneUI:
+    """V2 roadmap M2.2: SOOT DENSITY any-plane slicing surfaced in the UI."""
+
+    def test_soot_planes_absent_in_demo_mode(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if not sim_data.is_demo:
+            window.close()
+            return
+        quantities = {info.key.quantity for info in window.quantity_infos}
+        assert "SOOT DENSITY" not in quantities
+        window.close()
+
+    def test_soot_planes_appear_with_real_s3d_data(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        soot = [i for i in window.quantity_infos if i.key.quantity == "SOOT DENSITY"]
+        assert len(soot) == 2  # side view + doorway
+        positions = {i.key.plane_pos for i in soot}
+        assert positions == {0.0, 0.25}
+        # Labels are plane-distinct (not two identical "Smoke (soot)" entries).
+        labels = [window._quantity_label(i) for i in soot]
+        assert len(set(labels)) == 2
+        window.close()
+
+    def test_switching_to_doorway_plane_changes_extent_and_shape(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        door_idx = next((i for i, info in enumerate(window.quantity_infos)
+                         if info.key.plane_pos == 0.25), None)
+        assert door_idx is not None
+        before_shape = window.heatmap.get_array().shape
+        window.quantity_combo.setCurrentIndex(door_idx)
+        _drain_workers(qapp, window.controller._prefetch_workers)
+        qapp.processEvents()
+        after_shape = window.heatmap.get_array().shape
+        # Doorway (y x z) plane differs in width from the side (x x z) plane.
+        assert after_shape != before_shape
+        assert window.view_grid.active_view()._extent[0] < 0  # y spans negative
         window.close()

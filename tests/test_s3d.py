@@ -176,3 +176,27 @@ class TestExtractSootY0PlaneRealData:
         x0, x1, z0, z1 = extent
         assert x1 > x0
         assert z1 > z0
+
+
+@requires_real_dataset
+class TestLoadDataSootDispatch:
+    """M2.2: load_data() routes SOOT DENSITY keys to the .s3d reader and
+    scales to mg/m3, while extent comes from soot_plane_geometry."""
+
+    CASE_DIR = os.path.join(SIM_ROOT, "c1_d0_vod0_voc0")
+
+    def test_load_data_soot_matches_scaled_extract(self):
+        from load_data import load_data, SOOT_DISPLAY_SCALE
+        from slice_key import SliceKey, AXIS_TO_DIRECTION
+        key = SliceKey("SOOT DENSITY", AXIS_TO_DIRECTION['y'], 0, 0.0)
+        via_loader = load_data(self.CASE_DIR, key)
+        _times, _extent, frames = s3d.extract_soot_plane(self.CASE_DIR, axis='y', offset=0.0)
+        np.testing.assert_allclose(via_loader, frames * SOOT_DISPLAY_SCALE)
+
+    def test_load_slice_geometry_soot_extent_matches_extract(self):
+        from load_data import load_slice_geometry
+        from slice_key import SliceKey, AXIS_TO_DIRECTION
+        key = SliceKey("SOOT DENSITY", AXIS_TO_DIRECTION['x'], 0, 0.25)
+        _mesh, extent, _mask = load_slice_geometry(self.CASE_DIR, key)
+        _times, extract_extent, _frames = s3d.extract_soot_plane(self.CASE_DIR, axis='x', offset=0.25)
+        assert tuple(extent) == tuple(extract_extent)

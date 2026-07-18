@@ -221,6 +221,64 @@ def boundary_mesh_ids(mesh_collection, axis: str, offset: float, tol: float = 1e
     return max_matches, -1
 
 
+def _plane_layout(root_dir: str, axis: str, offset: float):
+    """Shared geometry setup for extract_soot_plane / soot_plane_geometry
+    (M2.2): resolves the target submeshes, plane axes, physical extent,
+    grid spacings, and cell counts -- everything except the (expensive)
+    per-submesh RLE data decode. Returns a dict of the pieces both
+    callers need."""
+    if axis not in _AXIS_INDEX:
+        raise ValueError(f"axis must be one of {sorted(_AXIS_INDEX)}, got {axis!r}")
+
+    smv_fn = fds_slice.scanDirectory(root_dir)
+    if smv_fn is None:
+        raise FileNotFoundError(f"no .smv file found in {root_dir}")
+    smv_path = os.path.join(root_dir, smv_fn)
+
+    mesh_collection = fds_slice.readMeshes(smv_path)
+    mesh_ids, local_index = boundary_mesh_ids(mesh_collection, axis, offset)
+    if not mesh_ids:
+        raise ValueError(f"no mesh face found at {axis}={offset} in {root_dir}")
+    target_mesh_ids = set(mesh_ids)
+
+    infos = [info for info in read_smoke3d_infos(smv_path)
+              if info.quantity == 'SOOT DENSITY' and info.mesh_id in target_mesh_ids]
+    if not infos:
+        raise ValueError(f"no SOOT DENSITY SMOKF3D data found at {axis}={offset} in {root_dir}")
+
+    row_axis, col_axis = _PLANE_AXES[axis]
+    row0 = min(mesh_collection.meshes[i.mesh_id].ranges[row_axis][0] for i in infos)
+    row1 = max(mesh_collection.meshes[i.mesh_id].ranges[row_axis][1] for i in infos)
+    col0 = min(mesh_collection.meshes[i.mesh_id].ranges[col_axis][0] for i in infos)
+    col1 = max(mesh_collection.meshes[i.mesh_id].ranges[col_axis][1] for i in infos)
+
+    sample_mesh = mesh_collection.meshes[infos[0].mesh_id]
+    d_row = sample_mesh.axes[row_axis][1] - sample_mesh.axes[row_axis][0]
+    d_col = sample_mesh.axes[col_axis][1] - sample_mesh.axes[col_axis][0]
+    n_row = int(round((row1 - row0) / d_row)) + 1
+    n_col = int(round((col1 - col0) / d_col)) + 1
+
+    return {
+        'mesh_collection': mesh_collection, 'infos': infos, 'local_index': local_index,
+        'row_axis': row_axis, 'col_axis': col_axis,
+        'extent': (col0, col1, row0, row1),
+        'd_row': d_row, 'd_col': d_col, 'n_row': n_row, 'n_col': n_col,
+    }
+
+
+def soot_plane_geometry(root_dir: str, axis: str = 'y', offset: float = 0.0) -> tuple:
+    """(mesh, extent, mask)-shaped geometry for a SOOT plane, matching
+    fds.slice.slice.readSliceGeometry's return shape so ScenarioStore's
+    get_extent() can consume it unchanged (M2.2). extent = [col0, col1,
+    row0, row1] physical meters. Computed from `.smv` mesh metadata only
+    -- no `.s3d` data decode -- so probe/isotherm coordinate mapping
+    never forces a cold volumetric read just to learn the axes, same
+    philosophy as readSliceGeometry vs readSlice."""
+    layout = _plane_layout(root_dir, axis, offset)
+    c0, c1, r0, r1 = layout['extent']
+    return None, [c0, c1, r0, r1], None
+
+
 def extract_soot_plane(root_dir: str, axis: str = 'y', offset: float = 0.0) -> tuple:
     """SOOT DENSITY at an arbitrary axis-aligned plane for one scenario
     (M2.2 -- any-plane slicing, generalizing M2.1's fixed y=0 extraction).
@@ -239,36 +297,14 @@ def extract_soot_plane(root_dir: str, axis: str = 'y', offset: float = 0.0) -> t
     Stitches by physical-coordinate placement (mirrors
     fds.slice.slice.combineSliceGeometry), same as M2.1.
     """
-    if axis not in _AXIS_INDEX:
-        raise ValueError(f"axis must be one of {sorted(_AXIS_INDEX)}, got {axis!r}")
-
-    smv_fn = fds_slice.scanDirectory(root_dir)
-    if smv_fn is None:
-        raise FileNotFoundError(f"no .smv file found in {root_dir}")
-    smv_path = os.path.join(root_dir, smv_fn)
-
-    mesh_collection = fds_slice.readMeshes(smv_path)
-    mesh_ids, local_index = boundary_mesh_ids(mesh_collection, axis, offset)
-    target_mesh_ids = set(mesh_ids)
-    if not target_mesh_ids:
-        raise ValueError(f"no mesh face found at {axis}={offset} in {root_dir}")
-
-    infos = [info for info in read_smoke3d_infos(smv_path)
-              if info.quantity == 'SOOT DENSITY' and info.mesh_id in target_mesh_ids]
-    if not infos:
-        raise ValueError(f"no SOOT DENSITY SMOKF3D data found at {axis}={offset} in {root_dir}")
-
-    row_axis, col_axis = _PLANE_AXES[axis]
-    row0 = min(mesh_collection.meshes[i.mesh_id].ranges[row_axis][0] for i in infos)
-    row1 = max(mesh_collection.meshes[i.mesh_id].ranges[row_axis][1] for i in infos)
-    col0 = min(mesh_collection.meshes[i.mesh_id].ranges[col_axis][0] for i in infos)
-    col1 = max(mesh_collection.meshes[i.mesh_id].ranges[col_axis][1] for i in infos)
-
-    sample_mesh = mesh_collection.meshes[infos[0].mesh_id]
-    d_row = sample_mesh.axes[row_axis][1] - sample_mesh.axes[row_axis][0]
-    d_col = sample_mesh.axes[col_axis][1] - sample_mesh.axes[col_axis][0]
-    n_row = int(round((row1 - row0) / d_row)) + 1
-    n_col = int(round((col1 - col0) / d_col)) + 1
+    layout = _plane_layout(root_dir, axis, offset)
+    mesh_collection = layout['mesh_collection']
+    infos = layout['infos']
+    local_index = layout['local_index']
+    row_axis, col_axis = layout['row_axis'], layout['col_axis']
+    col0, col1, row0, row1 = layout['extent']
+    d_row, d_col = layout['d_row'], layout['d_col']
+    n_row, n_col = layout['n_row'], layout['n_col']
 
     times = None
     stitched = None
