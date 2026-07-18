@@ -51,6 +51,7 @@ from timeseries import TimeSeriesPanel
 from energy_panel import EnergyBudgetPanel
 from figure_export import PublicationExportDialog, export_publication_figure, provenance_line
 from diff_analysis import DifferenceOverTimeDialog
+from session import build_session_dict, read_session, write_session
 from nav import NavRail
 from pages.live import LivePage
 from pages.home import HomePage
@@ -272,6 +273,17 @@ class MainWindow(QtWidgets.QMainWindow):
     # ------------------------------------------------------------------ UI
     def _build_menu(self):
         menu_bar = self.menuBar()
+
+        # V2 roadmap M2.4: session save/restore of the grid workspace.
+        file_menu = menu_bar.addMenu("&File")
+        save_session_action = QtWidgets.QAction("Save Session…", self)
+        save_session_action.setToolTip("Save the current grid layout, scenarios, and playback position")
+        save_session_action.triggered.connect(self._save_session)
+        file_menu.addAction(save_session_action)
+        load_session_action = QtWidgets.QAction("Load Session…", self)
+        load_session_action.setToolTip("Restore a previously saved grid workspace")
+        load_session_action.triggered.connect(self._load_session)
+        file_menu.addAction(load_session_action)
 
         view_menu = menu_bar.addMenu("&View")
 
@@ -2302,6 +2314,94 @@ class MainWindow(QtWidgets.QMainWindow):
         painter.end()
         pixmap.save(path, "PNG")
         self.statusBar().showMessage(f"Saved {path}", 4000)
+
+    # ------------------------------------------------------------- session (M2.4)
+    def _save_session(self):
+        if not self.sim_data.manifest:
+            QtWidgets.QMessageBox.information(self, "Save Session", "No experiment data available (demo mode).")
+            return
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save Session", "fds_session.json", "Session files (*.json)")
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+        visible_cells = self.view_grid.visible_cells()
+        active_index = visible_cells.index(self.view_grid.active_cell())
+        session = build_session_dict(
+            self.view_grid.layout_name, visible_cells,
+            active_index, self.time_controller.index,
+            getattr(self, "_link_clim", False), self.current_colormap,
+            self.isotherms_action.isChecked())
+        try:
+            write_session(path, session)
+        except OSError as e:
+            QtWidgets.QMessageBox.warning(self, "Save Session", f"Could not save: {e}")
+            return
+        self.statusBar().showMessage(f"Saved {path}", 4000)
+
+    def _load_session(self):
+        if not self.sim_data.manifest:
+            QtWidgets.QMessageBox.information(self, "Load Session", "No experiment data available (demo mode).")
+            return
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load Session", "", "Session files (*.json)")
+        if not path:
+            return
+        try:
+            session = read_session(path)
+        except ValueError as e:
+            QtWidgets.QMessageBox.warning(self, "Load Session", str(e))
+            return
+        self._apply_session(session)
+        self.statusBar().showMessage(f"Loaded {path}", 4000)
+
+    def _apply_session(self, session: dict) -> None:
+        """Restores a session dict built by session.build_session_dict,
+        driving the same combo/signal chain a user's own clicks go
+        through (same pattern as _apply_compare_preset) rather than
+        touching cell/store internals directly."""
+        self._set_grid_layout(session["layout"])
+        cells = self.view_grid.visible_cells()
+        for cell, cell_state in zip(cells, session.get("cells", [])):
+            quantity_key = self._find_quantity_key(cell_state.get("quantity"))
+            cell_type = cell_state.get("cell_type", "slice")
+            if cell.cell_type != cell_type:
+                cell.set_cell_type(cell_type)
+            if cell_type == "slice":
+                if "case_index" in cell_state:
+                    self._select_scenario_in_cell(cell, cell_state["case_index"])
+            elif cell_type == "difference":
+                if "case_index_a" in cell_state and "case_index_b" in cell_state:
+                    self._select_difference_scenarios_in_cell(
+                        cell, cell_state["case_index_a"], cell_state["case_index_b"])
+            elif cell_type == "ensemble":
+                cell.ensemble_case_indices = list(cell_state.get("ensemble_case_indices", []))
+                cell.ensemble_stat = cell_state.get("ensemble_stat", "mean")
+                if hasattr(cell, "ensemble_select_button"):
+                    cell.ensemble_select_button.setText(cell._ensemble_button_text())
+                if hasattr(cell, "stat_combo"):
+                    idx = EnsembleView.STATS.index(cell.ensemble_stat)
+                    cell.stat_combo.blockSignals(True)
+                    cell.stat_combo.setCurrentIndex(idx)
+                    cell.stat_combo.blockSignals(False)
+                self._on_cell_ensemble_changed(cell, cell.ensemble_case_indices, cell.ensemble_stat)
+            if quantity_key is not None and cell.quantity_key != quantity_key:
+                self._select_quantity_in_cell(cell, quantity_key)
+
+        active_idx = session.get("active_index", 0)
+        if 0 <= active_idx < len(cells):
+            cells[active_idx].activated.emit(cells[active_idx])
+
+        if session.get("colormap"):
+            self._set_colormap(session["colormap"])
+        self.link_clim_action.setChecked(bool(session.get("link_clim", False)))
+        self._set_link_clim(bool(session.get("link_clim", False)))
+        self.isotherms_action.setChecked(bool(session.get("isotherms_enabled", False)))
+        self._set_isotherms_enabled(bool(session.get("isotherms_enabled", False)))
+
+        time_index = session.get("time_index", 0)
+        self.time_controller.seek(min(max(time_index, 0), self._current_n_frames - 1))
 
     def _export_publication_figure(self):
         """Export -> Publication figure… (V2 roadmap M1.4): a real

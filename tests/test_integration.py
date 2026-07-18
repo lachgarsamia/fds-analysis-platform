@@ -1782,3 +1782,62 @@ class TestDifferenceOverTimeButton:
         assert window.view_grid.active_cell().cell_type == "slice"
         window._show_difference_over_time()  # must not raise
         window.close()
+
+
+class TestSessionSaveLoad:
+    """V2 roadmap M2.4: File -> Save/Load Session."""
+
+    def test_save_then_load_restores_grid_state(self, qapp, tmp_path, monkeypatch):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+
+        window._set_grid_layout("1x2")
+        cells = window.view_grid.visible_cells()
+        options = window._scenario_options()
+        case_a, case_b = options[0][1], options[-1][1]
+        window._select_scenario_in_cell(cells[0], case_a)
+        cells[1].set_cell_type("difference")
+        window._on_cell_type_changed(cells[1], "difference")
+        window._select_difference_scenarios_in_cell(cells[1], case_a, case_b)
+        target_frame = min(3, window._current_n_frames - 1)
+        window.time_controller.seek(target_frame)
+
+        path = str(tmp_path / "session.json")
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog, "getSaveFileName", lambda *a, **k: (path, ""))
+        window._save_session()
+        assert (tmp_path / "session.json").exists()
+
+        # Reset to a different state before loading, so restoration is
+        # actually exercised rather than trivially already-true.
+        window._set_grid_layout("1x1")
+
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog, "getOpenFileName", lambda *a, **k: (path, ""))
+        window._load_session()
+
+        assert window.view_grid.layout_name == "1x2"
+        restored = window.view_grid.visible_cells()
+        assert restored[0].case_index == case_a
+        assert restored[1].cell_type == "difference"
+        assert restored[1].case_index_a == case_a
+        assert restored[1].case_index_b == case_b
+        assert window.time_controller.index == target_frame
+        window.close()
+
+    def test_load_rejects_malformed_file_without_crash(self, qapp, tmp_path, monkeypatch):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        path = tmp_path / "bad.json"
+        path.write_text("not json")
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog, "getOpenFileName", lambda *a, **k: (str(path), ""))
+        monkeypatch.setattr(QtWidgets.QMessageBox, "warning", lambda *a, **k: None)
+        window._load_session()  # must not raise
+        window.close()
