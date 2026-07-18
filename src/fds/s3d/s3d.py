@@ -119,7 +119,15 @@ def read_s3d_series(path: str) -> tuple:
             if frame_npts != npts:
                 raise ValueError(f"frame NPTS {frame_npts} != header-derived {npts}")
             rle_payload = _read_fortran_record(f)
-            levels = decode_rle(rle_payload, npts).reshape(nx, ny, nz)
+            # order='F': FDS is a Fortran program: its arrays are
+            # column-major (first index varies fastest in the flat byte
+            # stream), unlike numpy's default C order. Verified directly
+            # against fdsreader's own decode for this M2.2 pass -- a
+            # C-order reshape gave matching nonzero *counts* per frame
+            # (same total decoded bytes) but scrambled *positions*,
+            # which a same-axis y=0 boundary slice mostly masked (small
+            # apparent diff) while an x=const slice exposed clearly.
+            levels = decode_rle(rle_payload, npts).reshape((nx, ny, nz), order='F')
             times.append(time_val)
             frames.append(levels)
     return np.asarray(times, dtype=np.float64), bounds, np.stack(frames, axis=0)
@@ -178,51 +186,89 @@ def read_smoke3d_infos(smv_path: str) -> list:
     return infos
 
 
+_AXIS_INDEX = {'x': 0, 'y': 1, 'z': 2}
+
+# For each slicing axis, which of the two remaining physical axes plots
+# as the plane's row (vertical) vs column (horizontal) -- z is preferred
+# as "vertical" whenever it survives, matching the app's existing
+# top-down XZ slice convention (row 0 = ceiling).
+_PLANE_AXES = {'x': (2, 1), 'y': (2, 0), 'z': (1, 0)}  # axis -> (row_axis, col_axis)
+
+
 def y0_mesh_ids(mesh_collection, tol: float = 1e-9) -> list:
-    """0-indexed ids of meshes whose Y-min face sits at y=0 -- the M2.1
-    spike's finding that only half the domain's submeshes (the ones on
-    one side of the y=0 boundary) are needed to extract that plane."""
-    return [i for i, m in enumerate(mesh_collection.meshes) if abs(m.ranges[1][0]) < tol]
+    """Back-compat alias for boundary_mesh_ids(mesh_collection, 'y', 0.0)
+    -- kept so M2.1 code/tests written against the fixed y=0 plane don't
+    need to change."""
+    ids, _local_index = boundary_mesh_ids(mesh_collection, 'y', 0.0, tol)
+    return ids
 
 
-def extract_soot_y0_plane(root_dir: str) -> tuple:
-    """SOOT DENSITY at the y=0 plane for one scenario: (times, extent,
-    frames). extent = (x0, x1, z0, z1) in physical meters, matching
-    load_data.py's convention. frames: float32 array, shape
-    (n_times, n_z, n_x), physical units (kg/m3), row 0 = ceiling (z1) --
-    same vertical-flip convention load_data.load_data() applies, so this
-    is drop-in compatible with the existing SliceView rendering path
-    whenever M2.1's follow-on wires it in.
+def boundary_mesh_ids(mesh_collection, axis: str, offset: float, tol: float = 1e-9) -> tuple:
+    """M2.2 (any-plane slicing): 0-indexed ids of every mesh whose face
+    along `axis` sits at `offset`, plus which local node-index (0 or -1)
+    that face is at. Prefers each mesh's *min* face; only falls back to
+    the *max* face if no mesh has a min face there (true at the domain's
+    own outer max boundary, where no further mesh exists past it) --
+    picking one consistent side avoids decoding + stitching the same
+    physical plane twice from both neighbors of an interior boundary."""
+    idx = _AXIS_INDEX[axis]
+    min_matches = [i for i, m in enumerate(mesh_collection.meshes)
+                   if abs(m.ranges[idx][0] - offset) < tol]
+    if min_matches:
+        return min_matches, 0
+    max_matches = [i for i, m in enumerate(mesh_collection.meshes)
+                   if abs(m.ranges[idx][1] - offset) < tol]
+    return max_matches, -1
 
-    Stitches submesh tiles by physical-coordinate placement (mirrors
-    fds.slice.slice.combineSliceGeometry's approach) rather than
-    assuming a fixed tile order, so node-centered submeshes' one shared
-    boundary node per seam is handled the same way the existing .sf
-    stitcher already does -- not a new algorithm.
+
+def extract_soot_plane(root_dir: str, axis: str = 'y', offset: float = 0.0) -> tuple:
+    """SOOT DENSITY at an arbitrary axis-aligned plane for one scenario
+    (M2.2 -- any-plane slicing, generalizing M2.1's fixed y=0 extraction).
+    `offset` must land exactly on a mesh boundary (no interpolation
+    between mesh faces) -- same scope limit M2.1 already had for y=0,
+    now stated for any axis rather than being implicit.
+
+    Returns (times, extent, frames): extent = (col_min, col_max,
+    row_min, row_max) in physical meters; frames: float32, shape
+    (n_times, n_row, n_col), kg/m3, row 0 = the row axis's *max*
+    coordinate (matches load_data.py's ceiling-first convention when
+    the row axis is z; for axis='z' slices the row axis is y and "row 0
+    = y max" is the equivalent flip, kept for consistency rather than
+    physical meaning).
+
+    Stitches by physical-coordinate placement (mirrors
+    fds.slice.slice.combineSliceGeometry), same as M2.1.
     """
+    if axis not in _AXIS_INDEX:
+        raise ValueError(f"axis must be one of {sorted(_AXIS_INDEX)}, got {axis!r}")
+
     smv_fn = fds_slice.scanDirectory(root_dir)
     if smv_fn is None:
         raise FileNotFoundError(f"no .smv file found in {root_dir}")
     smv_path = os.path.join(root_dir, smv_fn)
 
     mesh_collection = fds_slice.readMeshes(smv_path)
-    target_mesh_ids = set(y0_mesh_ids(mesh_collection))
+    mesh_ids, local_index = boundary_mesh_ids(mesh_collection, axis, offset)
+    target_mesh_ids = set(mesh_ids)
+    if not target_mesh_ids:
+        raise ValueError(f"no mesh face found at {axis}={offset} in {root_dir}")
 
     infos = [info for info in read_smoke3d_infos(smv_path)
               if info.quantity == 'SOOT DENSITY' and info.mesh_id in target_mesh_ids]
     if not infos:
-        raise ValueError(f"no SOOT DENSITY SMOKF3D data found at y=0 in {root_dir}")
+        raise ValueError(f"no SOOT DENSITY SMOKF3D data found at {axis}={offset} in {root_dir}")
 
-    x0 = min(mesh_collection.meshes[i.mesh_id].ranges[0][0] for i in infos)
-    x1 = max(mesh_collection.meshes[i.mesh_id].ranges[0][1] for i in infos)
-    z0 = min(mesh_collection.meshes[i.mesh_id].ranges[2][0] for i in infos)
-    z1 = max(mesh_collection.meshes[i.mesh_id].ranges[2][1] for i in infos)
+    row_axis, col_axis = _PLANE_AXES[axis]
+    row0 = min(mesh_collection.meshes[i.mesh_id].ranges[row_axis][0] for i in infos)
+    row1 = max(mesh_collection.meshes[i.mesh_id].ranges[row_axis][1] for i in infos)
+    col0 = min(mesh_collection.meshes[i.mesh_id].ranges[col_axis][0] for i in infos)
+    col1 = max(mesh_collection.meshes[i.mesh_id].ranges[col_axis][1] for i in infos)
 
     sample_mesh = mesh_collection.meshes[infos[0].mesh_id]
-    dx = sample_mesh.axes[0][1] - sample_mesh.axes[0][0]
-    dz = sample_mesh.axes[2][1] - sample_mesh.axes[2][0]
-    n_x = int(round((x1 - x0) / dx)) + 1
-    n_z = int(round((z1 - z0) / dz)) + 1
+    d_row = sample_mesh.axes[row_axis][1] - sample_mesh.axes[row_axis][0]
+    d_col = sample_mesh.axes[col_axis][1] - sample_mesh.axes[col_axis][0]
+    n_row = int(round((row1 - row0) / d_row)) + 1
+    n_col = int(round((col1 - col0) / d_col)) + 1
 
     times = None
     stitched = None
@@ -233,18 +279,27 @@ def extract_soot_y0_plane(root_dir: str) -> tuple:
         frame_times, _bounds, levels = read_s3d_series(s3d_path)
         upper_bounds = read_sz_upper_bounds(sz_path)
         n_frames = min(len(frame_times), len(upper_bounds))
-        # j-index 0 is this mesh's Y-min face -- the y=0 boundary, per
-        # y0_mesh_ids's selection.
-        tile = (levels[:n_frames, :, 0, :].astype(np.float32) / 255.0
-                * upper_bounds[:n_frames, None, None])  # (n_frames, nx, nz)
+        physical = (levels[:n_frames].astype(np.float32) / 255.0
+                    * upper_bounds[:n_frames, None, None, None])
+        tile = np.take(physical, local_index, axis=1 + _AXIS_INDEX[axis])  # drop the sliced axis
 
         if times is None:
             times = frame_times[:n_frames]
-            stitched = np.zeros((n_frames, n_z, n_x), dtype=np.float32)
-        x_off = int(round((mesh.ranges[0][0] - x0) / dx))
-        z_off = int(round((mesh.ranges[2][0] - z0) / dz))
-        stitched[:, z_off:z_off + tile.shape[2], x_off:x_off + tile.shape[1]] = \
-            np.transpose(tile, (0, 2, 1))
+            stitched = np.zeros((n_frames, n_row, n_col), dtype=np.float32)
+        # tile's remaining two axes are in ascending (mesh-axis-index)
+        # order; reorder/transpose to (row, col) per _PLANE_AXES.
+        remaining = [a for a in (0, 1, 2) if a != _AXIS_INDEX[axis]]
+        tile = np.transpose(tile, (0,) + tuple(1 + remaining.index(a) for a in (row_axis, col_axis)))
+        row_off = int(round((mesh.ranges[row_axis][0] - row0) / d_row))
+        col_off = int(round((mesh.ranges[col_axis][0] - col0) / d_col))
+        stitched[:, row_off:row_off + tile.shape[1], col_off:col_off + tile.shape[2]] = tile
 
-    stitched = np.flip(stitched, axis=1)  # row 0 = ceiling (z1), matching load_data.py
-    return times, (x0, x1, z0, z1), stitched
+    stitched = np.flip(stitched, axis=1)  # row 0 = row-axis max, matching load_data.py's ceiling-first convention
+    return times, (col0, col1, row0, row1), stitched
+
+
+def extract_soot_y0_plane(root_dir: str) -> tuple:
+    """Back-compat alias for extract_soot_plane(root_dir, 'y', 0.0) --
+    M2.1's original entry point, kept so existing callers/tests are
+    unaffected by M2.2's generalization."""
+    return extract_soot_plane(root_dir, axis='y', offset=0.0)

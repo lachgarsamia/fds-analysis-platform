@@ -85,7 +85,9 @@ class TestReadS3DSeries:
         assert bounds == (0, 1, 0, 1, 0, 0)
         np.testing.assert_allclose(times, [0.25])
         assert levels.shape == (1, 2, 2, 1)
-        np.testing.assert_array_equal(levels[0, :, :, 0], [[10, 20], [30, 40]])
+        # Fortran (column-major) order: byte 0 -> (x=0,y=0), byte 1 ->
+        # (x=1,y=0) [x varies fastest], byte 2 -> (x=0,y=1), byte 3 -> (x=1,y=1).
+        np.testing.assert_array_equal(levels[0, :, :, 0], [[10, 30], [20, 40]])
 
     def test_frame_npts_mismatch_raises(self, tmp_path):
         header = _fortran_record(struct.pack('<8i', 1, 0, 0, 1, 0, 1, 0, 0))
