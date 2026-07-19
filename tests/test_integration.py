@@ -1891,3 +1891,47 @@ class TestSootAnyPlaneUI:
         assert after_shape != before_shape
         assert window.view_grid.active_view()._extent[0] < 0  # y spans negative
         window.close()
+
+
+class TestMultiStudyGuestStudy:
+    """V2 roadmap M2.5: a generic guest study opened via load_study --
+    validated against a real single candle-scenario folder as a
+    standalone degenerate study (the line-burner has no computed output
+    to open)."""
+
+    def _guest_case_dir(self):
+        import os
+        from load_data import SIM_ROOT
+        return os.path.join(SIM_ROOT, "c1_d0_vod0_voc0")
+
+    def test_degenerate_study_builds_with_candle_ui_hidden(self, qapp):
+        import os
+        from data_provider import load_study
+        case_dir = self._guest_case_dir()
+        if not os.path.isdir(case_dir):
+            pytest.skip("real dataset not present")
+        window = MainWindow(load_study(case_dir))
+        assert window.is_factorial is False
+        assert not window.candle_toggle.isVisibleTo(window)
+        assert window.analytics_panel is None
+        in_stack = any(window.page_stack.widget(i) is window.pages["compare"]
+                       for i in range(window.page_stack.count()))
+        assert in_stack is False
+        window.close()
+
+    def test_degenerate_study_renders_and_switches_quantity(self, qapp):
+        import os
+        from data_provider import load_study
+        case_dir = self._guest_case_dir()
+        if not os.path.isdir(case_dir):
+            pytest.skip("real dataset not present")
+        window = MainWindow(load_study(case_dir))
+        assert window.heatmap.get_array().shape == (49, 101)
+        door_idx = next((i for i, info in enumerate(window.quantity_infos)
+                        if info.key.plane_pos == 0.25), None)
+        assert door_idx is not None
+        window.quantity_combo.setCurrentIndex(door_idx)
+        _drain_workers(qapp, window.controller._prefetch_workers)
+        qapp.processEvents()
+        assert window.heatmap.get_array().shape == (49, 31)
+        window.close()

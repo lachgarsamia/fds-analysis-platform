@@ -31,7 +31,7 @@ from theme import THEMES, apply_card_shadow, build_qss
 from widgets import ToggleGroup, CollapsibleSection, TimelineWidget
 from simulation_controller import SimulationController
 from time_controller import TimeController
-from data_provider import SimulationData
+from data_provider import SimulationData, load_study, DataLoadError
 from schematic import SchematicWidget, resolve_room_extent, _VOD_STATES, _VOC_STATES
 from controls.candle_card import CandleCard
 from controls.door_widget import DoorWidget
@@ -108,6 +108,11 @@ INTERPOLATIONS = [
 MIN_WIDTH = 900
 MIN_HEIGHT = 600
 
+# M2.5: windows opened via "Open Study…" are kept referenced here for the
+# process's lifetime -- a shown top-level QWidget with no Python reference
+# can be garbage-collected out from under Qt and crash the app.
+_OPEN_STUDY_WINDOWS = []
+
 # Inspector "Slice" field (scientific-visualization completion pass):
 # SliceKey.direction is 0-indexed per slice_key.py's own convention
 # (direction=1 is documented there as "normal to y").
@@ -162,6 +167,10 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.settings = QtCore.QSettings(ORG_NAME, APP_NAME)
         self.sim_data = sim_data
+        # M2.5: a generic/degenerate guest study (opened via "Open Study…")
+        # has no candle/door/vent factor axes, so its scenario-parameter
+        # controls, schematic, and Compare/analytics surfaces are hidden.
+        self.is_factorial = getattr(sim_data, 'is_factorial', True)
 
         self.controller = SimulationController(
             sim_data.store, sim_data.data_matrix, sim_data.timesteps_per_second
@@ -170,10 +179,21 @@ class MainWindow(QtWidgets.QMainWindow):
         # declared in config.py, so the first frame drawn matches what the
         # control panel shows as selected (candles/door/vod/voc all start
         # at their DEFAULT_* value, not implicitly at 0).
-        self.controller.params.candles = DEFAULT_CANDLES
-        self.controller.params.door = DEFAULT_DOOR
-        self.controller.params.vod = DEFAULT_VOD
-        self.controller.params.voc = DEFAULT_VOC
+        # A generic guest study (M2.5) has a placeholder (n,1,1,1)
+        # data_matrix with no door/vod/voc axes, so the candle-factorial
+        # DEFAULT_* params would index out of bounds -- start it at
+        # scenario 0 (0,0,0,0) instead. The factor controls are hidden for
+        # such a study anyway.
+        if self.is_factorial:
+            self.controller.params.candles = DEFAULT_CANDLES
+            self.controller.params.door = DEFAULT_DOOR
+            self.controller.params.vod = DEFAULT_VOD
+            self.controller.params.voc = DEFAULT_VOC
+        else:
+            self.controller.params.candles = 0
+            self.controller.params.door = 0
+            self.controller.params.vod = 0
+            self.controller.params.voc = 0
         self.controller.prefetch_finished.connect(self._on_prefetch_finished)
         self.controller.prefetch_error.connect(self._on_prefetch_error)
         # M2.2.4: a second, independent pair of slots on the same signals,
@@ -198,7 +218,11 @@ class MainWindow(QtWidgets.QMainWindow):
         # doesn't exist), same convention as demo mode's absent experiment
         # browser. Never touches the real store's cache: PredictionSource
         # loads its own small .npy files eagerly and independently.
-        self.prediction_store = PredictionSource(sim_data.store, enabled=not sim_data.is_demo)
+        # Predictions belong to the candle study (ml/rollout.py exports
+        # predictions/*.npy keyed by its case indices); a generic guest
+        # study (M2.5) has none, so forecasting is disabled for it.
+        self.prediction_store = PredictionSource(
+            sim_data.store, enabled=not sim_data.is_demo and self.is_factorial)
 
         # M1.4: pull-based playback clock. frame_count_fn must never trigger
         # a load itself -- it just reports self._current_n_frames, which is
@@ -275,8 +299,15 @@ class MainWindow(QtWidgets.QMainWindow):
     def _build_menu(self):
         menu_bar = self.menuBar()
 
-        # V2 roadmap M2.4: session save/restore of the grid workspace.
         file_menu = menu_bar.addMenu("&File")
+        # V2 roadmap M2.5: open an arbitrary FDS-output directory as a study.
+        open_study_action = QtWidgets.QAction("Open Study…", self)
+        open_study_action.setToolTip("Open a different FDS output directory (a case or a folder of cases)")
+        open_study_action.triggered.connect(self._open_study)
+        file_menu.addAction(open_study_action)
+        file_menu.addSeparator()
+
+        # V2 roadmap M2.4: session save/restore of the grid workspace.
         save_session_action = QtWidgets.QAction("Save Session…", self)
         save_session_action.setToolTip("Save the current grid layout, scenarios, and playback position")
         save_session_action.triggered.connect(self._save_session)
@@ -516,7 +547,12 @@ class MainWindow(QtWidgets.QMainWindow):
         this tab never touches the store for it at all, and a user who
         does open it doesn't block the GUI thread while all 24 scenarios
         load."""
-        if not self.sim_data.manifest:
+        # M2.5: PCA/clustering is over the candle factorial's feature
+        # space (it aligns clusters with candle count etc.) and needs many
+        # scenarios; a generic guest study has neither, so no analytics
+        # panel is built for it -- the Analysis page then shows only its
+        # time-series/energy/forecasting tabs.
+        if not self.sim_data.manifest or not self.is_factorial:
             self.analytics_panel = None
             return
         self.analytics_panel = AnalyticsPanelDock(parent=self)
@@ -626,6 +662,11 @@ class MainWindow(QtWidgets.QMainWindow):
             ("dataset", "Dataset Explorer"), ("analysis", "Analysis"), ("export", "Export"),
             ("about", "About"),
         ]
+        # M2.5: the Compare page's presets are candle-factor comparisons
+        # ("door open vs closed", etc.); a generic guest study has no such
+        # factors, so drop Compare from its navigation.
+        if not self.is_factorial:
+            nav_entries = [(k, label) for k, label in nav_entries if k != "compare"]
 
         self.page_stack = QtWidgets.QStackedWidget()
         for key, _label in nav_entries:
@@ -875,6 +916,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.door_toggle.value_changed.connect(self._on_door_changed)
         door_section.add_row(self.door_toggle)
         outer.addWidget(door_section)
+
+        # M2.5: these sections describe the candle factorial's scenario
+        # parameters; a generic guest study has no such axes, so hide them
+        # (their handlers/widgets still exist, just operate on hidden
+        # widgets harmlessly if ever driven). The grid, timeline, quantity
+        # selector, display scale, and analysis panels below stay active.
+        if not self.is_factorial:
+            for section in (schematic_section, candle_section, vod_section,
+                            voc_section, door_section):
+                section.setVisible(False)
 
         outer.addWidget(self._divider())
 
@@ -2367,6 +2418,37 @@ class MainWindow(QtWidgets.QMainWindow):
         painter.end()
         pixmap.save(path, "PNG")
         self.statusBar().showMessage(f"Saved {path}", 4000)
+
+    # --------------------------------------------------------- multi-study (M2.5)
+    def _open_study(self):
+        """File -> Open Study… (M2.5): load a different FDS-output
+        directory (a single case, a folder of cases, or another candle
+        factorial) into a fresh window. Opening in a new MainWindow rather
+        than live-swapping the data layer avoids any partial-state
+        inconsistency across the grid/controller/browser/panels -- the new
+        window is built cleanly from the new study, and the old one closes.
+        """
+        root = QtWidgets.QFileDialog.getExistingDirectory(self, "Open FDS Study")
+        if not root:
+            return
+        try:
+            sim_data = load_study(root)
+            sim_data.store.get(0)  # warm the first scenario so the new window opens instantly
+        except DataLoadError as e:
+            QtWidgets.QMessageBox.warning(self, "Open Study", f"{e.message}\n\n{e.technical_detail}")
+            return
+        except Exception as e:  # noqa: BLE001 - a bad directory must not crash the app
+            QtWidgets.QMessageBox.warning(self, "Open Study", f"Could not open study: {e}")
+            return
+
+        new_window = MainWindow(sim_data)
+        new_window.setWindowIcon(self.windowIcon())
+        # A shown top-level QWidget with no Python reference can be garbage
+        # collected out from under Qt; keep every opened window referenced
+        # for the process's lifetime.
+        _OPEN_STUDY_WINDOWS.append(new_window)
+        new_window.show()
+        self.close()
 
     # ------------------------------------------------------------- session (M2.4)
     def _save_session(self):
