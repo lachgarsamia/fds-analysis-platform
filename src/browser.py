@@ -31,6 +31,7 @@ class SummaryTableModel(QtCore.QAbstractTableModel):
         ("total_energy_kj", "Energy (kJ)"),
         ("growth_alpha_kw_s2", "α fit (kW/s²)"),
         ("layer_min_height_m", "Min layer height (m)"),
+        ("time_to_untenable_s", "Time untenable (s)"),
     )
 
     def __init__(self, summaries: list, parent=None):

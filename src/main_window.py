@@ -51,6 +51,7 @@ from forecasting_panel import ForecastingPanel
 from timeseries import TimeSeriesPanel
 from energy_panel import EnergyBudgetPanel
 from factor_effects_panel import FactorEffectsPanel
+from tenability_panel import TenabilityPanel
 from figure_export import PublicationExportDialog, export_publication_figure, provenance_line
 from diff_analysis import DifferenceOverTimeDialog
 from session import build_session_dict, read_session, write_session
@@ -623,6 +624,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.controller.store, self.sim_data.manifest,
                 self._quantity_options(), self.sim_data.timesteps_per_second)
             self.energy_panel = EnergyBudgetPanel(self.sim_data.manifest)
+            # Tenability screening (M3.2): works for any study with a
+            # manifest, factorial or not (it's per-scenario, no factor axes).
+            self.tenability_panel = TenabilityPanel(
+                self.controller.store, self.sim_data.manifest, self.sim_data.timesteps_per_second)
             # Factor-effect maps (M3.1) need the candle factorial's factor
             # axes; a generic guest study has none, so it's factorial-only.
             self.factor_effects_panel = (
@@ -633,6 +638,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.timeseries_panel = None
             self.energy_panel = None
             self.factor_effects_panel = None
+            self.tenability_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
         analysis_content = self.analytics_panel.widget() if self.analytics_panel is not None else None
@@ -656,7 +662,8 @@ class MainWindow(QtWidgets.QMainWindow):
                     self.prediction_store, self.controller.store, self.sim_data.manifest),
                 timeseries_content=self.timeseries_panel,
                 energy_content=self.energy_panel,
-                factor_effects_content=self.factor_effects_panel),
+                factor_effects_content=self.factor_effects_panel,
+                tenability_content=self.tenability_panel),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
             "about": AboutPage(),

@@ -17,6 +17,7 @@ import numpy as np
 
 from slice_key import DEFAULT_SLICE_KEY
 from layer_height import smoke_layer_height_series
+from tenability import TENABILITY_THRESHOLD_C
 from config import AMBIENT_C
 
 
@@ -48,6 +49,10 @@ class ScenarioSummary:
     # worst-case (lowest) point of layer_height.smoke_layer_height_series,
     # a single hazard-ranking number for the browser.
     layer_min_height_m: float | None
+    # V2 roadmap M3.2: first time (s) any cell crosses the convected-heat
+    # tenability threshold (partial hazard screen, temperature only -- no
+    # CO/FED). None if never reached.
+    time_to_untenable_s: float | None
 
 
 def _source_files(entries: list) -> list:
@@ -76,9 +81,9 @@ def _summary_from_payload(payload: dict) -> list:
 def _write_cache(cache_path: str, summaries: list[ScenarioSummary]) -> None:
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
     payload = {
-        # v3 (V2 roadmap M2.3): added layer_min_height_m. Old caches fail
+        # v4 (V2 roadmap M3.2): added time_to_untenable_s. Old caches fail
         # the version check below and are silently rebuilt.
-        "version": 3,
+        "version": 4,
         "thresholds_c": list(THRESHOLDS_C),
         "summaries": [asdict(summary) for summary in summaries],
     }
@@ -92,7 +97,7 @@ def load_cached_summaries(cache_path: str, entries: list) -> list[ScenarioSummar
     try:
         with open(cache_path, "r") as f:
             payload = json.load(f)
-        if payload.get("version") != 3:
+        if payload.get("version") != 4:
             return None
         summaries = _summary_from_payload(payload)
         expected_cases = [e.case_index for e in sorted(entries, key=lambda e: e.case_index)]
@@ -261,6 +266,9 @@ def compute_scenario_summary(entry, store, fps: int) -> ScenarioSummary:
         total_energy_kj=total_energy_kj,
         growth_alpha_kw_s2=growth_alpha_kw_s2,
         layer_min_height_m=layer_min_height_m,
+        # Same max-by-frame first-crossing as the threshold times above,
+        # at the convected-heat tenability limit (tenability.py).
+        time_to_untenable_s=_first_threshold_time(max_by_frame, fps, TENABILITY_THRESHOLD_C),
     )
 
 
