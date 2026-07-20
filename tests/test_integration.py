@@ -2237,3 +2237,33 @@ class TestAttentionPanel:
         from attention_panel import _DISCLAIMER
         assert "not a physical field" in _DISCLAIMER.lower()
         window.close()
+
+
+class TestCausePanel:
+    """V3-M7: cause explorer panel (gated)."""
+
+    def test_click_produces_a_labelled_cause_chain(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "cause_panel", None) is None
+            window.close()
+            return
+        panel = window.cause_panel
+        panel.ensure_loaded()
+        from cause_panel import _DISCLAIMER
+        assert "not proven causation" in _DISCLAIMER.lower()
+        # click the hottest cell's location -> a chain appears
+        data = np.asarray(sim_data.store.get(sim_data.manifest[0].case_index, DEFAULT_SLICE_KEY))
+        extent = sim_data.store.get_extent(sim_data.manifest[0].case_index, DEFAULT_SLICE_KEY)
+        fi = panel.frame_spin.value()
+        gr, gc = np.unravel_index(int(np.argmax(data[fi])), data[fi].shape)
+        n_z, n_x = data[fi].shape
+
+        class _Evt:
+            inaxes = panel._ax
+            xdata = extent[0] + gc / (n_x - 1) * (extent[1] - extent[0])
+            ydata = extent[3] - gr / (n_z - 1) * (extent[3] - extent[2])
+        panel._on_click(_Evt())
+        assert panel.chain.count() >= 1
+        window.close()

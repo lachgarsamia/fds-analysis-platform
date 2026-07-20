@@ -520,3 +520,75 @@ class TestAttentionRealData:
         row, col = np.unravel_index(int(np.argmax(mean_sal)), mean_sal.shape)
         x = extent[0] + col / (n_x - 1) * (extent[1] - extent[0])
         assert x > 0.70  # the candle/plume region, not the cold left side
+
+
+import cause_explorer as ce  # noqa: E402
+
+
+class TestCauseExplorer:
+    def _sourced_field(self):
+        # A single hot source at (0,0); temperature falls off with distance.
+        n = 5
+        f = np.zeros((n, n), dtype=np.float32)
+        for r in range(n):
+            for c in range(n):
+                f[r, c] = max(20.0, 300.0 - 20.0 * np.hypot(r, c))
+        return f
+
+    def test_trace_is_monotonic_and_ends_at_source(self):
+        f = self._sourced_field()
+        path = ce.trace_to_source(f, 4, 4)
+        temps = [f[r, c] for r, c in path]
+        assert all(temps[k + 1] >= temps[k] for k in range(len(temps) - 1))
+        assert path[-1] == (0, 0)  # the hottest cell / source
+
+    def test_explain_chain_reaches_source_and_labels_association(self):
+        f = self._sourced_field()
+        insights, path = ce.explain(f, (0.0, 1.0, 0.0, 1.0), time_s=5.0, row=4, col=4)
+        assert len(insights) >= 2
+        assert "source" in insights[-1].statement.lower()
+        # honesty gate: the tracing is labelled association, not causation
+        assert any("association" in i.basis.lower() and "not proven causation" in i.basis.lower()
+                   for i in insights)
+        # navigable: the last step points at the source location
+        assert insights[-1].location is not None
+
+    def test_cold_cell_has_no_source_to_trace(self):
+        f = np.full((4, 4), 20.0, dtype=np.float32)
+        insights, path = ce.explain(f, (0, 1, 0, 1), 0.0, 3, 3)
+        assert len(insights) == 1 and "near ambient" in insights[0].statement
+        assert len(path) == 1
+
+    def test_local_maximum_is_reported_as_a_source(self):
+        f = self._sourced_field()
+        insights, _p = ce.explain(f, (0, 1, 0, 1), 0.0, 0, 0)  # pick the source itself
+        assert "itself the hottest" in insights[-1].statement.lower()
+
+
+@requires_real_dataset
+class TestCauseRealData:
+    """DoD: a hot plume cell traces back toward the fire source; the
+    tracing is gated as association, not proven causation."""
+
+    def test_hot_cell_traces_to_the_candle_source(self):
+        from data_provider import load_simulation_data
+        sim = load_simulation_data()
+        if sim.is_demo:
+            pytest.skip("real dataset not present")
+        e = sim.manifest[0]
+        data = np.asarray(sim.store.get(e.case_index, DEFAULT_SLICE_KEY))
+        extent = sim.store.get_extent(e.case_index, DEFAULT_SLICE_KEY)
+        fi = int(data.shape[0] * 0.6)
+        frame = data[fi]
+        gr, gc = np.unravel_index(int(np.argmax(frame)), frame.shape)
+        # pick a hot (>100 C) cell that is not the global maximum
+        hot = np.argwhere((frame > 100) & ~((np.arange(frame.shape[0])[:, None] == gr)
+                                             & (np.arange(frame.shape[1])[None, :] == gc)))
+        if hot.size == 0:
+            pytest.skip("no secondary hot cell to trace")
+        pr, pc = hot[np.argmin(hot[:, 0])]
+        insights, path = ce.explain(frame, extent, fi / sim.timesteps_per_second, int(pr), int(pc))
+        # traces back to the source, near the candle band (x > 0.7)
+        src = insights[-1].location
+        assert src is not None and src[0] > 0.70
+        assert any("not proven causation" in i.basis.lower() for i in insights)

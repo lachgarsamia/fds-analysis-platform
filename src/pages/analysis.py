@@ -35,7 +35,8 @@ class AnalysisPage(Page):
                  semantic_diff_content: QtWidgets.QWidget = None,
                  query_content: QtWidgets.QWidget = None,
                  state_space_content: QtWidgets.QWidget = None,
-                 attention_content: QtWidgets.QWidget = None, parent=None):
+                 attention_content: QtWidgets.QWidget = None,
+                 cause_content: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self._on_shown = on_shown
         layout = QtWidgets.QVBoxLayout(self)
@@ -56,6 +57,7 @@ class AnalysisPage(Page):
             ("Ask", query_content),
             ("Fire MRI", fire_mri_content),
             ("Attention", attention_content),
+            ("Why is it hot?", cause_content),
             ("State space", state_space_content),
             ("Semantic diff", semantic_diff_content),
             ("Factor effects", factor_effects_content),
