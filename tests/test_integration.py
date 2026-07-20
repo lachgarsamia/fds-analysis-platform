@@ -2045,3 +2045,37 @@ class TestPendingKeyRace:
         assert window._busy is False
         assert window._pending_load_case is None
         window.close()
+
+
+class TestFireMRIPanel:
+    """V3-M1: Fire MRI temporal-signature panel on the Analysis page."""
+
+    def test_panel_channels_probe_and_isochrones(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "fire_mri_panel", None) is None
+            window.close()
+            return
+        panel = window.fire_mri_panel
+        assert panel is not None
+        panel.ensure_loaded()
+        assert panel.scenario_combo.count() == len(sim_data.manifest)
+        # signature channels are populated (peak, dose, arrivals, durations)
+        names = [panel.channel_combo.itemData(i) for i in range(panel.channel_combo.count())]
+        assert "peak" in names and "thermal_dose" in names
+        assert any(n.startswith("first_crossing_") for n in names)
+        # peak channel's maximum equals the trusted per-scenario peak temperature
+        from summary_stats import compute_scenario_summary
+        summary = compute_scenario_summary(sim_data.manifest[0], sim_data.store,
+                                            sim_data.timesteps_per_second)
+        assert float(panel._sig.map("peak").max()) == pytest.approx(summary.max_temp_c, abs=0.5)
+        # isochrone overlay renders without error
+        panel.isochrone_check.setChecked(True)
+        # probe readout populates from a physical point
+        class _Evt:
+            inaxes = panel._ax
+            xdata, ydata = 0.9, 0.1
+        panel._on_move(_Evt())
+        assert "peak" in panel.probe_label.text()
+        window.close()

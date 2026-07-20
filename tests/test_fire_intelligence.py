@@ -60,6 +60,20 @@ class TestSignatures:
         d = s.at_cell(0, 0)
         assert "peak" in d and "thermal_dose" in d and d["peak"] == 300.0
 
+    def test_first_arrival_isochrone_monotone_outward_from_source(self):
+        # A wavefront that reaches column c at frame c (source at column 0),
+        # so first-arrival time increases with distance from the source --
+        # the property the Fire MRI isochrones visualize.
+        n_x = 6
+        data = np.full((n_x, 1, n_x), 20.0, dtype=np.float32)
+        for t in range(n_x):
+            for c in range(n_x):
+                if t >= c:
+                    data[t, 0, c] = 100.0
+        s = sg.compute_signatures(data, (0.0, 1.0, 0.0, 0.1), fps=1, levels=(50,), ambient_c=20.0)
+        arrival = s.map("first_crossing_50")[0]
+        assert np.all(np.diff(arrival) > 0), "first-arrival time must increase outward"
+
 
 class TestDescriptors:
     def test_spatial_reductions_and_rate(self):
