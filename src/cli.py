@@ -179,8 +179,13 @@ def cmd_report(args) -> int:
         prov_b = provenance_line(entry_b.path, entry_b.folder, peak / fps)
         text_a = generate_summary(entry_a, summary_a, summaries, sim_data.store, fps, key)
         text_b = generate_summary(entry_b, summary_b, summaries, sim_data.store, fps, key)
+        from semantic_diff import compare, difference_statements
+        differences = difference_statements(compare(
+            data_a, data_b, sim_data.store.get_extent(ca, key), fps, key.quantity,
+            entry_a.folder, entry_b.folder, summary_a, summary_b))
         html = build_comparison_report(entry_a, entry_b, summary_a, summary_b,
-                                       text_a, text_b, png, prov_a, prov_b)
+                                       text_a, text_b, png, prov_a, prov_b,
+                                       differences=differences)
 
     write_report(args.output, html)
     print(f"wrote report to {args.output}")

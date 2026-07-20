@@ -31,7 +31,8 @@ class AnalysisPage(Page):
                  energy_content: QtWidgets.QWidget = None,
                  factor_effects_content: QtWidgets.QWidget = None,
                  tenability_content: QtWidgets.QWidget = None,
-                 fire_mri_content: QtWidgets.QWidget = None, parent=None):
+                 fire_mri_content: QtWidgets.QWidget = None,
+                 semantic_diff_content: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self._on_shown = on_shown
         layout = QtWidgets.QVBoxLayout(self)
@@ -50,6 +51,7 @@ class AnalysisPage(Page):
         sections = [
             ("Ensemble analytics", content),
             ("Fire MRI", fire_mri_content),
+            ("Semantic diff", semantic_diff_content),
             ("Factor effects", factor_effects_content),
             ("Tenability", tenability_content),
             ("Time series", timeseries_content),

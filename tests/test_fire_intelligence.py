@@ -202,3 +202,88 @@ class TestInspectorStory:
         panel.set_story_index(10)
         assert panel.phase_label.text() == ""
         panel.deleteLater()
+
+
+import semantic_diff as sd  # noqa: E402
+
+
+class TestSemanticDiff:
+    def _pair(self, peak_a, peak_b):
+        # 4-frame ramps to different peaks, 1x3 grid.
+        def ramp(peak):
+            return np.stack([np.full((1, 3), 20 + (peak - 20) * t / 3.0, dtype=np.float32)
+                             for t in range(4)])
+        return ramp(peak_a), ramp(peak_b)
+
+    def test_peak_difference_named_and_ranked(self):
+        a, b = self._pair(200, 400)
+        ins = sd.compare(a, b, (0.0, 1.0, 0.0, 0.3), 2, "TEMPERATURE", "A", "B")
+        assert ins  # non-empty, ranked
+        stmts = [i.statement for i in ins]
+        assert any("B peaks" in s and "higher" in s for s in stmts)
+
+    def test_threshold_timing_difference(self):
+        # B reaches 100 sooner because it heats faster.
+        def ramp(rate):
+            return np.stack([np.full((1, 2), 20 + rate * t, dtype=np.float32) for t in range(10)])
+        a, b = ramp(20), ramp(40)  # b hotter faster
+        ins = sd.compare(a, b, (0, 1, 0, 0.3), 4, "TEMPERATURE", "A", "B")
+        assert any("B reaches 100" in i.statement and "sooner" in i.statement for i in ins)
+
+    def test_spatial_insight_has_location_and_is_navigable(self):
+        a, b = self._pair(200, 400)
+        ins = sd.compare(a, b, (0.0, 1.0, 0.0, 0.3), 2, "TEMPERATURE", "A", "B")
+        top = ins[0]
+        assert top.category == "difference"
+        assert top.location is not None or top.primary_time() is not None
+
+    def test_identical_scenarios_produce_no_or_trivial_diffs(self):
+        a, _ = self._pair(300, 300)
+        ins = sd.compare(a, a.copy(), (0, 1, 0, 0.3), 2, "TEMPERATURE", "A", "B")
+        # only the (zero-magnitude) spatial "biggest difference" may remain
+        assert all("peaks" not in i.statement for i in ins)
+
+
+@requires_real_dataset
+class TestSemanticDiffRealData:
+    """DoD: the door-width pair's diff is plume-dominated for TEMPERATURE
+    but carries a distinct door effect for VELOCITY (M2.3's finding),
+    every difference navigable."""
+
+    def _sim(self):
+        from data_provider import load_simulation_data
+        sim = load_simulation_data()
+        if sim.is_demo:
+            pytest.skip("real dataset not present")
+        return sim
+
+    def _door_pair(self, sim):
+        by = {e.folder: e.case_index for e in sim.manifest}
+        return by["c1_d0_vod0_voc0"], by["c1_d1_vod0_voc0"]
+
+    def test_temperature_diff_plume_dominated_and_navigable(self):
+        from slice_key import SliceKey
+        sim = self._sim()
+        ca, cb = self._door_pair(sim)
+        ins = sd.compare(sim.store.get(ca, SliceKey("TEMPERATURE")),
+                         sim.store.get(cb, SliceKey("TEMPERATURE")),
+                         sim.store.get_extent(ca, SliceKey("TEMPERATURE")),
+                         sim.timesteps_per_second, "TEMPERATURE", "A", "B")
+        assert ins
+        top = ins[0]
+        # M2.3: the temperature difference is dominated by the candle/plume
+        assert top.location is not None and top.location[0] > 0.75
+        # every difference is navigable (time or location)
+        assert all(i.primary_time() is not None or i.location is not None for i in ins)
+
+    def test_velocity_diff_surfaces_a_door_effect(self):
+        from slice_key import SliceKey
+        sim = self._sim()
+        ca, cb = self._door_pair(sim)
+        ins = sd.compare(sim.store.get(ca, SliceKey("VELOCITY")),
+                         sim.store.get(cb, SliceKey("VELOCITY")),
+                         sim.store.get_extent(ca, SliceKey("VELOCITY")),
+                         sim.timesteps_per_second, "VELOCITY", "c1_d0", "c1_d1")
+        # the wider door drives a distinct air-speed difference the
+        # temperature comparison does not show (a threshold or peak diff)
+        assert any(("reaches" in i.statement or "peaks" in i.statement) for i in ins)

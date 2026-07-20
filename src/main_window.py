@@ -58,6 +58,8 @@ from fire_mri_panel import FireMRIPanel
 from figure_export import (PublicationExportDialog, export_publication_figure,
                            provenance_line, figure_png_bytes)
 from report_builder import build_scenario_report, build_comparison_report, write_report
+from semantic_diff import compare as compare_scenarios, difference_statements
+from semantic_diff_panel import SemanticDiffPanel
 from diff_analysis import DifferenceOverTimeDialog
 from session import build_session_dict, read_session, write_session
 from nav import NavRail
@@ -645,6 +647,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.fire_mri_panel = FireMRIPanel(
                 self.controller.store, self.sim_data.manifest,
                 self._quantity_options(), self.sim_data.timesteps_per_second)
+            # Semantic diff (V3-M3): physics-difference report between two
+            # scenarios. Needs at least two scenarios to compare.
+            self.semantic_diff_panel = (
+                SemanticDiffPanel(self.controller.store, self.sim_data.manifest,
+                                  self._quantity_options(), self.sim_data.timesteps_per_second)
+                if len(self.sim_data.manifest) >= 2 else None)
             # Factor-effect maps (M3.1) need the candle factorial's factor
             # axes; a generic guest study has none, so it's factorial-only.
             self.factor_effects_panel = (
@@ -657,6 +665,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.factor_effects_panel = None
             self.tenability_panel = None
             self.fire_mri_panel = None
+            self.semantic_diff_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
         analysis_content = self.analytics_panel.widget() if self.analytics_panel is not None else None
@@ -682,7 +691,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 energy_content=self.energy_panel,
                 factor_effects_content=self.factor_effects_panel,
                 tenability_content=self.tenability_panel,
-                fire_mri_content=self.fire_mri_panel),
+                fire_mri_content=self.fire_mri_panel,
+                semantic_diff_content=self.semantic_diff_panel),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
             "about": AboutPage(),
@@ -2221,8 +2231,14 @@ class MainWindow(QtWidgets.QMainWindow):
             title=f"{entry_a.folder} − {entry_b.folder}")
         text_a = generate_summary(entry_a, summary_a, summaries, self.controller.store, fps, key)
         text_b = generate_summary(entry_b, summary_b, summaries, self.controller.store, fps, key)
+        # V3-M3: the semantic-diff engine's ranked differences, folded into
+        # the report as a "Key differences" list.
+        differences = difference_statements(compare_scenarios(
+            data_a, data_b, self._extent_for(case_a, key), fps, key.quantity,
+            entry_a.folder, entry_b.folder, summary_a, summary_b))
         html_text = build_comparison_report(entry_a, entry_b, summary_a, summary_b,
-                                            text_a, text_b, diff_png, provenance_a, provenance_b)
+                                            text_a, text_b, diff_png, provenance_a, provenance_b,
+                                            differences=differences)
         return html_text, f"report_{entry_a.folder}_vs_{entry_b.folder}.html"
 
     def _load_cell(self, cell, case_index: int, quantity_key):

@@ -2125,3 +2125,41 @@ class TestFireStory:
         qapp.processEvents()
         assert window.inspector.story_list.count() == 0
         window.close()
+
+
+class TestSemanticDiffPanel:
+    """V3-M3: semantic diff panel + report integration."""
+
+    def test_panel_lists_differences_and_shows_evidence(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "semantic_diff_panel", None) is None
+            window.close()
+            return
+        panel = window.semantic_diff_panel
+        assert panel is not None
+        panel.ensure_loaded()
+        assert panel.list.count() >= 1
+        # clicking a difference renders the A - B evidence field
+        first = panel._insights[0]
+        panel._show_evidence(first)
+        assert panel._image is not None
+        window.close()
+
+    def test_comparison_report_includes_key_differences(self, qapp, tmp_path, monkeypatch):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        deadline = time.perf_counter() + 5.0
+        while not getattr(window, "_scenario_summaries", None) and time.perf_counter() < deadline:
+            qapp.processEvents()
+            time.sleep(0.01)
+        out = str(tmp_path / "cmp.html")
+        monkeypatch.setattr(QtWidgets.QFileDialog, "getSaveFileName", lambda *a, **k: (out, ""))
+        window._export_report([0, 12])
+        text = (tmp_path / "cmp.html").read_text()
+        assert "Key differences" in text
+        window.close()

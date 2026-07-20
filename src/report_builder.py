@@ -111,15 +111,25 @@ def build_scenario_report(entry, summary, summary_text: str, figure_png: bytes,
     return _document(f"Scenario report — {entry.folder}", body)
 
 
+def _differences_block(differences: list) -> str:
+    if not differences:
+        return ""
+    items = "".join(f"<li>{_esc(d)}</li>" for d in differences)
+    return f"<h2>Key differences</h2><ul>{items}</ul>"
+
+
 def build_comparison_report(entry_a, entry_b, summary_a, summary_b,
                             summary_text_a: str, summary_text_b: str,
                             diff_figure_png: bytes, provenance_a: str,
-                            provenance_b: str) -> str:
-    """Self-contained HTML A-vs-B comparison report."""
+                            provenance_b: str, differences: list = None) -> str:
+    """Self-contained HTML A-vs-B comparison report. `differences` (V3-M3)
+    is the semantic-diff engine's ranked statements, rendered as a "Key
+    differences" list above the raw statistics."""
     body = (
         f"<h1>Comparison report — {_esc(entry_a.folder)} vs {_esc(entry_b.folder)}</h1>"
         f"<h2>Difference field (A − B)</h2>"
         f"{_figure_block(diff_figure_png, f'{entry_a.folder} minus {entry_b.folder}, temperature.')}"
+        f"{_differences_block(differences)}"
         f"<h2>Statistics</h2>{_stats_table_compare(summary_a, summary_b, entry_a.folder, entry_b.folder)}"
         f"<h2>{_esc(entry_a.folder)}</h2><p class='prose'>{_esc(summary_text_a)}</p>"
         f"<h2>{_esc(entry_b.folder)}</h2><p class='prose'>{_esc(summary_text_b)}</p>"
