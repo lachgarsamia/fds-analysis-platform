@@ -287,3 +287,106 @@ class TestSemanticDiffRealData:
         # the wider door drives a distinct air-speed difference the
         # temperature comparison does not show (a threshold or peak diff)
         assert any(("reaches" in i.statement or "peaks" in i.statement) for i in ins)
+
+
+import query_engine as qe  # noqa: E402
+
+
+class TestQueryEngine:
+    def _data(self):
+        # (4, 2, 3): a hot cell that crosses 100 at frame 2, peak 300 at frame 3.
+        d = np.full((4, 2, 3), 20.0, dtype=np.float32)
+        d[1, 0, 2] = 80
+        d[2, 0, 2] = 150   # crosses 100 at frame 2
+        d[3, 0, 2] = 300   # peak
+        return d
+
+    EXT = (0.0, 1.0, 0.0, 0.3)
+
+    def test_first_crossing_time_and_location(self):
+        ins = qe.execute(qe.Query("first_crossing", "TEMPERATURE", 100.0), self._data(), self.EXT, 2)[0]
+        assert ins.primary_time() == pytest.approx(1.0)  # frame 2 / fps 2
+        assert ins.location is not None
+
+    def test_first_crossing_never(self):
+        ins = qe.execute(qe.Query("first_crossing", "TEMPERATURE", 9999.0), self._data(), self.EXT, 2)[0]
+        assert "never" in ins.statement and ins.primary_time() is None
+
+    def test_extreme_value_and_location(self):
+        ins = qe.execute(qe.Query("extreme", "TEMPERATURE"), self._data(), self.EXT, 2)[0]
+        assert ins.value == pytest.approx(300.0)
+        assert ins.primary_time() == pytest.approx(1.5)  # frame 3
+
+    def test_regions_above_count(self):
+        ins = qe.execute(qe.Query("regions_above", "TEMPERATURE", 100.0), self._data(), self.EXT, 2)[0]
+        assert "1 of" in ins.statement  # exactly one cell ever exceeds 100
+
+    def test_region_restriction_excludes_the_hot_cell(self):
+        # the hot cell is at x=1.0 (candle band); restrict to the door (x~0.25)
+        ins = qe.execute(qe.Query("first_crossing", "TEMPERATURE", 100.0, region="door"),
+                         self._data(), self.EXT, 2)[0]
+        assert "never" in ins.statement and "door" in ins.statement
+
+    def test_plume_height(self):
+        # a column hot up to a known row -> known height
+        d = np.full((3, 4, 2), 20.0, dtype=np.float32)
+        d[1, 1, 0] = 200  # row 1 hot at frame 1 (row 0 = ceiling z=0.3)
+        ins = qe.execute(qe.Query("plume_height", "TEMPERATURE", 100.0), d, (0, 1, 0, 0.3), 2)[0]
+        assert ins.value == pytest.approx(0.2, abs=0.01)  # row 1 of 4 -> z = 0.3 - 1/3*0.3
+
+
+class TestQueryParser:
+    def test_examples_parse_to_valid_kinds(self):
+        for ex in qe.EXAMPLE_QUERIES:
+            q = qe.parse(ex)
+            assert q is not None and q.kind in qe.KINDS
+
+    def test_threshold_and_region_extracted(self):
+        q = qe.parse("first time temperature exceeds 300 near the candle")
+        assert q.kind == "first_crossing" and q.threshold == 300.0 and q.region == "candle"
+
+    def test_ventilation_maps_to_velocity(self):
+        q = qe.parse("regions affected by ventilation")
+        assert q.quantity == "VELOCITY" and q.kind == "regions_above"
+
+    def test_gibberish_returns_none(self):
+        assert qe.parse("what is the meaning of life") is None
+        assert qe.parse("") is None
+
+
+@requires_real_dataset
+class TestQueryRealData:
+    """DoD: queries return answers matching hand/known values."""
+
+    def _sim(self):
+        from data_provider import load_simulation_data
+        sim = load_simulation_data()
+        if sim.is_demo:
+            pytest.skip("real dataset not present")
+        return sim
+
+    def test_first_crossing_matches_summary(self):
+        from slice_key import SliceKey
+        from summary_stats import compute_scenario_summary
+        sim = self._sim()
+        e = sim.manifest[0]
+        summary = compute_scenario_summary(e, sim.store, sim.timesteps_per_second)
+        if summary.time_to_100c_s is None:
+            pytest.skip("scenario never reaches 100 C")
+        data = sim.store.get(e.case_index, SliceKey("TEMPERATURE"))
+        extent = sim.store.get_extent(e.case_index, SliceKey("TEMPERATURE"))
+        ins = qe.execute(qe.Query("first_crossing", "TEMPERATURE", 100.0), data, extent,
+                         sim.timesteps_per_second)[0]
+        assert ins.primary_time() == pytest.approx(summary.time_to_100c_s, abs=0.5)
+
+    def test_hottest_matches_summary_peak(self):
+        from slice_key import SliceKey
+        from summary_stats import compute_scenario_summary
+        sim = self._sim()
+        e = sim.manifest[0]
+        summary = compute_scenario_summary(e, sim.store, sim.timesteps_per_second)
+        data = sim.store.get(e.case_index, SliceKey("TEMPERATURE"))
+        extent = sim.store.get_extent(e.case_index, SliceKey("TEMPERATURE"))
+        ins = qe.execute(qe.Query("extreme", "TEMPERATURE"), data, extent,
+                         sim.timesteps_per_second)[0]
+        assert ins.value == pytest.approx(summary.max_temp_c, abs=0.5)

@@ -32,7 +32,8 @@ class AnalysisPage(Page):
                  factor_effects_content: QtWidgets.QWidget = None,
                  tenability_content: QtWidgets.QWidget = None,
                  fire_mri_content: QtWidgets.QWidget = None,
-                 semantic_diff_content: QtWidgets.QWidget = None, parent=None):
+                 semantic_diff_content: QtWidgets.QWidget = None,
+                 query_content: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self._on_shown = on_shown
         layout = QtWidgets.QVBoxLayout(self)
@@ -50,6 +51,7 @@ class AnalysisPage(Page):
         # mode supplies none.
         sections = [
             ("Ensemble analytics", content),
+            ("Ask", query_content),
             ("Fire MRI", fire_mri_content),
             ("Semantic diff", semantic_diff_content),
             ("Factor effects", factor_effects_content),

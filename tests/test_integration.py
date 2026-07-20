@@ -2163,3 +2163,37 @@ class TestSemanticDiffPanel:
         text = (tmp_path / "cmp.html").read_text()
         assert "Key differences" in text
         window.close()
+
+
+class TestQueryPanel:
+    """V3-M4: physics query panel."""
+
+    def test_query_runs_and_shows_navigable_answer(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "query_panel", None) is None
+            window.close()
+            return
+        panel = window.query_panel
+        panel.ensure_loaded()
+        panel.query_edit.setText("hottest region")
+        panel._run()
+        assert panel.results.count() == 1
+        assert "Highest temperature" in panel.answer_label.text()
+        assert panel._image is not None  # answer marked on the field
+        window.close()
+
+    def test_unrecognized_query_is_not_answered(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        panel = window.query_panel
+        panel.ensure_loaded()
+        panel.query_edit.setText("tell me a joke")
+        panel._run()
+        assert panel.results.count() == 0
+        assert "Not understood" in panel.answer_label.text()
+        window.close()

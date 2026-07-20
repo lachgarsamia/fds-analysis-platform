@@ -60,6 +60,7 @@ from figure_export import (PublicationExportDialog, export_publication_figure,
 from report_builder import build_scenario_report, build_comparison_report, write_report
 from semantic_diff import compare as compare_scenarios, difference_statements
 from semantic_diff_panel import SemanticDiffPanel
+from query_panel import QueryPanel
 from diff_analysis import DifferenceOverTimeDialog
 from session import build_session_dict, read_session, write_session
 from nav import NavRail
@@ -653,6 +654,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 SemanticDiffPanel(self.controller.store, self.sim_data.manifest,
                                   self._quantity_options(), self.sim_data.timesteps_per_second)
                 if len(self.sim_data.manifest) >= 2 else None)
+            # Physics query engine (V3-M4).
+            self.query_panel = QueryPanel(
+                self.controller.store, self.sim_data.manifest, self.sim_data.timesteps_per_second)
             # Factor-effect maps (M3.1) need the candle factorial's factor
             # axes; a generic guest study has none, so it's factorial-only.
             self.factor_effects_panel = (
@@ -666,6 +670,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.tenability_panel = None
             self.fire_mri_panel = None
             self.semantic_diff_panel = None
+            self.query_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
         analysis_content = self.analytics_panel.widget() if self.analytics_panel is not None else None
@@ -692,7 +697,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 factor_effects_content=self.factor_effects_panel,
                 tenability_content=self.tenability_panel,
                 fire_mri_content=self.fire_mri_panel,
-                semantic_diff_content=self.semantic_diff_panel),
+                semantic_diff_content=self.semantic_diff_panel,
+                query_content=self.query_panel),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
             "about": AboutPage(),
