@@ -390,3 +390,85 @@ class TestQueryRealData:
         ins = qe.execute(qe.Query("extreme", "TEMPERATURE"), data, extent,
                          sim.timesteps_per_second)[0]
         assert ins.value == pytest.approx(summary.max_temp_c, abs=0.5)
+
+
+import state_space as ss  # noqa: E402
+
+
+class TestStateSpace:
+    def _evolving(self):
+        # 20 frames, a hot spot that grows/moves smoothly -> smooth descriptors.
+        d = np.full((20, 5, 8), 20.0, dtype=np.float32)
+        for t in range(20):
+            d[t, :, :t // 2 + 1] = 20 + 15 * t  # hot region widens with time
+        return d
+
+    def test_trajectory_shape_and_temporal_smoothness(self):
+        coords, times, evr = ss.scenario_trajectory(self._evolving(), (0, 1, 0, 0.3), 4)
+        assert coords.shape == (20, 2) and times.shape == (20,)
+        steps = np.linalg.norm(np.diff(coords, axis=0), axis=1)
+        # a smooth evolution -> consecutive frames much closer than the span
+        span = np.linalg.norm(coords.max(0) - coords.min(0))
+        assert steps.mean() < 0.5 * span
+
+    def test_genome_traits_peak_and_rate(self):
+        d = np.full((4, 1, 2), 20.0, dtype=np.float32)
+        d[:, 0, 0] = [20, 120, 320, 320]
+        g = ss.genome_traits(d, (0, 1, 0, 0.3), 2)
+        assert g["peak_temp"] == pytest.approx(320.0)
+        assert g["heating_rate"] == pytest.approx(400.0)  # max diff 200 * fps 2
+
+    def test_normalize_genomes_min_max_and_constant(self):
+        traits = [
+            {"peak_temp": 100, "heating_rate": 5, "smoke_descent": 0, "energy": 1, "spread": 2},
+            {"peak_temp": 300, "heating_rate": 5, "smoke_descent": 1, "energy": 3, "spread": 4},
+        ]
+        norm = ss.normalize_genomes(traits)
+        assert norm[0]["peak_temp"] == 0.0 and norm[1]["peak_temp"] == 1.0
+        assert norm[0]["heating_rate"] == 0.5 and norm[1]["heating_rate"] == 0.5  # constant
+
+    def test_genome_matrix_shape(self):
+        norm = ss.normalize_genomes([
+            {"peak_temp": 1, "heating_rate": 1, "smoke_descent": 1, "energy": 1, "spread": 1},
+            {"peak_temp": 2, "heating_rate": 2, "smoke_descent": 2, "energy": 2, "spread": 2},
+        ])
+        m = ss.genome_matrix(norm)
+        assert m.shape == (2, len(ss.GENOME_TRAITS))
+
+
+@requires_real_dataset
+class TestStateSpaceRealData:
+    """DoD: trajectory temporally ordered; genomes cluster with candle count."""
+
+    def _sim(self):
+        from data_provider import load_simulation_data
+        sim = load_simulation_data()
+        if sim.is_demo:
+            pytest.skip("real dataset not present")
+        return sim
+
+    def test_trajectory_temporally_ordered(self):
+        sim = self._sim()
+        e = sim.manifest[0]
+        data = sim.store.get(e.case_index, DEFAULT_SLICE_KEY)
+        extent = sim.store.get_extent(e.case_index, DEFAULT_SLICE_KEY)
+        coords, _t, _evr = ss.scenario_trajectory(data, extent, sim.timesteps_per_second)
+        steps = np.linalg.norm(np.diff(coords, axis=0), axis=1)
+        rng = np.random.default_rng(0)
+        i, j = rng.integers(0, len(coords), 500), rng.integers(0, len(coords), 500)
+        rand = np.linalg.norm(coords[i] - coords[j], axis=1)
+        assert steps.mean() < 0.6 * rand.mean()
+
+    def test_genomes_cluster_with_candle_count(self):
+        from summary_stats import compute_scenario_summary
+        from analytics.clustering import run_clustering, cluster_alignment
+        sim = self._sim()
+        raw = [ss.genome_traits(sim.store.get(e.case_index, DEFAULT_SLICE_KEY),
+                                sim.store.get_extent(e.case_index, DEFAULT_SLICE_KEY),
+                                sim.timesteps_per_second,
+                                compute_scenario_summary(e, sim.store, sim.timesteps_per_second))
+               for e in sim.manifest]
+        mat = ss.genome_matrix(ss.normalize_genomes(raw))
+        labels = run_clustering(mat, 2)
+        align = cluster_alignment(labels, [e.candles for e in sim.manifest])
+        assert align >= 0.5  # at least as good as chance; consistent with the PCA finding

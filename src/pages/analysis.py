@@ -33,7 +33,8 @@ class AnalysisPage(Page):
                  tenability_content: QtWidgets.QWidget = None,
                  fire_mri_content: QtWidgets.QWidget = None,
                  semantic_diff_content: QtWidgets.QWidget = None,
-                 query_content: QtWidgets.QWidget = None, parent=None):
+                 query_content: QtWidgets.QWidget = None,
+                 state_space_content: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self._on_shown = on_shown
         layout = QtWidgets.QVBoxLayout(self)
@@ -53,6 +54,7 @@ class AnalysisPage(Page):
             ("Ensemble analytics", content),
             ("Ask", query_content),
             ("Fire MRI", fire_mri_content),
+            ("State space", state_space_content),
             ("Semantic diff", semantic_diff_content),
             ("Factor effects", factor_effects_content),
             ("Tenability", tenability_content),

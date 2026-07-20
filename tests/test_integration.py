@@ -2197,3 +2197,22 @@ class TestQueryPanel:
         assert panel.results.count() == 0
         assert "Not understood" in panel.answer_label.text()
         window.close()
+
+
+class TestStateSpacePanel:
+    """V3-M5: state-space + Fire Genome panel."""
+
+    def test_panel_builds_genomes_and_renders(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "state_space_panel", None) is None
+            window.close()
+            return
+        panel = window.state_space_panel
+        panel.ensure_loaded()
+        assert len(panel._genomes) == len(sim_data.manifest)
+        assert panel.scenario_combo.count() == len(sim_data.manifest)
+        # a trajectory was computed and cached for the shown scenario
+        assert panel._traj_cache
+        window.close()
