@@ -20,6 +20,10 @@ dev = [
     "pytest",
 ]
 
+# Headless CLI (V2 roadmap M3.4): `fdsvis-cli stats|export|report|session-render`.
+[project.scripts]
+fdsvis-cli = "cli:main"
+
 [tool.setuptools]
 package-dir = { "" = "src" }
 packages = ["fds", "fds.slice", "analytics", "cinema", "pages"]
@@ -27,6 +31,7 @@ py-modules = [
     "analytics_panel",
     "auto_summary",
     "browser",
+    "cli",
     "config",
     "data_provider",
     "export",
