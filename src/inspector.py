@@ -77,14 +77,37 @@ class _Sparkline(QtWidgets.QWidget):
         path.moveTo(point(0, self._series[0]))
         for i, v in enumerate(self._series[1:], start=1):
             path.lineTo(point(i, v))
+
+        # Subtle filled area under the curve for readability.
+        area = QtGui.QPainterPath(path)
+        area.lineTo(point(n - 1, self._series[-1]).x(), rect.bottom())
+        area.lineTo(rect.left(), rect.bottom())
+        area.closeSubpath()
+        fill = QtGui.QColor(self._color)
+        fill.setAlpha(38)
+        painter.fillPath(area, fill)
+
         painter.setPen(QtGui.QPen(QtGui.QColor(self._color), 1.5))
         painter.drawPath(path)
 
+        # Peak marker (hollow) -- shows where the hottest moment sits
+        # relative to the current playback time.
+        peak_i = max(range(n), key=lambda i: self._series[i])
+        peak_pt = point(peak_i, self._series[peak_i])
+        painter.setBrush(QtCore.Qt.NoBrush)
+        painter.setPen(QtGui.QPen(QtGui.QColor("#E8622C"), 1.4))
+        painter.drawEllipse(peak_pt, 3.2, 3.2)
+
+        # Moving playback cursor: a vertical line at the current time plus a
+        # filled bullet on the curve (user feedback -- follows playback).
         idx = min(self._index, n - 1)
         marker = point(idx, self._series[idx])
+        painter.setPen(QtGui.QPen(QtGui.QColor(self._color), 1.0, QtCore.Qt.DashLine))
+        painter.drawLine(QtCore.QPointF(marker.x(), rect.top()),
+                         QtCore.QPointF(marker.x(), rect.bottom()))
         painter.setPen(QtCore.Qt.NoPen)
         painter.setBrush(QtGui.QColor(self._color))
-        painter.drawEllipse(marker, 3, 3)
+        painter.drawEllipse(marker, 3.5, 3.5)
 
 
 class InspectorPanel(QtWidgets.QWidget):

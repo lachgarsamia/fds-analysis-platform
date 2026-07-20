@@ -876,6 +876,38 @@ class MainWindow(QtWidgets.QMainWindow):
         speed_section.add_row(self.speed_toggle)
         outer.addWidget(speed_section)
 
+        # Ventilation first (user feedback): the vents are the primary
+        # thing people compare, so they sit at the top of the scenario
+        # controls with short "Vent 1"/"Vent 2" labels (the VOD/VOC codes
+        # stay in the accessible names and tooltips for traceability).
+        vod_section = CollapsibleSection("Vent 1")
+        self.vod_toggle = VentWidget(
+            [("Open", 0), ("Closed", 1), ("HVAC", 2)], state_labels=_VOD_STATES, default_index=DEFAULT_VOD,
+            accessible_name="Air vent 1 (VOD) state",
+        )
+        self.vod_toggle.setToolTip(
+            "Vent 1 (VOD): opens, closes, or connects an air vent in the room "
+            "to a fan (HVAC). Open lets smoke and hot air escape and fresh air "
+            "in; closed traps heat and smoke inside."
+        )
+        self.vod_toggle.value_changed.connect(self._on_vod_changed)
+        vod_section.add_row(self.vod_toggle)
+        outer.addWidget(vod_section)
+
+        voc_section = CollapsibleSection("Vent 2")
+        self.voc_toggle = VentWidget(
+            [("Open", 0), ("Closed", 1)], state_labels=_VOC_STATES, default_index=DEFAULT_VOC,
+            accessible_name="Air vent 2 (VOC) state",
+        )
+        self.voc_toggle.setToolTip(
+            "Vent 2 (VOC): opens or closes a second air vent in the room. "
+            "Works the same way as Vent 1 -- open lets air move through, "
+            "closed seals the room."
+        )
+        self.voc_toggle.value_changed.connect(self._on_voc_changed)
+        voc_section.add_row(self.voc_toggle)
+        outer.addWidget(voc_section)
+
         candle_section = CollapsibleSection("Number of candles")
         self.candle_toggle = CandleCard(
             [("1 candle", 0), ("2 candles", 1)], default_index=DEFAULT_CANDLES,
@@ -889,37 +921,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.candle_toggle.value_changed.connect(self._on_candle_changed)
         candle_section.add_row(self.candle_toggle)
         outer.addWidget(candle_section)
-
-        # Plain-language primary label with the technical code (VOD) kept as
-        # secondary text, per the 2026-07-09c non-specialist label pass --
-        # raw variable names must never appear unexplained (ROADMAP §4 M1.6.4).
-        vod_section = CollapsibleSection("Air vent 1 (VOD)")
-        self.vod_toggle = VentWidget(
-            [("Open", 0), ("Closed", 1), ("HVAC", 2)], state_labels=_VOD_STATES, default_index=DEFAULT_VOD,
-            accessible_name="Air vent 1 (VOD) state",
-        )
-        self.vod_toggle.setToolTip(
-            "Opens, closes, or connects an air vent in the room to a fan "
-            "(HVAC). Open lets smoke and hot air escape and fresh air in; "
-            "closed traps heat and smoke inside."
-        )
-        self.vod_toggle.value_changed.connect(self._on_vod_changed)
-        vod_section.add_row(self.vod_toggle)
-        outer.addWidget(vod_section)
-
-        voc_section = CollapsibleSection("Air vent 2 (VOC)")
-        self.voc_toggle = VentWidget(
-            [("Open", 0), ("Closed", 1)], state_labels=_VOC_STATES, default_index=DEFAULT_VOC,
-            accessible_name="Air vent 2 (VOC) state",
-        )
-        self.voc_toggle.setToolTip(
-            "Opens or closes a second air vent in the room. Works the same "
-            "way as Air vent 1 -- open lets air move through, closed seals "
-            "the room."
-        )
-        self.voc_toggle.value_changed.connect(self._on_voc_changed)
-        voc_section.add_row(self.voc_toggle)
-        outer.addWidget(voc_section)
 
         door_section = CollapsibleSection("Door opening width")
         # Options list is [("Wide open", 1), ("Narrow", 0)]; DEFAULT_DOOR=1 is

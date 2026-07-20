@@ -139,10 +139,56 @@ def _flame_path(cx: float, cy: float, r: float) -> QtGui.QPainterPath:
     return path
 
 
+def _flame_shape(cx: float, base_y: float, h: float) -> QtGui.QPainterPath:
+    """A flame teardrop rooted at (cx, base_y) rising to a pointed tip
+    `h` above it -- rounded, slightly wavy sides, tip drawn straight up."""
+    w = h * 0.40
+    path = QtGui.QPainterPath()
+    path.moveTo(cx, base_y - h)                                   # tip
+    path.cubicTo(cx + w, base_y - h * 0.5, cx + w * 0.65, base_y, cx, base_y)      # down the right
+    path.cubicTo(cx - w * 0.65, base_y, cx - w, base_y - h * 0.5, cx, base_y - h)  # up the left
+    return path
+
+
+def draw_realistic_flame(painter: QtGui.QPainter, cx: float, base_y: float, height: float):
+    """Layered candle flame sitting on the floor at (cx, base_y): a soft
+    radial glow, a deep-red outer body, an orange mid, and a bright yellow
+    core -- a warmer, more flame-like look than a single flat teardrop."""
+    painter.setPen(QtCore.Qt.NoPen)
+    # glow
+    glow_c = QtCore.QPointF(cx, base_y - height * 0.5)
+    glow_r = height * 1.0
+    grad = QtGui.QRadialGradient(glow_c, glow_r)
+    warm = QtGui.QColor("#FF7A18")
+    warm.setAlpha(80); grad.setColorAt(0.0, warm)
+    edge = QtGui.QColor("#FF7A18"); edge.setAlpha(0); grad.setColorAt(1.0, edge)
+    painter.setBrush(QtGui.QBrush(grad))
+    painter.drawEllipse(glow_c, glow_r, glow_r)
+    # body layers, outer -> core
+    for h, color, lift in ((height, "#D93415", 0.0),
+                           (height * 0.70, "#FF8A1E", 0.06),
+                           (height * 0.40, "#FFDD57", 0.12)):
+        painter.setBrush(QtGui.QColor(color))
+        painter.drawPath(_flame_shape(cx, base_y - height * lift, h))
+
+
 # ---------------------------------------------------------------- the widget
 
 _VOD_STATES = {0: "open", 1: "closed", 2: "HVAC"}
 _VOC_STATES = {0: "open", 1: "closed"}
+
+# Side-view (x-z plane) geometry, fixed across every scenario in this
+# study (template.fds: MULT DX=0.25,I_UPPER=3 -> x 0..1.0 m;
+# DZ=0.16,K_UPPER=2 -> z 0..0.48 m; the enclosed room is bounded by the
+# vertical wall at x~0.27 and the ceiling at z~0.22, so it occupies the
+# bottom-right of the domain). The schematic mirrors the heatmap's own
+# orientation instead of an abstract top-down view.
+_DOMAIN_X = (0.0, 1.0)
+_DOMAIN_Z = (0.0, 0.48)
+_ROOM_X = (0.27, 1.0)
+_ROOM_Z = (0.0, 0.22)
+_CANDLE_X = (0.84, 0.96)      # candle burner x-band
+_DOMAIN_ASPECT = (_DOMAIN_Z[1] - _DOMAIN_Z[0]) / (_DOMAIN_X[1] - _DOMAIN_X[0])
 
 
 class SchematicWidget(QtWidgets.QWidget):
@@ -186,27 +232,31 @@ class SchematicWidget(QtWidgets.QWidget):
 
     def _update_accessible_description(self):
         n_candles = 2 if self._candles == 1 else 1
-        self.setAccessibleDescription(
-            "Room diagram: door {}, air vent 1 {}, air vent 2 {}, {} candle{}.".format(
+        desc = (
+            "Room diagram (side view): the big rectangle is the full simulation "
+            "domain; the smaller one at the bottom-right is the enclosed room. "
+            "Door {} on the left wall, Vent 1 {} and Vent 2 {} on the ceiling, "
+            "{} candle{} burning on the floor.".format(
                 "wide open" if self._door == 1 else "narrow",
                 _VOD_STATES.get(self._vod, "?"),
                 _VOC_STATES.get(self._voc, "?"),
                 n_candles, "s" if n_candles > 1 else "",
             )
         )
+        self.setAccessibleDescription(desc)
+        self.setToolTip(desc)   # hover info (Live Viewer polish)
 
     # -- sizing ---------------------------------------------------------------
     def _aspect(self) -> float:
-        x0, x1 = self._extent["x"]
-        y0, y1 = self._extent["y"]
-        return (y1 - y0) / (x1 - x0) if x1 > x0 else 0.3
+        # Side view: the domain's z/x ratio, fixed for this study's geometry.
+        return _DOMAIN_ASPECT
 
     def sizeHint(self):
         width = max(self.width(), 260)
-        return QtCore.QSize(width, max(80, int(width * self._aspect()) + 28))
+        return QtCore.QSize(width, max(90, int(width * self._aspect()) + 30))
 
     def heightForWidth(self, width: int) -> int:
-        return max(70, int(width * self._aspect()) + 28)
+        return max(80, int(width * self._aspect()) + 30)
 
     # -- painting -------------------------------------------------------------
     def paintEvent(self, event):
@@ -217,82 +267,106 @@ class SchematicWidget(QtWidgets.QWidget):
         finally:
             painter.end()
 
+    def _phys(self, dr: QtCore.QRectF, x: float, z: float) -> QtCore.QPointF:
+        """Physical (x, z) meters -> a point inside the domain draw-rect
+        `dr` (z points up, matching the heatmap)."""
+        fx = (x - _DOMAIN_X[0]) / (_DOMAIN_X[1] - _DOMAIN_X[0])
+        fz = (z - _DOMAIN_Z[0]) / (_DOMAIN_Z[1] - _DOMAIN_Z[0])
+        return QtCore.QPointF(dr.left() + fx * dr.width(), dr.bottom() - fz * dr.height())
+
     def _paint(self, painter: QtGui.QPainter):
         palette = self._palette
         if palette is None:
             return
 
-        margin = 14
-        rect = self.rect().adjusted(margin, margin, -margin, -margin)
+        margin = 12
+        rect = self.rect().adjusted(margin, margin, -margin, -margin - 14)  # leave room for caption
         if rect.width() <= 0 or rect.height() <= 0:
             return
 
         aspect = self._aspect()
         if rect.width() * aspect <= rect.height():
-            draw_w = rect.width()
-            draw_h = rect.width() * aspect
+            draw_w, draw_h = rect.width(), rect.width() * aspect
         else:
             draw_h = rect.height()
             draw_w = rect.height() / aspect if aspect > 0 else rect.width()
         draw_x = rect.x() + (rect.width() - draw_w) / 2
         draw_y = rect.y() + (rect.height() - draw_h) / 2
-        room_rect = QtCore.QRectF(draw_x, draw_y, draw_w, draw_h)
+        domain_rect = QtCore.QRectF(draw_x, draw_y, draw_w, draw_h)
 
-        # --- room outline, sized to the extent-derived aspect ratio ---------
-        painter.setPen(QtGui.QPen(QtGui.QColor(palette.border_strong), 2))
+        # --- simulation domain (big outer rectangle) ------------------------
+        painter.setPen(QtGui.QPen(QtGui.QColor(palette.border), 1, QtCore.Qt.DashLine))
+        painter.setBrush(QtGui.QColor(palette.bg_base))
+        painter.drawRect(domain_rect)
+
+        # --- the room (smaller rectangle, bottom-right) ---------------------
+        room_tl = self._phys(domain_rect, _ROOM_X[0], _ROOM_Z[1])   # top-left (x wall, ceiling)
+        room_br = self._phys(domain_rect, _ROOM_X[1], _ROOM_Z[0])   # bottom-right (floor, right wall)
+        room_rect = QtCore.QRectF(room_tl, room_br)
+        painter.setPen(QtCore.Qt.NoPen)
         painter.setBrush(QtGui.QColor(palette.bg_sunken))
         painter.drawRect(room_rect)
+        wall = QtGui.QPen(QtGui.QColor(palette.border_strong), 2.4)
 
-        # --- door: gap in the bottom wall, width by door state --------------
-        door_frac = 0.34 if self._door == 1 else 0.16
-        door_w = draw_w * door_frac
-        door_cx = room_rect.left() + draw_w * 0.22
-        door_y = room_rect.bottom()
-        painter.setPen(QtGui.QPen(QtGui.QColor(palette.bg_base), 3))
-        painter.drawLine(QtCore.QPointF(door_cx - door_w / 2, door_y),
-                          QtCore.QPointF(door_cx + door_w / 2, door_y))
+        # left wall (with the door gap) and ceiling drawn as explicit walls;
+        # floor and right wall are the plain room edges.
+        painter.setPen(wall)
+        painter.drawLine(room_rect.bottomLeft(), room_rect.bottomRight())   # floor
+        painter.drawLine(room_rect.topRight(), room_rect.bottomRight())     # right wall
+
+        # --- door on the LEFT wall, opening size by door state --------------
+        door_h_frac = 0.55 if self._door == 1 else 0.28   # wide vs narrow
+        wall_x = room_rect.left()
+        door_h = room_rect.height() * door_h_frac
+        door_bottom = room_rect.bottom() - room_rect.height() * 0.06
+        door_top = door_bottom - door_h
+        # wall segments above and below the opening
+        painter.setPen(wall)
+        painter.drawLine(QtCore.QPointF(wall_x, room_rect.top()), QtCore.QPointF(wall_x, door_top))
+        painter.drawLine(QtCore.QPointF(wall_x, door_bottom), QtCore.QPointF(wall_x, room_rect.bottom()))
+        # opening marked with the accent, with a small swing arc
         accent = QtGui.QColor(palette.accent)
-        painter.setPen(QtGui.QPen(accent, 1.5, QtCore.Qt.DashLine))
+        painter.setPen(QtGui.QPen(accent, 2))
+        painter.drawLine(QtCore.QPointF(wall_x, door_top), QtCore.QPointF(wall_x, door_bottom))
+        painter.setPen(QtGui.QPen(accent, 1.2, QtCore.Qt.DashLine))
         painter.setBrush(QtCore.Qt.NoBrush)
-        swing_rect = QtCore.QRectF(door_cx - door_w / 2, door_y - door_w, door_w, door_w)
-        painter.drawArc(swing_rect, 0, 90 * 16)
+        painter.drawArc(QtCore.QRectF(wall_x, door_top, door_h, door_h), 90 * 16, 90 * 16)
 
-        # --- vents: air vent 1 (VOD) + air vent 2 (VOC) on the right wall ----
+        # --- ventilation on the CEILING (Vent 1 = VOD, Vent 2 = VOC) --------
         vent_colors = {"open": palette.success, "closed": palette.text_disabled, "HVAC": palette.warning}
-        vod_label = _VOD_STATES[self._vod]
-        voc_label = _VOC_STATES[self._voc]
+        vod_label, voc_label = _VOD_STATES[self._vod], _VOC_STATES[self._voc]
+        ceiling_y = room_rect.top()
+        painter.setPen(wall)
+        painter.drawLine(room_rect.topLeft(), room_rect.topRight())  # ceiling
+        vent_w = room_rect.width() * 0.14
+        for frac, label in ((0.34, vod_label), (0.64, voc_label)):
+            cx = room_rect.left() + room_rect.width() * frac
+            vent_rect = QtCore.QRectF(cx - vent_w / 2, ceiling_y - 3, vent_w, 6)
+            painter.setPen(QtGui.QPen(QtGui.QColor(palette.border_strong), 1))
+            painter.setBrush(QtGui.QColor(vent_colors[label]))
+            painter.drawRect(vent_rect)
+            # a couple of grille slats
+            painter.setPen(QtGui.QPen(QtGui.QColor(palette.bg_base), 0.8))
+            for k in (0.33, 0.66):
+                sx = vent_rect.left() + vent_rect.width() * k
+                painter.drawLine(QtCore.QPointF(sx, vent_rect.top()), QtCore.QPointF(sx, vent_rect.bottom()))
 
-        vent_w, vent_h = draw_w * 0.05, draw_h * 0.22
-        painter.setPen(QtGui.QPen(QtGui.QColor(palette.border_strong), 1))
-
-        vod_rect = QtCore.QRectF(room_rect.right() - vent_w / 2,
-                                  room_rect.top() + draw_h * 0.15, vent_w, vent_h)
-        painter.setBrush(QtGui.QColor(vent_colors[vod_label]))
-        painter.drawRect(vod_rect)
-
-        voc_rect = QtCore.QRectF(room_rect.right() - vent_w / 2,
-                                  room_rect.bottom() - draw_h * 0.15 - vent_h, vent_w, vent_h)
-        painter.setBrush(QtGui.QColor(vent_colors[voc_label]))
-        painter.drawRect(voc_rect)
-
-        # --- candle(s) ---------------------------------------------------------
+        # --- candle flame(s) on the floor -----------------------------------
         n_candles = 2 if self._candles == 1 else 1
-        flame_color = QtGui.QColor(palette.danger)
-        positions = [0.5] if n_candles == 1 else [0.38, 0.62]
-        r = min(draw_w, draw_h) * 0.09
-        painter.setPen(QtCore.Qt.NoPen)
-        painter.setBrush(flame_color)
-        for frac in positions:
-            cx = room_rect.left() + draw_w * frac
-            cy = room_rect.top() + draw_h * 0.5
-            painter.drawPath(_flame_path(cx, cy, r))
+        cx_mid = sum(_CANDLE_X) / 2
+        span = (_CANDLE_X[1] - _CANDLE_X[0])
+        xs = [cx_mid] if n_candles == 1 else [cx_mid - span * 0.35, cx_mid + span * 0.35]
+        flame_h = room_rect.height() * 0.42
+        for x in xs:
+            base = self._phys(domain_rect, x, _ROOM_Z[0])
+            draw_realistic_flame(painter, base.x(), base.y(), flame_h)
 
         # --- caption -------------------------------------------------------------
         painter.setPen(QtGui.QColor(palette.text_secondary))
         font = painter.font()
         font.setPointSizeF(max(font.pointSizeF() * 0.8, 7))
         painter.setFont(font)
-        caption = "Door: {}  ·  Vent 1: {}  ·  Vent 2: {}  ·  {} candle{}".format(
+        caption = "Domain + room (side view)  ·  Door: {}  ·  Vent 1: {}  ·  Vent 2: {}  ·  {} candle{}".format(
             "wide" if self._door == 1 else "narrow", vod_label, voc_label,
             n_candles, "s" if n_candles > 1 else "",
         )
