@@ -50,6 +50,7 @@ from prediction_store import PredictionSource
 from forecasting_panel import ForecastingPanel
 from timeseries import TimeSeriesPanel
 from energy_panel import EnergyBudgetPanel
+from factor_effects_panel import FactorEffectsPanel
 from figure_export import PublicationExportDialog, export_publication_figure, provenance_line
 from diff_analysis import DifferenceOverTimeDialog
 from session import build_session_dict, read_session, write_session
@@ -622,9 +623,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.controller.store, self.sim_data.manifest,
                 self._quantity_options(), self.sim_data.timesteps_per_second)
             self.energy_panel = EnergyBudgetPanel(self.sim_data.manifest)
+            # Factor-effect maps (M3.1) need the candle factorial's factor
+            # axes; a generic guest study has none, so it's factorial-only.
+            self.factor_effects_panel = (
+                FactorEffectsPanel(self.controller.store, self.sim_data.manifest,
+                                   self._quantity_options(), self.sim_data.timesteps_per_second)
+                if self.is_factorial else None)
         else:
             self.timeseries_panel = None
             self.energy_panel = None
+            self.factor_effects_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
         analysis_content = self.analytics_panel.widget() if self.analytics_panel is not None else None
@@ -647,7 +655,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 forecasting_content=ForecastingPanel(
                     self.prediction_store, self.controller.store, self.sim_data.manifest),
                 timeseries_content=self.timeseries_panel,
-                energy_content=self.energy_panel),
+                energy_content=self.energy_panel,
+                factor_effects_content=self.factor_effects_panel),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
             "about": AboutPage(),

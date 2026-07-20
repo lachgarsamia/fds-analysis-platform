@@ -1935,3 +1935,41 @@ class TestMultiStudyGuestStudy:
         qapp.processEvents()
         assert window.heatmap.get_array().shape == (49, 31)
         window.close()
+
+
+class TestFactorEffectsPanel:
+    """V2 roadmap M3.1: factor-effect maps on the Analysis page."""
+
+    def test_panel_present_for_factorial_absent_for_guest(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "factor_effects_panel", None) is None
+            window.close()
+            return
+        assert window.factor_effects_panel is not None
+        window.close()
+        # A generic guest study (degenerate single case) has no factor axes.
+        import os
+        from data_provider import load_study
+        from load_data import SIM_ROOT
+        case_dir = os.path.join(SIM_ROOT, "c1_d0_vod0_voc0")
+        guest = MainWindow(load_study(case_dir))
+        assert guest.factor_effects_panel is None
+        guest.close()
+
+    def test_ensure_loaded_builds_table_and_field(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        panel = window.factor_effects_panel
+        panel.ensure_loaded()
+        assert panel.table.rowCount() == 4  # candles, door, vod, voc
+        assert panel._current_field is not None
+        assert panel._image is not None
+        # Interaction mode: pick a second factor, field recomputes.
+        panel.interaction_combo.setCurrentIndex(1)  # first "× factor" entry
+        assert panel._current_field is not None
+        window.close()

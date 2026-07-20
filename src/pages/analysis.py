@@ -28,7 +28,8 @@ class AnalysisPage(Page):
                  on_shown: Optional[Callable[[], None]] = None,
                  forecasting_content: QtWidgets.QWidget = None,
                  timeseries_content: QtWidgets.QWidget = None,
-                 energy_content: QtWidgets.QWidget = None, parent=None):
+                 energy_content: QtWidgets.QWidget = None,
+                 factor_effects_content: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self._on_shown = on_shown
         layout = QtWidgets.QVBoxLayout(self)
@@ -46,6 +47,7 @@ class AnalysisPage(Page):
         # mode supplies none.
         sections = [
             ("Ensemble analytics", content),
+            ("Factor effects", factor_effects_content),
             ("Time series", timeseries_content),
             ("Energy budget", energy_content),
             ("Forecasting", forecasting_content),
