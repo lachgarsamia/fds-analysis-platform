@@ -2267,3 +2267,28 @@ class TestCausePanel:
         panel._on_click(_Evt())
         assert panel.chain.count() >= 1
         window.close()
+
+
+class TestHeightPanel:
+    """V4-M1: height-aware analysis workspace."""
+
+    def test_panel_builds_picks_x_and_lists_height_insights(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "height_panel", None) is None
+            window.close()
+            return
+        panel = window.height_panel
+        panel.ensure_loaded()
+        assert panel.scenario_combo.count() == len(sim_data.manifest)
+        assert panel.insights.count() >= 2  # plume / layer / ceiling readings
+        # a locator click sets the vertical line and re-renders the profile
+        extent = sim_data.store.get_extent(0, DEFAULT_SLICE_KEY)
+
+        class _Evt:
+            inaxes = panel._loc_ax
+            xdata, ydata = 0.9, 0.1
+        panel._on_click(_Evt())
+        assert panel._x_col is not None
+        window.close()

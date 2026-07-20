@@ -592,3 +592,74 @@ class TestCauseRealData:
         src = insights[-1].location
         assert src is not None and src[0] > 0.70
         assert any("not proven causation" in i.basis.lower() for i in insights)
+
+
+import height_analysis as haz  # noqa: E402
+
+
+class TestHeightAnalysis:
+    EXT = (0.0, 1.0, 0.0, 0.4)  # z 0..0.4
+
+    def test_column_for_x(self):
+        assert haz.column_for_x(self.EXT, 11, 0.0) == 0
+        assert haz.column_for_x(self.EXT, 11, 1.0) == 10
+        assert haz.column_for_x(self.EXT, 11, 0.5) == 5
+
+    def test_vertical_profile_is_floor_first(self):
+        # frame (n_z=5, n_x=3), row 0 = ceiling. Column 0 = [100,80,60,40,20]
+        # from ceiling to floor -> profile (floor-first) = [20,40,60,80,100].
+        frame = np.array([[100, 0, 0], [80, 0, 0], [60, 0, 0], [40, 0, 0], [20, 0, 0]],
+                         dtype=np.float32)
+        zs, vals = haz.vertical_profile(frame, self.EXT, 0)
+        assert zs[0] == pytest.approx(0.0) and zs[-1] == pytest.approx(0.4)  # floor -> ceiling
+        np.testing.assert_allclose(vals, [20, 40, 60, 80, 100])  # cool floor, hot ceiling
+
+    def test_plume_height_tracks_highest_hot_cell(self):
+        # 2 frames, row 0 = ceiling (z=0.4). Frame 0: hot only near floor
+        # (row 4); Frame 1: hot up to row 1 (near ceiling).
+        d = np.full((2, 5, 2), 20.0, dtype=np.float32)
+        d[0, 4, 0] = 200  # floor (z=0.0)
+        d[1, 1, 0] = 200  # near ceiling (z=0.3)
+        h = haz.plume_height_series(d, self.EXT, 100.0)
+        assert h[0] == pytest.approx(0.0)   # only the floor cell is hot
+        assert h[1] == pytest.approx(0.3)   # plume rose to row 1 -> z=0.3
+
+    def test_ceiling_jet_is_near_ceiling_max(self):
+        d = np.full((2, 10, 3), 20.0, dtype=np.float32)
+        d[0, 0, 0] = 300   # ceiling row, frame 0
+        d[1, 9, 0] = 500   # floor row (not the ceiling band), frame 1
+        jet = haz.ceiling_jet_series(d, band_frac=0.2)  # top 2 rows
+        assert jet[0] == pytest.approx(300.0)
+        assert jet[1] == pytest.approx(20.0)  # the 500 is at the floor, ignored
+
+
+@requires_real_dataset
+class TestHeightRealData:
+    def test_gas_layer_stratifies_hot_over_cool(self):
+        from data_provider import load_simulation_data
+        from slice_key import SliceKey
+        sim = load_simulation_data()
+        if sim.is_demo:
+            pytest.skip("real dataset not present")
+        e = sim.manifest[0]
+        data = np.asarray(sim.store.get(e.case_index, SliceKey("TEMPERATURE")))
+        extent = sim.store.get_extent(e.case_index, SliceKey("TEMPERATURE"))
+        fi = int(data.shape[0] * 0.6)
+        # away from the flame column, the upper gas is warmer than the floor
+        col = haz.column_for_x(extent, data.shape[2], 0.5)
+        zs, vals = haz.vertical_profile(data[fi], extent, col)
+        assert vals[-1] >= vals[0]  # ceiling >= floor (stratification)
+
+    def test_plume_and_ceiling_series_are_finite_and_sane(self):
+        from data_provider import load_simulation_data
+        from slice_key import SliceKey
+        sim = load_simulation_data()
+        if sim.is_demo:
+            pytest.skip("real dataset not present")
+        e = sim.manifest[0]
+        data = np.asarray(sim.store.get(e.case_index, SliceKey("TEMPERATURE")))
+        extent = sim.store.get_extent(e.case_index, SliceKey("TEMPERATURE"))
+        plume = haz.plume_height_series(data, extent, 60.0)
+        jet = haz.ceiling_jet_series(data)
+        assert np.all(np.isfinite(plume)) and plume.max() <= extent[3] + 1e-6
+        assert np.all(np.isfinite(jet)) and jet.max() >= 20.0

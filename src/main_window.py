@@ -64,6 +64,7 @@ from query_panel import QueryPanel
 from state_space_panel import StateSpacePanel
 from attention_panel import AttentionPanel
 from cause_panel import CausePanel
+from height_panel import HeightPanel
 from diff_analysis import DifferenceOverTimeDialog
 from session import build_session_dict, read_session, write_session
 from nav import NavRail
@@ -671,6 +672,11 @@ class MainWindow(QtWidgets.QMainWindow):
             # Cause explorer (V3-M7, gated): why-is-it-hot gradient tracing.
             self.cause_panel = CausePanel(
                 self.controller.store, self.sim_data.manifest, self.sim_data.timesteps_per_second)
+            # Height-aware analysis workspace (V4-M1): vertical profiles,
+            # smoke layer, plume, ceiling jet.
+            self.height_panel = HeightPanel(
+                self.controller.store, self.sim_data.manifest,
+                self._quantity_options(), self.sim_data.timesteps_per_second)
             # Factor-effect maps (M3.1) need the candle factorial's factor
             # axes; a generic guest study has none, so it's factorial-only.
             self.factor_effects_panel = (
@@ -688,6 +694,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.state_space_panel = None
             self.attention_panel = None
             self.cause_panel = None
+            self.height_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
         analysis_content = self.analytics_panel.widget() if self.analytics_panel is not None else None
@@ -718,7 +725,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 query_content=self.query_panel,
                 state_space_content=self.state_space_panel,
                 attention_content=self.attention_panel,
-                cause_content=self.cause_panel),
+                cause_content=self.cause_panel,
+                height_content=self.height_panel),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
             "about": AboutPage(),

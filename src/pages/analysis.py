@@ -36,7 +36,8 @@ class AnalysisPage(Page):
                  query_content: QtWidgets.QWidget = None,
                  state_space_content: QtWidgets.QWidget = None,
                  attention_content: QtWidgets.QWidget = None,
-                 cause_content: QtWidgets.QWidget = None, parent=None):
+                 cause_content: QtWidgets.QWidget = None,
+                 height_content: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self._on_shown = on_shown
         layout = QtWidgets.QVBoxLayout(self)
@@ -54,6 +55,7 @@ class AnalysisPage(Page):
         # mode supplies none.
         sections = [
             ("Ensemble analytics", content),
+            ("Height", height_content),
             ("Ask", query_content),
             ("Fire MRI", fire_mri_content),
             ("Attention", attention_content),
