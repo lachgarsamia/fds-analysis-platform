@@ -88,6 +88,18 @@ def export_publication_figure(frame: np.ndarray, path: str, *, cmap: str,
     (.svg/.pdf vector, .png raster at `dpi`). Height is derived from the
     physical extent's aspect ratio plus fixed margins, so the data panel
     is never distorted."""
+    fig = _build_publication_figure(
+        frame, cmap=cmap, vmin=vmin, vmax=vmax, extent=extent,
+        colorbar_label=colorbar_label, title=title, width_in=width_in,
+        font_pt=font_pt, dpi=dpi, isotherm_levels=isotherm_levels, provenance=provenance)
+    fig.savefig(path, dpi=dpi)
+
+
+def _build_publication_figure(frame, *, cmap, vmin, vmax, extent, colorbar_label,
+                               title="", width_in=3.5, font_pt=8.0, dpi=300,
+                               isotherm_levels=None, provenance=None):
+    """Shared figure builder for export_publication_figure and
+    figure_png_bytes (V2 roadmap M3.3 -- reports embed the same figure)."""
     x0, x1, z0, z1 = extent
     data_aspect = (z1 - z0) / (x1 - x0) if x1 != x0 else 0.5
     # Data panel occupies ~78% of the width (colorbar + labels take the
@@ -123,8 +135,23 @@ def export_publication_figure(frame: np.ndarray, path: str, *, cmap: str,
     if provenance:
         fig.text(0.01, 0.01, provenance, fontsize=max(4.0, font_pt - 3),
                   color="#555555", ha="left", va="bottom")
+    return fig
 
-    fig.savefig(path, dpi=dpi)
+
+def figure_png_bytes(frame, *, cmap, vmin, vmax, extent, colorbar_label,
+                      title="", width_in=5.0, font_pt=9.0, dpi=150,
+                      isotherm_levels=None, provenance=None) -> bytes:
+    """The same publication figure as export_publication_figure, but
+    returned as PNG bytes (for embedding in an M3.3 report's self-
+    contained HTML as a base64 data URI) instead of written to a path."""
+    import io
+    fig = _build_publication_figure(
+        frame, cmap=cmap, vmin=vmin, vmax=vmax, extent=extent,
+        colorbar_label=colorbar_label, title=title, width_in=width_in,
+        font_pt=font_pt, dpi=dpi, isotherm_levels=isotherm_levels, provenance=provenance)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi)
+    return buf.getvalue()
 
 
 class PublicationExportDialog(QtWidgets.QDialog):

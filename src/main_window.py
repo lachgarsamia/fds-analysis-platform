@@ -45,14 +45,16 @@ from views import ViewGrid, DifferenceView, EnsembleView
 from summary_stats import build_summary_index, _read_hrr_csv
 from browser import ExperimentBrowserDock, _SummaryTextWorker
 from analytics_panel import AnalyticsPanelDock, _AnalyticsFeatureWorker
-from auto_summary import export_markdown
+from auto_summary import export_markdown, generate_summary
 from prediction_store import PredictionSource
 from forecasting_panel import ForecastingPanel
 from timeseries import TimeSeriesPanel
 from energy_panel import EnergyBudgetPanel
 from factor_effects_panel import FactorEffectsPanel
 from tenability_panel import TenabilityPanel
-from figure_export import PublicationExportDialog, export_publication_figure, provenance_line
+from figure_export import (PublicationExportDialog, export_publication_figure,
+                           provenance_line, figure_png_bytes)
+from report_builder import build_scenario_report, build_comparison_report, write_report
 from diff_analysis import DifferenceOverTimeDialog
 from session import build_session_dict, read_session, write_session
 from nav import NavRail
@@ -480,6 +482,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.experiment_browser.open_grid_requested.connect(self._open_browser_grid)
         self.experiment_browser.open_ensemble_requested.connect(self._open_browser_ensemble)
         self.experiment_browser.export_summaries_requested.connect(self._export_summaries_markdown)
+        self.experiment_browser.export_report_requested.connect(self._export_report)
         if self.experiment_browser.open_model_eval_button is not None:
             self.experiment_browser.open_model_eval_requested.connect(self._open_browser_model_eval)
         # FireLab roadmap Phase 4: re-hosted as the Dataset page's content
@@ -2078,6 +2081,91 @@ class MainWindow(QtWidgets.QMainWindow):
             self._on_sim_error(f"Could not write summaries to {path}: {e}")
             return
         self.statusBar().showMessage(f"Exported scenario summaries to {path}", 5000)
+
+    # --------------------------------------------------------- report (M3.3)
+    def _entry_for_case(self, case_index):
+        return next((e for e in (self.sim_data.manifest or []) if e.case_index == case_index), None)
+
+    def _summary_for_case(self, case_index):
+        return next((s for s in getattr(self, "_scenario_summaries", []) if s.case_index == case_index), None)
+
+    def _peak_frame_index(self, summary) -> int:
+        return int(np.argmax(summary.max_temp_by_frame_c)) if summary.max_temp_by_frame_c else 0
+
+    def _export_report(self, case_indices: list):
+        """Experiment browser's "Generate report…" (M3.3): one selected
+        scenario -> a per-scenario HTML report; two -> an A-vs-B
+        comparison report. Assembles the F6 publication figure, the
+        already-computed summary stats, the deterministic auto-summary
+        prose, and a provenance block into one self-contained file."""
+        if not case_indices or not getattr(self, "_scenario_summaries", None):
+            return
+        summaries = self._scenario_summaries
+        fps = self.sim_data.timesteps_per_second
+        key = DEFAULT_SLICE_KEY
+        display = QUANTITY_DISPLAY[key.quantity]
+        try:
+            if len(case_indices) == 1:
+                html_text, default_name = self._build_scenario_report(case_indices[0], summaries, fps, key, display)
+            else:
+                html_text, default_name = self._build_comparison_report(
+                    case_indices[0], case_indices[1], summaries, fps, key, display)
+        except Exception as e:  # noqa: BLE001 - report a failure, never crash
+            QtWidgets.QMessageBox.warning(self, "Generate Report", f"Could not build report: {e}")
+            return
+        if html_text is None:
+            return
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save Report", default_name, "HTML report (*.html)")
+        if not path:
+            return
+        if not path.lower().endswith(".html"):
+            path += ".html"
+        try:
+            write_report(path, html_text)
+        except OSError as e:
+            self._on_sim_error(f"Could not write report to {path}: {e}")
+            return
+        self.statusBar().showMessage(f"Saved report to {path}", 5000)
+
+    def _build_scenario_report(self, case_index, summaries, fps, key, display):
+        entry = self._entry_for_case(case_index)
+        summary = self._summary_for_case(case_index)
+        if entry is None or summary is None:
+            return None, None
+        data = self.controller.store.get(case_index, key)
+        peak = min(self._peak_frame_index(summary), data.shape[0] - 1)
+        provenance = provenance_line(entry.path, entry.folder, peak / fps)
+        figure_png = figure_png_bytes(
+            np.asarray(data[peak]), cmap=self.current_colormap, vmin=display['vmin'],
+            vmax=display['slider_default'], extent=self._extent_for(case_index, key),
+            colorbar_label=f"{display['label']} ({display['unit']})", title=entry.folder,
+            isotherm_levels=ISOTHERM_LEVELS.get(key.quantity))
+        summary_text = generate_summary(entry, summary, summaries, self.controller.store, fps, key)
+        html_text = build_scenario_report(entry, summary, summary_text, figure_png, provenance)
+        return html_text, f"report_{entry.folder}.html"
+
+    def _build_comparison_report(self, case_a, case_b, summaries, fps, key, display):
+        entry_a, entry_b = self._entry_for_case(case_a), self._entry_for_case(case_b)
+        summary_a, summary_b = self._summary_for_case(case_a), self._summary_for_case(case_b)
+        if None in (entry_a, entry_b, summary_a, summary_b):
+            return None, None
+        data_a = self.controller.store.get(case_a, key)
+        data_b = self.controller.store.get(case_b, key)
+        peak = min(self._peak_frame_index(summary_a), data_a.shape[0] - 1, data_b.shape[0] - 1)
+        diff = np.asarray(data_a[peak]) - np.asarray(data_b[peak])
+        vmax = float(np.max(np.abs(diff))) or 1.0
+        provenance_a = provenance_line(entry_a.path, entry_a.folder, peak / fps)
+        provenance_b = provenance_line(entry_b.path, entry_b.folder, peak / fps)
+        diff_png = figure_png_bytes(
+            diff, cmap="RdBu_r", vmin=-vmax, vmax=vmax, extent=self._extent_for(case_a, key),
+            colorbar_label=f"Δ{display['label']} ({display['unit']})",
+            title=f"{entry_a.folder} − {entry_b.folder}")
+        text_a = generate_summary(entry_a, summary_a, summaries, self.controller.store, fps, key)
+        text_b = generate_summary(entry_b, summary_b, summaries, self.controller.store, fps, key)
+        html_text = build_comparison_report(entry_a, entry_b, summary_a, summary_b,
+                                            text_a, text_b, diff_png, provenance_a, provenance_b)
+        return html_text, f"report_{entry_a.folder}_vs_{entry_b.folder}.html"
 
     def _load_cell(self, cell, case_index: int, quantity_key):
         """A *non-active* cell's own combo picked a new (case, key)

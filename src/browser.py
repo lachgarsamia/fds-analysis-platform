@@ -131,6 +131,7 @@ class ExperimentBrowserDock(QtWidgets.QDockWidget):
     open_grid_requested = QtCore.pyqtSignal(list)
     open_ensemble_requested = QtCore.pyqtSignal(list)
     export_summaries_requested = QtCore.pyqtSignal()
+    export_report_requested = QtCore.pyqtSignal(list)  # M3.3: selected case_indices (1=scenario, 2=A-vs-B)
     open_model_eval_requested = QtCore.pyqtSignal(list)  # M3.2.5: selected case_indices
     # Emitted once, the first time a row is selected while summary_texts is
     # still empty -- MainWindow's cue to start the background auto-summary
@@ -221,6 +222,14 @@ class ExperimentBrowserDock(QtWidgets.QDockWidget):
         button_row.addWidget(self.open_grid_button)
         button_row.addWidget(self.open_ensemble_button)
         layout.addLayout(button_row)
+
+        # M3.3: one scenario -> per-scenario report; two -> A-vs-B report.
+        self.report_button = QtWidgets.QPushButton("Generate report…")
+        self.report_button.setToolTip(
+            "Build a shareable HTML report: select one scenario for a single "
+            "report, or two for an A-vs-B comparison")
+        self.report_button.clicked.connect(lambda: self.export_report_requested.emit(self.selected_case_indices()))
+        layout.addWidget(self.report_button)
 
         if self._has_predictions:
             self.open_model_eval_button = QtWidgets.QPushButton("View model prediction")

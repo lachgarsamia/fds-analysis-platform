@@ -1973,3 +1973,52 @@ class TestFactorEffectsPanel:
         panel.interaction_combo.setCurrentIndex(1)  # first "× factor" entry
         assert panel._current_field is not None
         window.close()
+
+
+class TestReportBuilder:
+    """V2 roadmap M3.3: browser "Generate report…" -> HTML report."""
+
+    def _window_with_summaries(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            return window, True
+        _drain_workers(qapp, [], timeout=0.1)
+        deadline = time.perf_counter() + 5.0
+        while not getattr(window, "_scenario_summaries", None) and time.perf_counter() < deadline:
+            qapp.processEvents()
+            time.sleep(0.01)
+        return window, False
+
+    def test_scenario_report_written(self, qapp, tmp_path, monkeypatch):
+        window, demo = self._window_with_summaries(qapp)
+        if demo:
+            window.close()
+            return
+        out = str(tmp_path / "r.html")
+        monkeypatch.setattr(QtWidgets.QFileDialog, "getSaveFileName", lambda *a, **k: (out, ""))
+        window._export_report([0])
+        assert (tmp_path / "r.html").exists()
+        text = (tmp_path / "r.html").read_text()
+        assert "data:image/png;base64," in text and "<table>" in text
+        window.close()
+
+    def test_comparison_report_written(self, qapp, tmp_path, monkeypatch):
+        window, demo = self._window_with_summaries(qapp)
+        if demo:
+            window.close()
+            return
+        out = str(tmp_path / "cmp.html")
+        monkeypatch.setattr(QtWidgets.QFileDialog, "getSaveFileName", lambda *a, **k: (out, ""))
+        window._export_report([0, 12])
+        assert (tmp_path / "cmp.html").exists()
+        assert "vs" in (tmp_path / "cmp.html").read_text()
+        window.close()
+
+    def test_report_button_present_in_browser(self, qapp):
+        window, demo = self._window_with_summaries(qapp)
+        if demo:
+            window.close()
+            return
+        assert window.experiment_browser.report_button is not None
+        window.close()
