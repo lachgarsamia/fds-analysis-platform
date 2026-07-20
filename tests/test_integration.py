@@ -877,21 +877,18 @@ class TestIntegration:
         window.close()
 
     def test_simultaneous_scenario_and_quantity_switch_cache_miss_race(self, qapp):
-        """Characterizes (does not fix) the race documented in ROADMAP.md's
-        M2.1 section: `_pending_load_case` tracks case_idx only, not
-        (case_idx, key), so a scenario toggle and a quantity switch that
-        both land on the same case_idx while both are cache misses can have
-        their background prefetches finish out of order.
+        """V2-M0.1 fixed the race this once characterized: `_pending_load_case`
+        is now paired with `_pending_load_key`, so when a scenario toggle
+        and a quantity switch both land on the same case_idx, the STALE
+        key's prefetch finishing first no longer ends the busy state.
 
-        Forces the specific interleaving the roadmap note is worried about
-        -- the STALE (pre-switch) key's prefetch finishing first -- via a
-        store wrapper that deliberately delays the NEW key's load. Confirms
-        two things: (1) the end state is fully correct (right quantity,
-        right scenario, right frame data, busy state settles, cursor
-        restored) -- not just "doesn't crash"; and (2) the mechanism named
-        in the roadmap note is real, not assumed: the cursor is provably
-        already restored (busy state already ended) at the moment the GUI
-        thread starts its own blocking synchronous fetch for the new key.
+        Forces the same interleaving (the stale pre-switch key's prefetch
+        finishing first, via a store wrapper that delays the NEW key's
+        load) and confirms the *fixed* behavior: (1) the end state is fully
+        correct; and (2) the busy state waits for the new key's own
+        prefetch -- so the GUI thread never does a blocking fresh load for
+        it (its `_sync_current_scenario` fetch is a cache hit), and the
+        cursor is not restored early.
         """
         from slice_key import SliceKey
 
@@ -972,27 +969,19 @@ class TestIntegration:
         assert completed_keys_in_order[0] == DEFAULT_SLICE_KEY
         assert velocity_key in completed_keys_in_order
 
-        # -- 3. The mechanism itself: find the GUI-thread call(s) for the
-        #    new key that actually triggered a fresh (non-cached) load --
-        #    that's _sync_current_scenario's own blocking store.get(),
-        #    triggered from inside _on_prefetch_finished -- and confirm the
-        #    cursor had ALREADY been restored (busy state already ended)
-        #    before it started. This is the literal "busy indicator lies
-        #    for the hitch's duration" behavior, not an assumption. --
+        # -- 3. The fix: the GUI thread never does a blocking *fresh* load
+        #    for the new key. Because the busy state waits until VELOCITY's
+        #    own prefetch has cached it (M0.1), _sync_current_scenario's
+        #    store.get() for the new key is a cache HIT, not a fresh load
+        #    racing the background prefetch. --
         gui_thread_fresh_velocity_calls = [
             entry for entry in wrapper.completion_log
             if entry[1] == velocity_key and entry[2] and entry[4]
         ]
-        assert len(gui_thread_fresh_velocity_calls) >= 1, (
-            "expected at least one GUI-thread fresh-load fetch for the new "
-            "key (_sync_current_scenario's synchronous get racing the "
-            "still-in-flight background prefetch)"
-        )
-        assert all(entry[3] for entry in gui_thread_fresh_velocity_calls), (
-            "cursor must already have been restored (busy state already "
-            "ended) before this synchronous, GUI-thread-blocking fetch "
-            "began -- confirming the busy indicator was inaccurate for "
-            "its duration, not just eventually consistent"
+        assert gui_thread_fresh_velocity_calls == [], (
+            "with the M0.1 pending-key fix, the busy state waits for the "
+            "new key's own prefetch, so the GUI thread should never trigger "
+            "a fresh (non-cached) load for it"
         )
 
         # -- 4. Despite the race, the FINAL state is fully correct: right
@@ -2021,4 +2010,38 @@ class TestReportBuilder:
             window.close()
             return
         assert window.experiment_browser.report_button is not None
+        window.close()
+
+
+class TestPendingKeyRace:
+    """V2 roadmap M0.1: a scenario toggle and a quantity switch landing on
+    the same case must not let the earlier key's prefetch end the busy
+    state while the current key is still loading."""
+
+    def test_finish_for_other_key_keeps_busy_until_pending_key_cached(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        from slice_key import SliceKey
+        velocity_key = SliceKey("VELOCITY")
+        cached = set()  # (case, quantity) tuples that report cached
+        window.controller.is_cached = lambda c, k=None: (c, getattr(k, "quantity", None)) in cached
+
+        window._pending_load_case = 0
+        window._pending_load_key = velocity_key
+        window._busy = True
+
+        # A prefetch for a *different* key on case 0 finishes; the pending
+        # VELOCITY load is not cached yet -> stay busy.
+        window._on_prefetch_finished(0)
+        assert window._busy is True
+        assert window._pending_load_case == 0
+
+        # Now the pending key is cached -> the next finish ends busy.
+        cached.add((0, "VELOCITY"))
+        window._on_prefetch_finished(0)
+        assert window._busy is False
+        assert window._pending_load_case is None
         window.close()

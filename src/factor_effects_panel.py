@@ -21,7 +21,7 @@ from PyQt5 import QtCore, QtWidgets
 
 from widgets import MplCanvas
 from config import QUANTITY_DISPLAY
-from slice_key import SOOT_QUANTITY
+from registry import get_quantity
 import factor_effects as fx
 
 
@@ -30,11 +30,12 @@ class FactorEffectsPanel(QtWidgets.QWidget):
         super().__init__(parent)
         self._store = store
         self._manifest = sorted(manifest, key=lambda e: e.case_index)
-        # Factor effects run over the .sf quantities only (M3.1 scope);
-        # running them over the 24 .s3d SOOT planes would decode the whole
-        # volumetric dataset.
+        # Factor effects run over 2D `.sf` quantities only (M3.1 scope);
+        # a 'volume' quantity (SOOT, from `.s3d`) would decode the whole
+        # volumetric dataset over 24 scenarios. The registry's `kind`
+        # (M0.2) is the discriminator, not a hardcoded quantity name.
         self._quantity_options = [(label, key) for label, key in quantity_options
-                                  if key.quantity != SOOT_QUANTITY]
+                                  if get_quantity(key.quantity).kind == "slice2d"]
         self._fps = max(1, fps)
         self._loaded = False
         # quantity -> {factor -> effect field series}; cached so factor

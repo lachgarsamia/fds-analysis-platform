@@ -235,6 +235,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._current_n_frames = 0
         self._busy = False               # a cache-miss prefetch is in flight
         self._pending_load_case = None   # which case_index that prefetch is for
+        self._pending_load_key = None    # ...and which quantity key (M0.1: the case-vs-key race fix)
         self._was_playing_before_load = False
         self.time_controller = TimeController(
             lambda: self._current_n_frames, sim_data.timesteps_per_second
@@ -1568,10 +1569,22 @@ class MainWindow(QtWidgets.QMainWindow):
         """A background scenario load completed (M1.4.4). If the user has
         since switched to a different combination, this is stale -- ignore
         it silently, the busy state stays active for whichever request is
-        still pending (or was already cleared by a cache hit)."""
+        still pending (or was already cleared by a cache hit).
+
+        M0.1: prefetch_finished carries only case_idx, but two prefetches
+        for the *same* case at different quantity keys can be in flight at
+        once (a scenario toggle then a quantity switch that land on the
+        same case). Gate the busy-end on the pending *key* actually being
+        cached now, so an earlier key's completion can't end the busy
+        state while the user is still waiting on the current key -- rather
+        than widening this signal to carry the key (a
+        simulation_controller threading change, deliberately avoided)."""
         if case_idx != self._pending_load_case:
             return
+        if not self.controller.is_cached(case_idx, self._pending_load_key):
+            return  # a different key on this case finished; keep waiting for the pending one
         self._pending_load_case = None
+        self._pending_load_key = None
         self._end_busy_state()
         self._sync_current_scenario(case_idx)
         if self._was_playing_before_load:
@@ -1589,7 +1602,13 @@ class MainWindow(QtWidgets.QMainWindow):
         _pending_load_case that was cleared by this unrelated failure."""
         if case_idx != self._pending_load_case:
             return
+        # M0.1: if the pending key is already cached, the current request
+        # actually succeeded and this is a late error for a superseded key
+        # on the same case -- ignore it rather than blanking a good load.
+        if self.controller.is_cached(case_idx, self._pending_load_key):
+            return
         self._pending_load_case = None
+        self._pending_load_key = None
         self._end_busy_state()
         self._on_sim_error(message)
 
@@ -1634,26 +1653,23 @@ class MainWindow(QtWidgets.QMainWindow):
         state (see _on_prefetch_finished) -- an earlier, now-superseded
         prefetch simply finishes in the background and is ignored.
 
-        Known gap (M2.1): `_pending_load_case` tracks case_idx only, not
-        (case_idx, key) -- a scenario toggle and a quantity switch that
-        both land on the same case_idx while both are cache misses can
-        race (whichever prefetch finishes first ends the busy state, even
-        if it wasn't for the currently-selected quantity). The visible
-        effect is bounded to one extra synchronous-parse hitch in
-        _sync_current_scenario, which self-corrects on the next frame --
-        not a crash. Not fixed here; would need prefetch_finished/error to
-        carry the key too.
+        Fixed in M0.1: `_pending_load_case` is now paired with
+        `_pending_load_key`, and _on_prefetch_finished only ends the busy
+        state once *that key* is cached -- so a scenario toggle and a
+        quantity switch landing on the same case no longer race.
         """
         case_idx = self.controller.current_case_index()
         self.view_grid.active_cell().set_scenario_silently(case_idx)
         if self.controller.is_cached(case_idx, self.current_quantity_key):
             self._pending_load_case = None
+            self._pending_load_key = None
             if self._busy:
                 self._end_busy_state()
             self._sync_current_scenario(case_idx)
             return
 
         self._pending_load_case = case_idx
+        self._pending_load_key = self.current_quantity_key
         if not self._busy:
             self._begin_busy_state()
         self.controller.prefetch(case_idx, self.current_quantity_key)
@@ -1701,12 +1717,14 @@ class MainWindow(QtWidgets.QMainWindow):
         case_idx = self.controller.current_case_index()
         if self.controller.is_cached(case_idx, self.current_quantity_key):
             self._pending_load_case = None
+            self._pending_load_key = None
             if self._busy:
                 self._end_busy_state()
             self._sync_current_scenario(case_idx)
             return
 
         self._pending_load_case = case_idx
+        self._pending_load_key = self.current_quantity_key
         if not self._busy:
             self._begin_busy_state()
         self.controller.prefetch(case_idx, self.current_quantity_key)

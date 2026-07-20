@@ -42,6 +42,16 @@ class SliceKey:
 
 DEFAULT_SLICE_KEY = SliceKey(DEFAULT_QUANTITY, DEFAULT_DIRECTION, DEFAULT_OFFSET)
 
+# DataKey (V2 roadmap M0.2): SliceKey is the app's unified data key. It
+# already spans both 2D `.sf` slices (plane_pos is None) and volumetric
+# `.s3d` planes (plane_pos set; quantity dispatched in load_data, M2.2),
+# so it *is* the "DataKey union" the roadmap called for -- this alias
+# names that role for call sites that key on data of any kind. Derived-
+# field keys (F7) would extend this same type when that feature lands;
+# no separate class is introduced now (the roadmap's "resist inventing
+# more abstractions" rule -- F7 isn't built).
+DataKey = SliceKey
+
 # Volumetric SOOT DENSITY (read from `.s3d`, M2.1/M2.2) vs the app's
 # original `.sf` slice quantities. Axis letter <-> SliceKey.direction,
 # matching fds.slice.slice's own 0=x/1=y/2=z convention.

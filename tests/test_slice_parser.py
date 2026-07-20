@@ -114,3 +114,35 @@ class TestSliceParser:
         elapsed = time.perf_counter() - t0
         assert data is not None
         assert elapsed < 0.5, f"cold parse took {elapsed:.3f}s, expected <0.5s"
+
+
+import os  # noqa: E402
+from load_data import SIM_ROOT  # noqa: E402
+
+requires_real_dataset = pytest.mark.skipif(
+    not os.path.isdir(SIM_ROOT), reason="real fds/sim/ dataset not present")
+
+
+@requires_real_dataset
+class TestOuterEdgeColumn:
+    """V2 roadmap M0.1: adjudication of the edge-column discrepancy filed
+    in docs/spike-parser-validation.md §3. fdsreader's own per-mesh
+    subslice (its independent raw .sf decode, before its to_global
+    stitching) reports 42.58 C at the x=1.0 boundary node -- exactly what
+    combineSlices reports. fdsreader's to_global() is what duplicates the
+    x=0.99 value into the edge; our parser reads the true FDS value.
+    Pinned so a future combineSlices change can't silently start padding
+    the outer edge the way fdsreader's global stitcher does."""
+
+    def test_outer_edge_is_the_true_distinct_fds_value(self):
+        _mesh, _extent, data, _mask, _times = readSlice(
+            os.path.join(SIM_ROOT, "c1_d0_vod0_voc0"),
+            direction=1, offset=0, quantity="TEMPERATURE")
+        assert data.shape[1:] == (49, 101)
+        edge = data[329, 6, 100]      # x = 1.0 (outer boundary node)
+        neighbor = data[329, 6, 99]   # x = 0.99
+        # The genuine FDS value at the edge, distinct from its neighbor --
+        # NOT a padded duplicate of it (fdsreader's to_global artifact).
+        assert abs(edge - 42.58) < 0.1
+        assert abs(neighbor - 82.41) < 0.1
+        assert abs(edge - neighbor) > 30.0
