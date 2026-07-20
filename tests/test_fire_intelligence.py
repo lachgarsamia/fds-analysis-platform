@@ -472,3 +472,51 @@ class TestStateSpaceRealData:
         labels = run_clustering(mat, 2)
         align = cluster_alignment(labels, [e.candles for e in sim.manifest])
         assert align >= 0.5  # at least as good as chance; consistent with the PCA finding
+
+
+import attention as at  # noqa: E402
+
+
+class TestAttention:
+    def test_static_field_is_near_empty(self):
+        static = np.full((4, 5, 5), 100.0, dtype=np.float32)  # nothing changes
+        sal = at.attention_series(static, fps=4)
+        assert sal.shape == (4, 5, 5)
+        assert float(sal.max()) == 0.0  # stable -> near-empty
+
+    def test_active_region_glows_stable_stays_dark(self):
+        d = np.full((3, 5, 5), 20.0, dtype=np.float32)
+        d[1, 2, 2] = 300.0            # a spike in the middle at frame 1
+        sal = at.attention_series(d, fps=4)
+        assert 0.0 <= sal.min() and sal.max() == pytest.approx(1.0)
+        # the spike's neighbourhood is far brighter than a quiet corner
+        assert sal[1][1:4, 1:4].max() > sal[1, 0, 0]
+
+    def test_velocity_and_hrr_cues_optional(self):
+        temp = np.random.default_rng(0).random((4, 4, 4)).astype(np.float32) * 100
+        base = at.attention_series(temp, fps=4)
+        vel = np.random.default_rng(1).random((4, 4, 4)).astype(np.float32)
+        hrr = np.array([0.0, 1.0, 3.0, 2.0])
+        withcues = at.attention_series(temp, vel, hrr, fps=4)
+        assert base.shape == withcues.shape  # cues add signal, don't change shape
+        assert float(withcues.max()) == pytest.approx(1.0)
+
+
+@requires_real_dataset
+class TestAttentionRealData:
+    """DoD: the source/plume region dominates the attention over the run."""
+
+    def test_most_active_region_is_the_source(self):
+        from data_provider import load_simulation_data
+        sim = load_simulation_data()
+        if sim.is_demo:
+            pytest.skip("real dataset not present")
+        e = sim.manifest[0]
+        temp = np.asarray(sim.store.get(e.case_index, DEFAULT_SLICE_KEY))
+        extent = sim.store.get_extent(e.case_index, DEFAULT_SLICE_KEY)
+        sal = at.attention_series(temp, fps=sim.timesteps_per_second)
+        mean_sal = sal.mean(axis=0)
+        n_z, n_x = mean_sal.shape
+        row, col = np.unravel_index(int(np.argmax(mean_sal)), mean_sal.shape)
+        x = extent[0] + col / (n_x - 1) * (extent[1] - extent[0])
+        assert x > 0.70  # the candle/plume region, not the cold left side

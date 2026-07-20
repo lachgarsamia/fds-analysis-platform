@@ -2216,3 +2216,24 @@ class TestStateSpacePanel:
         # a trajectory was computed and cached for the shown scenario
         assert panel._traj_cache
         window.close()
+
+
+class TestAttentionPanel:
+    """V3-M6: physics attention map panel (heuristic saliency)."""
+
+    def test_panel_builds_renders_and_labels_honestly(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "attention_panel", None) is None
+            window.close()
+            return
+        panel = window.attention_panel
+        panel.ensure_loaded()
+        assert panel.scenario_combo.count() == len(sim_data.manifest)
+        assert panel._series is not None and panel._image is not None
+        # values are a normalized saliency in [0, 1]
+        assert 0.0 <= float(panel._series.min()) and float(panel._series.max()) <= 1.0 + 1e-6
+        from attention_panel import _DISCLAIMER
+        assert "not a physical field" in _DISCLAIMER.lower()
+        window.close()

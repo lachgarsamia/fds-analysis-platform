@@ -62,6 +62,7 @@ from semantic_diff import compare as compare_scenarios, difference_statements
 from semantic_diff_panel import SemanticDiffPanel
 from query_panel import QueryPanel
 from state_space_panel import StateSpacePanel
+from attention_panel import AttentionPanel
 from diff_analysis import DifferenceOverTimeDialog
 from session import build_session_dict, read_session, write_session
 from nav import NavRail
@@ -663,6 +664,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.state_space_panel = StateSpacePanel(
                 self.controller.store, self.sim_data.manifest, self.sim_data.timesteps_per_second,
                 summaries=getattr(self, "_scenario_summaries", None))
+            # Physics attention map (V3-M6): heuristic saliency, per frame.
+            self.attention_panel = AttentionPanel(
+                self.controller.store, self.sim_data.manifest, self.sim_data.timesteps_per_second)
             # Factor-effect maps (M3.1) need the candle factorial's factor
             # axes; a generic guest study has none, so it's factorial-only.
             self.factor_effects_panel = (
@@ -678,6 +682,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.semantic_diff_panel = None
             self.query_panel = None
             self.state_space_panel = None
+            self.attention_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
         analysis_content = self.analytics_panel.widget() if self.analytics_panel is not None else None
@@ -706,7 +711,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 fire_mri_content=self.fire_mri_panel,
                 semantic_diff_content=self.semantic_diff_panel,
                 query_content=self.query_panel,
-                state_space_content=self.state_space_panel),
+                state_space_content=self.state_space_panel,
+                attention_content=self.attention_panel),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
             "about": AboutPage(),
