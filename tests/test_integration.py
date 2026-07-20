@@ -1655,9 +1655,11 @@ class TestEventTimeline:
             window.close()
             return
         markers = window.timeline.marker_bar.markers
-        assert markers, "real data must produce at least the peak-temperature marker"
+        assert markers, "real data must produce at least the peak marker"
         labels = [label for _f, label in markers]
-        assert any("Peak temperature" in label for label in labels)
+        # V3-M2: markers are now the events.py fire story (the peak event's
+        # statement is "Peak <value> °C"), richer than the M1.3 summary set.
+        assert any(label.startswith("Peak") for label in labels)
         n = window._current_n_frames
         assert all(0 <= frame < n for frame, _l in markers)
         window.close()
@@ -2078,4 +2080,48 @@ class TestFireMRIPanel:
             xdata, ydata = 0.9, 0.1
         panel._on_move(_Evt())
         assert "peak" in panel.probe_label.text()
+        window.close()
+
+
+class TestFireStory:
+    """V3-M2: Fire Evolution Timeline wired into Live (markers + story +
+    click-to-seek)."""
+
+    def test_story_events_markers_and_seek(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        events = window.inspector._events
+        assert events, "temperature scenario should produce fire events"
+        # physically time-ordered, and mirrored onto the timeline markers
+        times = [e.primary_time() for e in events]
+        assert times == sorted(times)
+        assert len(window.timeline.marker_bar.markers) == len(events)
+        # clicking a story event seeks playback to its frame
+        target = events[-1]
+        window._on_insight_activated(target)
+        assert window.time_controller.index == target.frame_index(
+            window.time_controller.timesteps_per_second)
+        # phase line reads during playback
+        window._on_time_changed(window._current_n_frames - 1)
+        assert "Now:" in window.inspector.phase_label.text()
+        window.close()
+
+    def test_story_cleared_for_non_temperature_quantity(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        vel_idx = next((i for i, info in enumerate(window.quantity_infos)
+                       if info.key.quantity == "VELOCITY"), None)
+        if vel_idx is None:
+            window.close()
+            return
+        window.quantity_combo.setCurrentIndex(vel_idx)
+        _drain_workers(qapp, window.controller._prefetch_workers)
+        qapp.processEvents()
+        assert window.inspector.story_list.count() == 0
         window.close()

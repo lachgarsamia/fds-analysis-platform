@@ -43,6 +43,8 @@ from slice_key import (SliceInfo, SliceKey, DEFAULT_SLICE_KEY, available_slices,
                         SOOT_QUANTITY, AXIS_TO_DIRECTION)
 from views import ViewGrid, DifferenceView, EnsembleView
 from summary_stats import build_summary_index, _read_hrr_csv
+from descriptors import compute_descriptors
+from events import detect_events
 from browser import ExperimentBrowserDock, _SummaryTextWorker
 from analytics_panel import AnalyticsPanelDock, _AnalyticsFeatureWorker
 from auto_summary import export_markdown, generate_summary
@@ -212,6 +214,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # that scenario's *_hrr.csv, or () if none was found -- read once
         # per scenario, not once per playback tick.
         self._hrr_cache = {}
+        # V3-M2: per-scenario detected fire events (events.py), computed once.
+        self._fire_events_cache = {}
         # FireLab roadmap Phase 3: (case_index, quantity_key) the Live
         # Inspector's sparkline/narration were last built for -- recomputed
         # only when the active cell's scenario/quantity actually changes,
@@ -272,6 +276,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # the Live Inspector once here so it isn't blank until the user's
         # first interaction.
         self._update_inspector(self.time_controller.index)
+        # Populate the Fire story now that the inspector exists (the first
+        # marker update during plot-panel build ran before it did, V3-M2).
+        self._update_event_markers()
+        self.inspector.set_story_index(self.time_controller.index)
 
         # Kiosk / attract mode (FireLab roadmap Phase 5): idle -> Home,
         # any input -> Live. Needs a live QApplication instance, which
@@ -792,7 +800,16 @@ class MainWindow(QtWidgets.QMainWindow):
         see _update_inspector() for how it's kept in sync with playback."""
         self.inspector = InspectorPanel()
         self.inspector.diff_plot_button.clicked.connect(self._show_difference_over_time)
+        # V3-M2: clicking a Fire story event seeks playback to it.
+        self.inspector.story_list.insight_activated.connect(self._on_insight_activated)
         return self.inspector
+
+    def _on_insight_activated(self, insight) -> None:
+        """Shared V3 navigation: jump playback to an Insight's time (the
+        one interaction every Insight-producing feature reuses)."""
+        fi = insight.frame_index(self.time_controller.timesteps_per_second)
+        if fi is not None and self._current_n_frames > 0:
+            self._on_seek_requested(min(max(fi, 0), self._current_n_frames - 1))
 
     def _build_control_panel(self) -> QtWidgets.QWidget:
         panel = QtWidgets.QWidget()
@@ -1335,32 +1352,47 @@ class MainWindow(QtWidgets.QMainWindow):
         self.timeline.set_index(0)
         self._update_event_markers()
 
+    def _fire_events_for_case(self, case_index: int) -> list:
+        """The scenario's detected fire events (V3-M2, events.py) as
+        insight.Insight objects, computed once per scenario from its
+        TEMPERATURE field and cached. The fire story is about the fire, so
+        it is always temperature-based regardless of the displayed
+        quantity."""
+        cache = self._fire_events_cache
+        if case_index not in cache:
+            key = DEFAULT_SLICE_KEY
+            fps = self.time_controller.timesteps_per_second
+            try:
+                data = self.controller.store.get(case_index, key)
+                extent = self.controller.store.get_extent(case_index, key)
+                table = compute_descriptors(data, extent, fps)
+                cache[case_index] = detect_events(table, key.quantity)
+            except Exception as e:  # noqa: BLE001 - the story is a nice-to-have, never fatal
+                logger.warning("could not compute fire events for case %s: %s", case_index, e)
+                return []
+        return cache[case_index]
+
     def _update_event_markers(self) -> None:
-        """Event Timeline (V2 roadmap M1.3): auto-detected markers on the
-        scrubber for the active cell's scenario, from stats the summary
-        index already computed (M2.5) -- threshold crossings and the
-        peak-temperature frame. TEMPERATURE-only by construction (the
-        stats are temperature stats); any other quantity, non-slice cell
-        type, or demo mode (no summary index) clears the bar."""
-        summaries = getattr(self, "_scenario_summaries", None)
-        markers = []
+        """Event Timeline (V2 M1.3, enriched in V3-M2): auto-detected
+        markers on the scrubber for the active cell's scenario, now from
+        the events engine (ignition, hazard crossings, fastest heating,
+        peak, layer descent, stabilization) rather than the summary stats
+        alone. Also feeds the Inspector's Fire story list. Slice cells
+        showing TEMPERATURE only; any other quantity or cell type clears
+        both, matching the sparkline/narration calibration."""
         cell = self.view_grid.active_cell()
-        if (summaries and cell.cell_type == "slice" and cell.quantity_key is not None
-                and cell.quantity_key.quantity == "TEMPERATURE"):
-            summary = next((s for s in summaries if s.case_index == cell.case_index), None)
-            if summary is not None:
-                fps = self.time_controller.timesteps_per_second
-                for time_s, label in (
-                    (summary.time_to_100c_s, "First frame above 100 °C"),
-                    (summary.time_to_300c_s, "First frame above 300 °C"),
-                    (summary.time_to_600c_s, "First frame above 600 °C"),
-                ):
-                    if time_s is not None:
-                        markers.append((int(round(time_s * fps)), label))
-                if summary.max_temp_by_frame_c:
-                    peak_frame = int(np.argmax(summary.max_temp_by_frame_c))
-                    markers.append((peak_frame, f"Peak temperature ({summary.max_temp_c:.0f} °C)"))
+        show = (self.sim_data.manifest and cell.cell_type == "slice"
+                and cell.quantity_key is not None
+                and cell.quantity_key.quantity == "TEMPERATURE")
+        events = self._fire_events_for_case(cell.case_index) if show else []
+        fps = self.time_controller.timesteps_per_second
+        markers = [(ev.frame_index(fps), ev.statement) for ev in events
+                   if ev.frame_index(fps) is not None]
         self.timeline.set_event_markers(markers)
+        # The inspector is built after the plot panel (which triggers the
+        # first marker update), so guard its first call.
+        if getattr(self, "inspector", None) is not None:
+            self.inspector.set_story(events, fps)
 
     def _on_cell_created(self, cell):
         """A new grid cell was instantiated because the grid grew (M2.2.2).

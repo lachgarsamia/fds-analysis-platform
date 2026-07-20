@@ -170,3 +170,35 @@ class TestCrossValidationAgainstSummaryStats:
                                 sim.timesteps_per_second, cache_dir=cache_dir,
                                 source_folder=entry.path)
         np.testing.assert_allclose(s1.map("peak"), s2.map("peak"))
+
+
+class TestInspectorStory:
+    """V3-M2: the Inspector's Fire story list + current-phase line."""
+
+    def test_set_story_populates_and_phase_tracks(self, qapp):
+        from inspector import InspectorPanel
+        panel = InspectorPanel()
+        events = [
+            Insight("Ignition.", time_s=0.5),
+            Insight("Peak 400 C.", time_s=10.0),
+        ]
+        panel.set_story(events, fps=4)
+        assert panel.story_list.count() == 2
+        # before the first event
+        panel.set_story_index(0)
+        assert "before ignition" in panel.phase_label.text()
+        # after the first event, before the second (0.5 s -> frame 2)
+        panel.set_story_index(5)
+        assert "Ignition" in panel.phase_label.text()
+        # after the last event (10 s -> frame 40)
+        panel.set_story_index(100)
+        assert "Peak" in panel.phase_label.text()
+        panel.deleteLater()
+
+    def test_empty_story_clears_phase(self, qapp):
+        from inspector import InspectorPanel
+        panel = InspectorPanel()
+        panel.set_story([], fps=4)
+        panel.set_story_index(10)
+        assert panel.phase_label.text() == ""
+        panel.deleteLater()

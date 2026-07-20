@@ -22,6 +22,7 @@ from __future__ import annotations
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 from auto_summary import narrate_frame
+from insight import InsightList
 
 AMBIENT_DEFAULT_C = 20.0
 
@@ -207,7 +208,23 @@ class InspectorPanel(QtWidgets.QWidget):
         self.narration_label.setProperty("role", "value")
         layout.addWidget(self.narration_label)
 
+        # Fire story (V3-M2): the scenario's detected events as a clickable
+        # list, plus a live "current phase" line during playback.
+        story_caption = QtWidgets.QLabel("Fire story")
+        story_caption.setProperty("role", "caption")
+        layout.addWidget(story_caption)
+        self.phase_label = QtWidgets.QLabel("")
+        self.phase_label.setWordWrap(True)
+        self.phase_label.setProperty("role", "value")
+        layout.addWidget(self.phase_label)
+        self.story_list = InsightList()
+        self.story_list.setMaximumHeight(150)
+        layout.addWidget(self.story_list)
+
         layout.addStretch(1)
+
+        self._events: list = []
+        self._events_fps = 1
 
         self._series: list = []
         self._ambient_c = AMBIENT_DEFAULT_C
@@ -260,6 +277,29 @@ class InspectorPanel(QtWidgets.QWidget):
         value_text = f"{value:.1f}{unit}" if value is not None else "—"
         self.probe_label.setText(f"x = {x:.3f} m\nz = {z:.3f} m\nvalue = {value_text}")
 
+    def set_story(self, events: list, fps: int) -> None:
+        """Populate the Fire story list with a scenario's detected events
+        (V3-M2). `events` are insight.Insight objects from events.py; None
+        or [] clears the list (e.g. a non-temperature quantity)."""
+        self._events = list(events or [])
+        self._events_fps = max(1, fps)
+        self.story_list.set_insights(self._events)
+        self.phase_label.setText("")
+
+    def set_story_index(self, index: int) -> None:
+        """Update the live "current phase" line to the most recent event at
+        or before the current frame."""
+        if not self._events:
+            self.phase_label.setText("")
+            return
+        current = None
+        for ev in self._events:
+            fi = ev.frame_index(self._events_fps)
+            if fi is not None and fi <= index:
+                current = ev
+        self.phase_label.setText(f"Now: {current.statement}" if current is not None
+                                 else "Now: before ignition")
+
     def set_scenario(self, peak_temp_by_frame: list, ambient_c: float, door_wide_open: bool) -> None:
         """Called on scenario/quantity change -- resets the sparkline
         series and the narration's static context (ambient/door)."""
@@ -297,6 +337,7 @@ class InspectorPanel(QtWidgets.QWidget):
         self.narration_label.setText(
             narrate_frame(current_temp_c, peak_temp_c, self._ambient_c, self._door_wide_open)
         )
+        self.set_story_index(index)
 
     def clear(self) -> None:
         """Neutral state for a cell type/quantity the inspector doesn't
