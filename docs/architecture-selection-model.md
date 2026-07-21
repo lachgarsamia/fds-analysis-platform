@@ -6,6 +6,32 @@ SelectionBus, the Derived Quantities Framework, and how both integrate with the
 existing Event Engine, Insight system, Session manager, Browser, and Quantity
 Registry.*
 
+## 0. Three layers, one rule
+
+V5 formalizes the app into three layers; **every UI component depends only on
+Layer 2, never directly on another panel.**
+
+```
+Layer 1 — Data          ScenarioStore · Descriptor Engine · Signature Engine · Derived Quantities
+                                         │
+Layer 2 — Selection     SelectionModel · SelectionContext · SelectionBus  ◄── the only thing UI depends on
+                                         │
+Layer 3 — Presentation  Panels · Plots · Dashboard · Notebook · Assistant · Reports · Comparison · Browser
+```
+
+- **Layer 1** answers "what is the computed value?" (raw + derived fields,
+  descriptors, signatures). It never imports UI.
+- **Layer 2** answers "what is the researcher looking at, and how do parts
+  learn of a change?" It is pure/Qt-thin and imports nothing from Layer 3.
+- **Layer 3** renders. A panel talks to other panels *only* through Layer 2 —
+  it publishes a `Selection` and reacts to `Selection` changes; it never holds a
+  reference to another panel.
+
+**The project rule for V5:** *M1 establishes the architecture; M2–M6 consume it.*
+A successful M1 proves the foundation on a couple of panels — it does not finish
+the migration. Migration order follows dependency and user value, not panel
+count (see §4).
+
 ## 1. Audit findings (V4)
 
 ### 1.1 Selection state is stored locally, ~17 times over
@@ -66,6 +92,26 @@ Immutable + `with_(...)` copy-updates, so a change is always a new value and
 diffing "what changed" is trivial. Pure/Qt-free (testable in isolation), living
 in `selection.py`.
 
+### 2.1 SelectionContext — the façade consumers actually use
+Panels should not unpack the raw model everywhere (`sel.scenario`,
+`sel.time_s`, tuple-indexing `sel.point[0]`…). `SelectionContext` is a
+lightweight, read-oriented façade over the immutable `SelectionModel`:
+
+```
+ctx.scenario      ctx.quantity     ctx.point      ctx.region
+ctx.height        ctx.time_s       ctx.interval   ctx.phase
+ctx.has_point()   ctx.frame(fps)   ctx.comparison ...
+```
+
+It wraps the current `Selection` (and, where a panel needs it, the
+`QuantityProvider` for the selected quantity), exposing convenience accessors and
+derived reads (e.g. `frame(fps)` = `round(time_s * fps)`) so those conversions
+live in exactly one place. The point of the façade is **future extensibility**:
+`ctx.study`, `ctx.experiment`, `ctx.workspace`, `ctx.dashboard` can be added
+later without touching a single consumer, because consumers already speak to the
+context, not to the model's fields. `AnalysisPanelBase` (§4) hands each panel a
+`SelectionContext`, not the raw model.
+
 ## 3. The SelectionBus
 
 A thin `QObject` owning the current `Selection` and one signal:
@@ -104,9 +150,19 @@ re-implementing it:
 - `phys ↔ index` via the existing `timeseries.phys_to_index` (one import, not 15
   re-derivations).
 
-Panels override `render(selection)` only. **Migration is incremental**: the base
-is additive; a panel adopts it one at a time, suite green after each, and the
-live viewer is migrated last (it is the most entangled). No big-bang rewrite.
+Panels override `render(ctx)` only (given a `SelectionContext`, §2.1).
+**Migration is incremental**: the base is additive; a panel adopts it one at a
+time, suite green after each. No big-bang rewrite.
+
+### 4.1 Migration order (dependency + user value, not panel count)
+1. **Height Analysis** — simple consumer; proves the read path.
+2. **Linked Inspection** — proves *bidirectional* sync (it both drives and reacts).
+3. Measurements → 4. Quantities → 5. Timeline → 6. Comparison → 7. Dashboard →
+8. Notebook → 9. Sessions → 10. Reports → 11. Assistant →
+12. remaining specialist panels →
+13. **Live Viewer — last** (highest-risk, most entangled: 236 state references).
+
+M1 migrates only 1–2; the rest ride along in M2–M6 as they are touched.
 
 ## 5. Derived Quantities Framework (infrastructure, from the start)
 
@@ -118,8 +174,24 @@ feature supports derived quantities for free.
 but derived fields do **not** flow through `scenario_store.get(scenario, key)`,
 so tools cannot read them.
 
-**Design:** a `QuantityProvider` that *wraps* the store (does **not** modify
-`scenario_store`, which is off-limits):
+**Design:** a `QuantityProvider` is the computation layer between the store and
+everything downstream — the only thing panels ask for a field:
+
+```
+ScenarioStore
+     │
+QuantityProvider.get(scenario, quantity_id)
+     │
+ ┌───┴────────────┬───────────────┐
+Raw            Derived          Future
+Temperature    dT/dt            FED
+Velocity       Gradient         Smoke toxicity
+Pressure       Thermal dose     AI descriptors
+               Hazard index     M-SIM quantities
+```
+
+Downstream code asks `QuantityProvider.get(...)`, never `ScenarioStore.get(...)`.
+It *wraps* the store (does **not** modify `scenario_store`, which is off-limits):
 
 ```
 class QuantityProvider:
@@ -145,7 +217,33 @@ Multi-frame derived quantities (e.g. `dT/dt`) need the time axis, so the provide
 signature also allows a whole-series `derive_series(name, source_series, fps)`;
 single-frame and series functions register the same way.
 
-## 6. Integration with existing subsystems
+## 6. SelectionModel as the universal language
+
+The `Selection` is the **canonical interaction object**: every subsystem can
+*produce* one and *consume* one, so every interaction reduces to the same
+pipeline —
+
+```
+object  ──►  SelectionModel  ──►  SelectionBus  ──►  everything updates
+```
+
+Each of these becomes a one-line pure adapter to `Selection` (and, where it
+makes sense, back):
+
+| Source object | → Selection carries |
+|---|---|
+| `Insight` (events, diff, query, cause) | quantity, time, location/region, phase |
+| `Measurement` (probe/rect/path) | point/region, quantity, time (or interval) |
+| Notebook entry | its Insight's selection |
+| Report / narrative hyperlink | scenario, time, region — "open where this came from" |
+| Semantic-diff / advanced-compare finding | comparison pair, time, region |
+| Assistant answer (bounded) | the selection its computed evidence points at |
+
+Because the adapters are pure and one-directional-in, they are trivially tested
+and cannot smuggle in physics — they only relocate the view. This is what turns
+today's single `insight_activated → seek` link into a general mechanism.
+
+## 7. Integration with existing subsystems
 
 - **Event Engine (`events.py`).** Detected phases already have `(name, t0, t1)`.
   A phase is a selection: selecting one sets `interval` + `phase`, and the
@@ -169,7 +267,7 @@ single-frame and series functions register the same way.
   Derived Quantities Framework (§5) plugs in through `kind == "derived"` with no
   new registry concept.
 
-## 7. Risks and how the design closes them
+## 8. Risks and how the design closes them
 
 | Risk | Mitigation |
 |---|---|
@@ -179,7 +277,7 @@ single-frame and series functions register the same way.
 | Derived quantities diverging from honesty rules | derived entries carry the same registry metadata + `basis`; reuse M11's gating helpers |
 | Selection model drift as V5 grows | one immutable value object with explicit fields; new needs extend it, not per-panel state |
 
-## 8. Recommended sequence for V5-M1
+## 9. Recommended sequence for V5-M1
 
 1. `selection.py` — the immutable `Selection` + `SelectionBus`, fully unit-tested
    (equality, `with_`, no-op-on-equal, origin passthrough). *No UI yet.*

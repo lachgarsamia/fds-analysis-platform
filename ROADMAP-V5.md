@@ -1,187 +1,212 @@
 # ROADMAP V5 — From Interactive Analysis Environment to Computational Fire Scientist
 
 > **The theme is not more analyses. It is connection.** V4 shipped a dozen
-> analyses that do not talk to each other, and a 24-scenario factorial that is
-> still explored one run at a time. V5's question is the one that matters after
-> V4: *what does a researcher still do by hand?* The answer is switch panels,
-> re-find context, and compare scenarios manually. V5 removes that work by
-> connecting three things — the panels (live), the artifacts (memory), and the
-> scenarios (study-level science).
+> analyses that do not talk to each other, and a 24-scenario factorial still
+> explored one run at a time. V5's question is the one that matters after V4:
+> *what does a researcher still do by hand?* — switch panels, re-find context,
+> compare scenarios manually. V5 removes that by connecting the panels (live),
+> the artifacts (memory), and the scenarios (study-level science).
 
-## 0. Organizing principle: Connection at three levels
+## 0. Organizing principle: connection at three levels, over three layers
 
-1. **Live** — one *selection* (scenario · point (x,z) · time · phase · quantity)
-   is broadcast to every panel. Click the doorway once; the heatmap marker,
-   the temperature curve, the HRR cursor, the layer height, the Fire-MRI
-   signature, the timeline, the notebook, and the comparison view all update
-   together. No manual switching.
-2. **Memory** — every artifact V4 produces (experiment → scenario → event →
-   measurement → insight → figure → report) becomes a node in a navigable
-   **knowledge graph**. Click "flashover" → every scenario, figure, and note
-   connected to it. The app becomes laboratory memory.
-3. **Study** — the candle factorial (candles × door × vod × voc) is finally
-   used as a *designed experiment*: factor influence, response surfaces,
-   parameter relationships, outliers, and honest ensemble spread.
+Connection: **live** (one selection drives every panel), **memory** (a knowledge
+graph links every artifact), **study** (the factorial becomes a designed
+experiment).
 
-Everything in V5 is buildable on the **current** data (2D TEMPERATURE +
-VELOCITY-magnitude slices, `.s3d` soot volume, HRR CSV, 24 scenarios). Nothing
-here waits on the M-SIM re-run.
+Architecture (full design in `docs/architecture-selection-model.md`):
 
----
+```
+Layer 1 — Data          ScenarioStore · Descriptors · Signatures · Derived Quantities
+Layer 2 — Selection     SelectionModel · SelectionContext · SelectionBus   ◄── UI depends only on this
+Layer 3 — Presentation  Panels · Plots · Dashboard · Notebook · Assistant · Reports · Comparison · Browser
+```
 
-## 1. The V5 spine (flagships)
+Every UI component depends only on Layer 2 — it publishes and reacts to a
+`Selection`, never references another panel. The `SelectionModel` is the
+**canonical interaction object**: every subsystem (Insight, Measurement,
+Notebook entry, report link, semantic diff, assistant answer) can produce and
+consume one, so every interaction reduces to
+`object → SelectionModel → SelectionBus → everything updates`.
 
-- **Shared Selection Model (M1)** — the connective tissue for *live* linking.
-- **Research Knowledge Graph (M2)** — the connective tissue for *memory*.
-- **Study-Level Analytics (M3) + Sensitivity Explorer (M4)** — the connective
-  tissue for *the study*.
+**Project rule:** *M1 establishes the architecture; M2–M6 consume it.* A
+successful M1 proves the foundation on a couple of panels; it does not finish the
+migration.
 
-Ship those four and the platform crosses from "an environment with many tools"
-to "one instrument that reasons about a whole study."
+Everything here is buildable on **current** data (2D TEMPERATURE +
+VELOCITY-magnitude slices, `.s3d` soot volume, HRR CSV, 24-scenario candle
+factorial). Nothing waits on the M-SIM re-run.
 
 ---
 
-## 2. Milestones
+## Phase 0 — Architecture Stabilization
 
-### V5-M1 — Shared Selection Model ★ (flagship, live linking)
-A single `Selection` (scenario, point, time, phase, quantity) with a broadcast
-bus; panels subscribe and react (highlight the point, seek the time, mark the
-phase). A selection is itself savable to the notebook and restorable from a
-session. **Reuse:** every existing panel's seek/marker code, `insight.py`,
-`session.py`. **Difficulty:** medium (wiring, one shared model). **Priority:
-highest** — it multiplies the value of every V4 panel.
+**Objectives:** remove duplicated selection state; introduce `SelectionModel`,
+`SelectionContext`, and `SelectionBus`; introduce `AnalysisPanelBase`; introduce
+the `QuantityProvider` computation layer + Derived Quantities Framework; preserve
+all V4 behaviour.
 
-### V5-M2 — Research Knowledge Graph ★ (flagship, memory)
-A deterministic graph over objects that already exist: Experiment → Scenario →
-Event → Measurement → Insight → Figure → Report, plus tags (e.g. "flashover",
-"door-open"). A graph-browser panel: click a node → its neighbours; filter by
-tag; jump from any node into the view that produced it (via M1's selection).
-**Reuse:** `experiment.py`, `session_store.py`, `evidence_notebook.py`,
-`events.py`, `report_builder`. **Difficulty:** medium. **Priority: high** — it
-makes every prior and future milestone compound.
+**Derived Quantities Framework (infrastructure, not a milestone).** A
+`QuantityProvider` wraps `ScenarioStore` (which is never modified) and resolves
+raw *and* derived quantities behind one call, so a derived quantity is just a
+registry entry + a function (`dT/dt`, temperature gradient, thermal dose, heat
+accumulation, hot-layer thickness, a combined hazard index). Because it flows
+through the same quantity id, **every** V5 feature — plots, notebook, dashboard,
+analytics, reports, comparison, sensitivity — supports it for free. Each derived
+entry carries the M11 honesty metadata (unit, interpretation, `basis`).
 
-### V5-M3 — Study-Level Analytics (the factorial as a designed experiment)
-Treat all 24 scenarios at once: a parameter/response table, **factor influence**
-(extend `factor_effects`), **parallel coordinates**, a **correlation explorer**,
-and **outlier detection** on scenario descriptors. **Reuse:** `factor_effects`,
-`state_space`, `summary_stats`, `descriptors`. **Difficulty:** medium.
-**Priority: high.**
+**Deliverables:** the architecture note (done); pure unit tests for
+`SelectionModel`/`SelectionContext`/`SelectionBus` and the Insight/Session
+adapters; the `QuantityProvider` with one generalized derived quantity end to
+end; zero UI regressions (full suite green); the foundation for M1–M6.
+**Priority: prerequisite.**
 
-### V5-M4 — Sensitivity Explorer
-"What if ventilation changed / the door opened earlier?" — estimated from the
-*existing* runs, never a new simulation: local response surfaces over factor
-levels, parameter sliders that interpolate across the factorial, and factor-
-influence rankings. **Honesty gate:** every readout is labelled *estimated from
-existing scenarios by interpolation*, not a simulated result. **Reuse:** M3's
-response surfaces, the factor axes. **Difficulty:** medium. **Priority:
-medium–high.**
+---
 
-### V5-M5 — Hazard Spaces
-Replace bare isotherms with a dynamic hazard classification —
-Safe / Warning / Critical / Untenable / (flashover-indicator) — as a per-frame
-map and a hazard-state timeline, from temperature thresholds and exposure time.
-**Honesty:** flashover is an *indicator* from temperature criteria, flagged as
-such (no combustion model). **Reuse:** `registry` hazard bands, `tenability`,
-`events`. **Difficulty:** low–medium. **Priority: medium–high.**
+## Phase 1 — Unified Interaction Layer
 
-### V5-M6 — Scientific Dashboard (mission control)
-One synchronized screen reading from M1's selection: current phase, HRR, layer
-height, maximum hazard, critical locations, door status, and the current
-insight — for the selected scenario/time. Not dozens of windows; one board.
-**Reuse:** the inspector, descriptors, M1, M5. **Difficulty:** low–medium.
-**Priority: medium.**
+### M1 — Shared Selection Model ⭐ (flagship)
+Build the central event bus + selection model. One selection synchronizes
+scenario, point, region, height, time, interval, phase, quantity, and comparison
+state. Every existing panel *subscribes* to it instead of holding local state;
+the single existing cross-panel link (`insight_activated → seek`) is subsumed
+into the general mechanism. **M1 scope:** the model/context/bus, the
+Insight/Session adapters, the `QuantityProvider` proof, `AnalysisPanelBase`, and
+**two** migrated panels (Height, then Linked Inspection for bidirectional sync) —
+not the full migration. **Reuse:** every panel's seek/marker code, `insight.py`,
+`session.py`. **Difficulty:** medium. **Priority: highest** — the foundation for
+everything else.
 
-### V5-M7 — Space-Time Cube (optional, feasible)
-The 2D slice stack as an (x, z, time) volume: scrub, select time intervals, and
-read propagation directly. **Reuse:** the slice store, `time_window`.
-**Difficulty:** medium. **Priority: medium, optional.**
+---
 
-### V5-M8 — Scientific Narrative++
-Extend the V3 Fire Story into an expandable, evidence-backed chain (ignition →
-ceiling jet → layer descent → untenable → peak HRR → cooling); each node links
-to its evidence and, via M1, to the moment that produced it. **Reuse:**
-`events`, `insight`, M1, M2. **Difficulty:** low–medium. **Priority: medium.**
+## Phase 2 — Study Intelligence
 
-### V5-M9 — Adaptive Workspace
-Task presets — ventilation / smoke / temperature study — that arrange the
-relevant panels automatically (velocity+pressure-proxy+door profiles;
-layer+visibility+MRI; thermal dose+isotherms+MRI). **Reuse:** the page/tab
-system, sessions. **Difficulty:** low. **Priority: medium.**
+### M2 — Study-Level Analytics
+Turn an experiment into a first-class object: parallel coordinates, response
+surfaces, factor-interaction visualization, ANOVA/effect summaries, a correlation
+explorer, clustering, outlier detection, and study statistics across all 24
+scenarios. This expands the software from simulation analysis to **experiment
+analysis**. **Reuse:** `factor_effects`, `state_space`, `summary_stats`,
+`descriptors`; consumes M1. **Difficulty:** medium. **Priority: high.**
 
-### V5-M10 — Publication Mode
-One-click journal-styled figure bundles building on V4-M10 presets: consistent
-fonts, Nature/Elsevier sizing, panel labels, colourblind palettes, scale bars,
-captions, and metadata. **Reuse:** `figure_export`, `report_builder`.
-**Difficulty:** low. **Priority: medium.**
+---
 
-### V5-M11 — Assistant++ (still bounded)
-Extend the V4-M12 assistant: a natural-language front-end over the **closed**
-query grammar (parse → `Query`, never an answer) and **experiment search**
-("scenarios where smoke descended below 2 m"). **Hard rule (restated in code):**
-physics conclusions come only from computed evidence with a `basis`. **Reuse:**
-`query_engine`, `assistant`. **Difficulty:** medium. **Priority: medium.**
+## Phase 3 — Computational Exploration
 
-### V5-M12 — Ensemble Spread (honest uncertainty)
-Spread *across the factorial*, not stochastic UQ: min/mean/max envelopes and
-per-cell variability across scenario groups, and prediction-style intervals from
-the ensemble. **Honesty gate:** labelled *parametric ensemble spread across the
-designed scenarios*, never a calibrated stochastic uncertainty. **Reuse:** the
-ensemble machinery, `summary_stats`. **Difficulty:** medium. **Priority: low–
+### M3 — Sensitivity Explorer
+Estimate parameter influence from the *existing* simulations: ventilation / HRR /
+door-width sensitivity, response surfaces, local interpolation across factor
+levels, and "what-if" exploration. **Honesty gate (restated in code):** every
+readout is labelled **"Estimated from Existing Scenarios"** — never implying a new
+simulation was run. **Reuse:** M2's response surfaces, the factor axes.
+**Difficulty:** medium. **Priority: medium–high.**
+
+---
+
+## Phase 4 — Research Workspace
+
+Now that interaction (M1) and analytics (M2–M3) exist, these become far more
+powerful.
+
+- **Hazard Spaces** — dynamic classification (Safe / Warning / Critical /
+  Untenable / flashover-*indicator*) as a per-frame map and a hazard-state
+  timeline, from temperature thresholds + exposure time (no combustion model;
+  flashover flagged as an indicator).
+- **Mission-Control Dashboard** — one synchronized board reading M1's selection:
+  current phase, HRR, layer height, max hazard, critical locations, door status,
+  current insight.
+- **Adaptive Workspace** — task presets (ventilation / smoke / temperature study)
+  that arrange the relevant panels automatically.
+- **Space-Time Cube (optional, if stable)** — the 2D slice stack as an (x, z, t)
+  volume: scrub, select intervals, read propagation directly.
+
+**Reuse:** `registry`, `tenability`, `events`, the inspector, the page/tab system.
+**Difficulty:** low–medium. **Priority: medium.**
+
+---
+
+## Phase 5 — Scientific Communication
+
+Focus on communicating computed evidence.
+
+- **Narrative++** — the V3 Fire Story as an expandable, evidence-backed event
+  chain; each node links (via M1) to the moment that produced it.
+- **Publication Mode** — one-click journal-styled figure bundles building on the
+  V4-M10 presets: fonts, Nature/Elsevier sizing, panel labels, colourblind
+  palettes, scale bars, captions, metadata.
+- **Assistant++** — extend the bounded V4-M12 assistant: a natural-language
+  front-end over the **closed** query grammar (parse → `Query`, never an answer)
+  and experiment search. **Hard rule (in code):** physics conclusions come only
+  from computed evidence with a `basis`.
+- **Ensemble Spread** — spread *across the factorial* (min/mean/max envelopes,
+  per-cell variability, ensemble prediction intervals), labelled **parametric
+  ensemble spread**, never calibrated stochastic UQ.
+
+**Reuse:** `events`, `figure_export`, `report_builder`, `query_engine`,
+`assistant`, the ensemble machinery. **Difficulty:** low–medium. **Priority:
 medium.**
 
 ---
 
-## 3. Deferred to V6 (data-gated — documented, not built)
+## Phase 6 — Knowledge Layer
 
-These are valuable but **cannot be honestly built on the current output**; they
-are recorded here with their data prerequisite so they are ready when the data
-lands (see `docs/msim-preparation.md`).
-
-| Deferred theme | Blocked on |
-|---|---|
-| True 3D streamlines / quiver / volume rendering | U/W-VELOCITY components (M-SIM) |
-| Linked XY / XZ / YZ cross-sections | multi-plane slice output (M-SIM) |
-| Validation toolkit (sim vs experiment, RMSE, arrival times) | experimental sensor measurements (none exist) |
-| Full-FED hazard spaces (CO/CO₂) | CO output (M-SIM; today: temperature-only partial) |
-
-Ungated 3D that *may* ship as optional V5 work: **soot iso-surfaces / volume
-clipping** on the existing `.s3d` field (soot only).
+### Research Knowledge Graph ⭐
+Now that interaction, analytics, and communication exist, the graph has enough
+node types to be genuinely useful (not just linking a handful of entities). It
+connects: Experiment → Scenario → Selection → Measurement → Region → Insight →
+Notebook Entry → Figure → Report → Publication → Session → Comparison →
+Sensitivity Analysis → Narrative → Derived Evidence → Export. A graph-browser
+panel: click a node (e.g. "flashover") → every connected scenario, figure, note,
+peak, and report; jump from any node into the view that produced it (via M1). The
+app becomes laboratory memory. **Reuse:** `experiment.py`, `session_store.py`,
+`evidence_notebook.py`, `events.py`, `report_builder`; consumes M1's universal
+`Selection`. **Difficulty:** medium–high. **Priority: high (placed late so it
+graphs a full ecosystem, not a stub).**
 
 ---
 
-## 4. Prioritization
+## Phase 7 — V6 Preparation (gated — prepare interfaces, do not implement)
 
-Order: **Shared Selection (M1) → Knowledge Graph (M2) → Study-Level Analytics
-(M3) → Sensitivity (M4) → Hazard Spaces (M5) → Dashboard (M6)**, then narrative,
-adaptive workspace, publication mode, assistant++, ensemble spread, and the
-optional space-time cube. *Rationale:* lead with the two connective flagships so
-every existing and future analysis immediately compounds; then make the 24-run
-factorial a real designed experiment; then layer interpretation (hazard,
-dashboard) on top of the now-shared state.
+Prepare the interfaces (registry entries, provider slots, panel hooks) for the
+data-gated capabilities, without implementing them, so they drop in when the data
+lands (`docs/msim-preparation.md`):
 
-| Feature | Sci. value | Novelty vs Smokeview | Feasible now | Priority |
-|---|---|---|---|---|
-| Shared Selection Model (M1) | 5 | 4 | yes | **P1** |
-| Knowledge Graph (M2) | 5 | 5 | yes | **P1** |
-| Study-Level Analytics (M3) | 5 | 4 | yes | **P1** |
-| Sensitivity Explorer (M4) | 5 | 4 | yes | **P2** |
-| Hazard Spaces (M5) | 4 | 3 | yes | **P2** |
-| Scientific Dashboard (M6) | 4 | 3 | yes | **P2** |
-| Narrative++ / Adaptive / Pub / Assistant++ | 3 | 3 | yes | **P3** |
-| Space-Time Cube (M7) | 3 | 4 | yes | **P3, opt** |
-| Ensemble Spread (M12) | 3 | 3 | yes | **P3** |
+| Deferred capability | Blocked on |
+|---|---|
+| 3D streamlines / quiver / volumetric analysis | U/W-VELOCITY components (M-SIM) |
+| Multi-plane linked XY / XZ / YZ cross-sections | multi-plane slice output (M-SIM) |
+| Full FED / CO / smoke-toxicity hazard | CO output (M-SIM; today temperature-only partial) |
+| Validation datasets (sim vs experiment, RMSE, arrival times) | experimental sensor measurements (none exist) |
 
-## 5. Non-negotiable principles (carried from V2/V3/V4)
+Ungated optional now: **soot iso-surfaces / volume clipping** on the existing
+`.s3d` field (soot only).
+
+---
+
+## Prioritization summary
+
+| Phase | Item | Sci. value | Novelty | Feasible now | Priority |
+|---|---|---|---|---|---|
+| 0 | Architecture Stabilization | — | — | yes | **prerequisite** |
+| 1 | Shared Selection Model (M1) | 5 | 4 | yes | **P1** |
+| 2 | Study-Level Analytics (M2) | 5 | 4 | yes | **P1** |
+| 3 | Sensitivity Explorer (M3) | 5 | 4 | yes | **P2** |
+| 4 | Hazard / Dashboard / Adaptive / Cube | 4 | 3 | yes | **P2** |
+| 5 | Narrative / Publication / Assistant++ / Ensemble | 3 | 3 | yes | **P3** |
+| 6 | Research Knowledge Graph ⭐ | 5 | 5 | yes | **P1 (late)** |
+| 7 | V6 preparation (gated) | — | — | interface only | **doc** |
+
+## Non-negotiable principles (carried from V2/V3/V4)
 
 - Every stated conclusion is a template filled from computed values with a
   traceable `basis`; no invented physics, no asserted causes.
 - Honesty gates stay enforced in code and tests: partial-FED, heuristic-
   saliency, association-not-causation, the M-SIM data gate, and V5's new
-  *estimated-from-existing-scenarios* (sensitivity) and *parametric-ensemble-
-  spread* (uncertainty) labels.
-- Every new measurement is deterministic, real-data cross-validated, and pinned
-  in tests; the suite stays green and the app runnable after every milestone.
-- The cinematic Live viewer and all V2/V3/V4 functionality are preserved.
+  **"Estimated from Existing Scenarios"** (sensitivity) and **parametric
+  ensemble spread** (uncertainty) labels.
+- Every new measurement is deterministic, real-data cross-validated, pinned in
+  tests; the suite stays green and the app runnable after every milestone.
+- The cinematic Live viewer and all V2/V3/V4 functionality are preserved; the
+  Live viewer is migrated to the selection model **last** (highest risk).
 
 **The V5 test:** a researcher clicks one point and the whole study answers — the
 moment across every quantity, the scenarios that share it, the factors that move
