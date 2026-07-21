@@ -83,6 +83,8 @@ from study_panel import StudyPanel
 from sensitivity_panel import SensitivityPanel
 from hazard_panel import HazardPanel
 from dashboard_panel import DashboardPanel
+from spacetime_panel import SpaceTimePanel
+from narrative_panel import NarrativePanel
 from sessions_panel import SessionsPanel
 import session_store
 from evidence_notebook_panel import EvidenceNotebookDock
@@ -759,6 +761,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.dashboard_panel = DashboardPanel(
                 self.controller.store, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
+            # Space-time cube (V5-M4/P4) + Fire Narrative++ (V5-M5).
+            self.spacetime_panel = SpaceTimePanel(
+                self.controller.store, self.sim_data.manifest,
+                self.sim_data.timesteps_per_second)
+            self.narrative_panel = NarrativePanel(
+                self.controller.store, self.sim_data.manifest,
+                self.sim_data.timesteps_per_second)
             # Named analysis sessions (V4-M6): save/browse/reload/export the
             # whole investigation. Pure UI; main_window collects/applies state.
             self.sessions_panel = SessionsPanel()
@@ -804,6 +813,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.assistant_panel = None
             self.hazard_panel = None
             self.dashboard_panel = None
+            self.spacetime_panel = None
+            self.narrative_panel = None
             self.sessions_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
@@ -846,6 +857,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 sensitivity_content=self.sensitivity_panel,
                 hazard_content=self.hazard_panel,
                 dashboard_content=self.dashboard_panel,
+                spacetime_content=self.spacetime_panel,
+                narrative_content=self.narrative_panel,
                 experiments_content=self.experiments_panel,
                 quantities_content=self.quantities_panel,
                 assistant_content=self.assistant_panel,
@@ -910,7 +923,8 @@ class MainWindow(QtWidgets.QMainWindow):
                      "query_panel", "state_space_panel", "attention_panel", "cause_panel",
                      "factor_effects_panel", "tenability_panel", "timeseries_panel",
                      "energy_panel", "forecasting_panel", "quantities_panel",
-                     "advanced_compare_panel", "study_panel", "hazard_panel"):
+                     "advanced_compare_panel", "study_panel", "hazard_panel",
+                     "spacetime_panel", "narrative_panel"):
             panel = getattr(self, attr, None)
             if panel is not None:
                 bind_to_bus(panel, self.selection_bus, fps)
@@ -924,11 +938,29 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.dashboard_panel is not None:
             self.dashboard_panel.set_bus(self.selection_bus)
             self.dashboard_panel.workspace_requested.connect(self._on_workspace_preset)
+        # V5-M4: the space-time panel publishes/reacts to the selected point.
+        if self.spacetime_panel is not None:
+            self.spacetime_panel.set_bus(self.selection_bus)
+        # V5-M5: a narrative step publishes its Insight's selection (seek + sync).
+        if self.narrative_panel is not None:
+            self.narrative_panel.event_activated.connect(self._on_insight_activated)
         self.selection_bus.changed.connect(self._on_bus_changed)
 
-    def _on_workspace_preset(self, panel_attr: str) -> None:
-        """Adaptive Workspace hook (V5-M4): raise the analysis tab a preset
-        points at (empty string = stay)."""
+    # Adaptive Workspace presets (V5-M4/P4): each focuses the app on a task by
+    # raising its primary analysis tab and publishing the quantity that task
+    # cares about, so every quantity-aware panel follows (via the M1 binder).
+    _WORKSPACE = {
+        "Overview": ("dashboard_panel", None),
+        "Temperature study": ("hazard_panel", "TEMPERATURE"),
+        "Ventilation study": ("sensitivity_panel", "VELOCITY"),
+        "Smoke study": ("height_panel", "TEMPERATURE"),
+        "Study analytics": ("study_panel", None),
+    }
+
+    def _on_workspace_preset(self, preset: str) -> None:
+        panel_attr, quantity = self._WORKSPACE.get(preset, (None, None))
+        if quantity is not None and getattr(self, "selection_bus", None) is not None:
+            self.selection_bus.update(origin=None, quantity=quantity)
         panel = getattr(self, panel_attr, None) if panel_attr else None
         if panel is not None:
             self._navigate_to("analysis")

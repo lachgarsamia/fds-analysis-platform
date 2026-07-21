@@ -27,16 +27,14 @@ from linked_inspection import value_at_time
 from linked_panel import _fmt_hrr
 import hazard_spaces as hz
 
-WORKSPACE_PRESETS = {
-    "Overview": None,
-    "Temperature study": "hazard_panel",
-    "Ventilation study": "sensitivity_panel",
-    "Smoke study": "height_panel",
-}
+# Preset names only; main_window owns the tab+quantity focus (it holds the
+# panels and the SelectionBus). See MainWindow._WORKSPACE.
+WORKSPACE_PRESETS = ("Overview", "Temperature study", "Ventilation study",
+                     "Smoke study", "Study analytics")
 
 
 class DashboardPanel(QtWidgets.QWidget):
-    workspace_requested = QtCore.pyqtSignal(str)   # panel attr name to raise, or ""
+    workspace_requested = QtCore.pyqtSignal(str)   # preset name (MainWindow resolves)
 
     def __init__(self, store, manifest: list, fps: int, parent=None):
         super().__init__(parent)
@@ -105,8 +103,7 @@ class DashboardPanel(QtWidgets.QWidget):
         self._update(selection)
 
     def _on_preset(self, _i) -> None:
-        target = WORKSPACE_PRESETS.get(self.preset_combo.currentText())
-        self.workspace_requested.emit(target or "")
+        self.workspace_requested.emit(self.preset_combo.currentText())
 
     # --------------------------------------------------------------- model
     def _model(self, case_index):

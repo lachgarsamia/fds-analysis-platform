@@ -47,6 +47,8 @@ class AnalysisPage(Page):
                  sensitivity_content: QtWidgets.QWidget = None,
                  hazard_content: QtWidgets.QWidget = None,
                  dashboard_content: QtWidgets.QWidget = None,
+                 spacetime_content: QtWidgets.QWidget = None,
+                 narrative_content: QtWidgets.QWidget = None,
                  experiments_content: QtWidgets.QWidget = None,
                  quantities_content: QtWidgets.QWidget = None,
                  assistant_content: QtWidgets.QWidget = None,
@@ -69,6 +71,8 @@ class AnalysisPage(Page):
         sections = [
             ("Dashboard", dashboard_content),
             ("Hazard", hazard_content),
+            ("Narrative", narrative_content),
+            ("Space-time", spacetime_content),
             ("Ensemble analytics", content),
             ("Height", height_content),
             ("Zones", zone_content),

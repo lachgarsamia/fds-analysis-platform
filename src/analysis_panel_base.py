@@ -26,9 +26,21 @@ def bind_to_bus(panel, bus, fps: int) -> None:
     fps = max(1, fps)
     combo = getattr(panel, "scenario_combo", None)
     slider = getattr(panel, "frame_slider", None)
-    if combo is None and slider is None:
+    qcombo = getattr(panel, "quantity_combo", None)
+    qopts = getattr(panel, "_quantity_options", None)
+    quantity_synced = qcombo is not None and qopts
+    if combo is None and slider is None and not quantity_synced:
         return
     guard = {"syncing": False}
+
+    if quantity_synced:
+        def _on_qcombo(_i, c=qcombo, opts=qopts):
+            if guard["syncing"]:
+                return
+            i = c.currentIndex()
+            if 0 <= i < len(opts):
+                bus.update(origin=panel, quantity=opts[i][1].quantity)
+        qcombo.currentIndexChanged.connect(_on_qcombo)
 
     if combo is not None:
         def _on_combo(_i, c=combo):
@@ -59,6 +71,11 @@ def bind_to_bus(panel, bus, fps: int) -> None:
                 fi = min(max(int(round(sel.time_s * fps)), 0), slider.maximum())
                 if fi != slider.value():
                     slider.setValue(fi)
+            if quantity_synced and sel.quantity:
+                for i, (_label, key) in enumerate(qopts):
+                    if key.quantity == sel.quantity and i != qcombo.currentIndex():
+                        qcombo.setCurrentIndex(i)
+                        break
         finally:
             guard["syncing"] = False
     bus.changed.connect(_on_selection)

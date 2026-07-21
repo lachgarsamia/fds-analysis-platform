@@ -2979,5 +2979,55 @@ class TestResearchWorkspace:
         window.dashboard_panel.workspace_requested.connect(got.append)
         window.dashboard_panel.preset_combo.setCurrentText("Ventilation study")
         window.dashboard_panel._on_preset(0)
-        assert got and got[0] == "sensitivity_panel"
+        assert got and got[0] == "Ventilation study"  # emits the preset name (MainWindow resolves)
+        window.close()
+
+
+class TestWorkspaceAndCommunication:
+    """V5 Phase 4 completion (adaptive workspace, space-time) + Phase 5 start."""
+
+    def test_workspace_preset_focuses_quantity_and_tab(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.dashboard_panel is None:
+            window.close()
+            return
+        window.height_panel.ensure_loaded()
+        window.dashboard_panel.preset_combo.setCurrentText("Ventilation study")
+        window.dashboard_panel._on_preset(0)
+        assert window.selection_bus.current.quantity == "VELOCITY"   # quantity focus
+        assert window._active_page_key == "analysis"                  # tab raised
+        # quantity is now a shared field: a quantity-aware panel followed
+        if window.height_panel._quantity_options:
+            assert window.height_panel._key.quantity == "VELOCITY"
+        window.close()
+
+    def test_spacetime_point_syncs_both_ways(self, qapp):
+        from timeseries import phys_to_index
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        st = window.spacetime_panel
+        st.ensure_loaded()
+        window.selection_bus.update(origin=None, point=(0.9, 0.1))
+        expected = phys_to_index(st._extent, st._data.shape[1:], 0.9, 0.1)
+        assert (st._row, st._col) == expected
+        window.close()
+
+    def test_narrative_chain_and_click_seeks(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        nv = window.narrative_panel
+        nv.ensure_loaded()
+        assert nv.tree.topLevelItemCount() >= 1
+        top = nv.tree.topLevelItem(0)
+        assert top.childCount() >= 1                       # evidence children
+        assert any("basis:" in top.child(i).text(0) for i in range(top.childCount()))
+        ev = top.data(0, QtCore.Qt.UserRole)
+        nv._on_item(top, 0)                                # activating publishes to the bus
+        assert window.selection_bus.current.time_s == ev.primary_time()
         window.close()
