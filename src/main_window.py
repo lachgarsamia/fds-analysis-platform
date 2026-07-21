@@ -69,6 +69,7 @@ from height_panel import HeightPanel
 from linked_panel import LinkedInspectionPanel
 from zone_panel import ZonePanel
 from time_window_panel import TimeWindowPanel
+from measurement_panel import MeasurementPanel
 from sessions_panel import SessionsPanel
 import session_store
 from evidence_notebook_panel import EvidenceNotebookDock
@@ -712,6 +713,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.time_window_panel = TimeWindowPanel(
                 self.controller.store, self.sim_data.manifest,
                 self._quantity_options(), self.sim_data.timesteps_per_second)
+            # Measurement tools (V4-M7): distance / path / rectangle / probe
+            # on the field; measurements persist with the session.
+            self.measurement_panel = MeasurementPanel(
+                self.controller.store, self.sim_data.manifest,
+                self._quantity_options(), self.sim_data.timesteps_per_second)
             # Named analysis sessions (V4-M6): save/browse/reload/export the
             # whole investigation. Pure UI; main_window collects/applies state.
             self.sessions_panel = SessionsPanel()
@@ -736,6 +742,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.linked_panel = None
             self.zone_panel = None
             self.time_window_panel = None
+            self.measurement_panel = None
             self.sessions_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
@@ -772,6 +779,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 linked_content=self.linked_panel,
                 zone_content=self.zone_panel,
                 interval_content=self.time_window_panel,
+                measurement_content=self.measurement_panel,
                 sessions_content=self.sessions_panel),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
@@ -2769,7 +2777,9 @@ class MainWindow(QtWidgets.QMainWindow):
             time_window=(self.time_window_panel.get_state()
                          if self.time_window_panel is not None else {}),
             filters=(self.experiment_browser.get_filter_state()
-                     if self.experiment_browser is not None else {}))
+                     if self.experiment_browser is not None else {}),
+            measurements=(self.measurement_panel.get_measurements()
+                          if self.measurement_panel is not None else []))
 
     # --------------------------------------------------- named sessions (M6)
     def _refresh_sessions(self) -> None:
@@ -2836,6 +2846,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.time_window_panel.set_state(session.get("time_window", {}))
         if self.experiment_browser is not None:
             self.experiment_browser.set_filter_state(session.get("filters", {}))
+        if self.measurement_panel is not None:
+            self.measurement_panel.set_measurements(session.get("measurements", []))
 
     def _save_session(self):
         if not self.sim_data.manifest:

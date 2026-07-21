@@ -2535,3 +2535,54 @@ class TestNamedSessions:
         assert len(infos) == 1 and infos[0].n_notebook == 0 and infos[0].n_zones == 0
         window._on_session_load(infos[0].path)  # must not raise
         window.close()
+
+
+class TestMeasurementPanel:
+    """V4-M7: on-canvas measurement tools."""
+
+    def test_tools_readouts_and_session_roundtrip(self, qapp, tmp_path):
+        import measure as mz, session_store
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "measurement_panel", None) is None
+            window.close()
+            return
+        panel = window.measurement_panel
+        panel.ensure_loaded()
+        assert panel.scenario_combo.count() == len(sim_data.manifest)
+        panel._add(mz.Measurement("distance", [(0.0, 0.24), (1.0, 0.24)]))
+        panel._add(mz.Measurement("probe", [(0.9, 0.05)]))
+        panel._add(mz.Measurement("rect", [(0.8, 0.0), (1.0, 0.3)]))
+        assert len(panel._measurements) == 3
+        assert "m" in panel._measurements[0].readout  # distance in metres
+        assert "area" in panel._measurements[2].readout
+        # save/restore via a named session
+        window._sessions_dir = str(tmp_path)
+        window._on_session_save("Measure study", "ruler+probe+rect")
+        info = session_store.list_sessions(str(tmp_path))[0]
+        panel.set_measurements([])
+        assert len(panel._measurements) == 0
+        window._on_session_load(info.path)
+        assert len(panel._measurements) == 3
+        # report includes the measurements
+        from report_builder import build_session_report
+        html = build_session_report(session_store.load_session(info.path))
+        assert "Measurements" in html and "area" in html
+        window.close()
+
+    def test_interval_average_measurement(self, qapp):
+        import measure as mz
+        window = MainWindow(load_simulation_data())
+        if window.measurement_panel is None:
+            window.close()
+            return
+        panel = window.measurement_panel
+        panel.ensure_loaded()
+        panel.interval_check.setChecked(True)
+        panel.t0_spin.setValue(5.0)
+        panel.t1_spin.setValue(15.0)
+        panel._add(mz.Measurement("probe", [(0.9, 0.05)]))
+        assert panel._measurements[0].interval is True
+        assert "averaged" in panel._measurements[0].readout
+        window.close()

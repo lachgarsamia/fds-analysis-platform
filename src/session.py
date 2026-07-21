@@ -39,7 +39,8 @@ def build_session_dict(layout_name: str, cells: list, active_index: int, time_in
                         link_clim: bool, colormap: str, isotherms_enabled: bool,
                         notebook: list | None = None, zones: list | None = None,
                         name: str = "", intent: str = "", metadata: dict | None = None,
-                        time_window: dict | None = None, filters: dict | None = None) -> dict:
+                        time_window: dict | None = None, filters: dict | None = None,
+                        measurements: list | None = None) -> dict:
     return {
         "version": SESSION_VERSION,
         "layout": layout_name,
@@ -57,6 +58,7 @@ def build_session_dict(layout_name: str, cells: list, active_index: int, time_in
         "metadata": metadata or {},
         "time_window": time_window or {},   # V4-M5 interval selection
         "filters": filters or {},           # experiment-browser filter state
+        "measurements": measurements or [], # V4-M7 on-canvas measurements
     }
 
 

@@ -896,3 +896,39 @@ class TestSessionStore:
     def test_session_report_handles_empty_session(self):
         html = rb.build_session_report(_bsd("1x1", [], 0, 0, False, "inferno", False, name="Empty"))
         assert "Empty" in html and "No saved evidence" in html
+
+
+import measure as mzt  # noqa: E402
+
+
+class TestMeasure:
+    EXT = (0.0, 1.0, 0.0, 1.0)
+
+    def test_distance(self):
+        assert mzt.distance((0.0, 0.0), (3.0, 4.0)) == pytest.approx(5.0)
+
+    def test_polyline_length(self):
+        total, segs = mzt.polyline_length([(0, 0), (0, 0.3), (0.4, 0.3)])
+        assert total == pytest.approx(0.7)
+        assert segs == pytest.approx([0.3, 0.4])
+
+    def test_probe_bilinear(self):
+        # 2x2 frame, row 0 = top (z1). corners exact, centre = mean.
+        frame = np.array([[0.0, 10.0], [20.0, 30.0]])
+        assert mzt.probe_value(frame, self.EXT, 0.0, 1.0) == pytest.approx(0.0)   # top-left
+        assert mzt.probe_value(frame, self.EXT, 1.0, 0.0) == pytest.approx(30.0)  # bottom-right
+        assert mzt.probe_value(frame, self.EXT, 0.5, 0.5) == pytest.approx(15.0)  # centre
+
+    def test_rect_stats_frame_and_interval(self):
+        data = np.array([[[0.0, 10.0], [20.0, 30.0]],
+                         [[40.0, 50.0], [60.0, 70.0]]])
+        st = mzt.rect_stats(data, self.EXT, 0.0, 1.0, 0.0, 1.0, frame_index=0)
+        assert st["area"] == pytest.approx(1.0)
+        assert (st["min"], st["mean"], st["max"], st["n_cells"]) == (0.0, 15.0, 30.0, 4)
+        avg = mzt.rect_stats(data, self.EXT, 0.0, 1.0, 0.0, 1.0, i0=0, i1=1)
+        assert (avg["min"], avg["mean"], avg["max"]) == (20.0, 35.0, 50.0)  # time-averaged field
+
+    def test_measurement_roundtrip(self):
+        m = mzt.Measurement("rect", [(0.8, 0.0), (1.0, 0.3)], label="doorway",
+                            readout="area 0.06", interval=True)
+        assert mzt.Measurement.from_dict(m.to_dict()) == m

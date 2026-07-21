@@ -41,6 +41,7 @@ class AnalysisPage(Page):
                  linked_content: QtWidgets.QWidget = None,
                  zone_content: QtWidgets.QWidget = None,
                  interval_content: QtWidgets.QWidget = None,
+                 measurement_content: QtWidgets.QWidget = None,
                  sessions_content: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self._on_shown = on_shown
@@ -62,6 +63,7 @@ class AnalysisPage(Page):
             ("Height", height_content),
             ("Zones", zone_content),
             ("Intervals", interval_content),
+            ("Measure", measurement_content),
             ("Sessions", sessions_content),
             ("Inspect moment", linked_content),
             ("Ask", query_content),

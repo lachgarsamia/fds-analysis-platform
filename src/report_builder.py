@@ -177,6 +177,15 @@ def _time_window_block(tw: dict) -> str:
     return f"<h2>Time window</h2><p class='prose'>{_esc(sel)}</p>"
 
 
+def _measurements_block(measurements: list) -> str:
+    if not measurements:
+        return ""
+    items = "".join(
+        f"<li>{_esc(m.get('label', m.get('kind', 'measurement')))}: "
+        f"{_esc(m.get('readout', ''))}</li>" for m in measurements)
+    return f"<h2>Measurements</h2><ul>{items}</ul>"
+
+
 def build_session_report(session: dict, timeline_png: bytes = None) -> str:
     """Self-contained HTML report for a named analysis session (V4-M6):
     metadata, intent, the Evidence Notebook, zones, the time-window
@@ -198,7 +207,8 @@ def build_session_report(session: dict, timeline_png: bytes = None) -> str:
         f"{_figure_block(timeline_png, 'Timeline at save time.') if timeline_png else ''}"
         f"{_time_window_block(session.get('time_window', {}))}"
         f"<h2>Evidence Notebook</h2>{_notebook_block(session.get('notebook', []))}"
-        f"{_zones_block(session.get('zones', []))}")
+        f"{_zones_block(session.get('zones', []))}"
+        f"{_measurements_block(session.get('measurements', []))}")
     return _document(f"Session — {name}", body)
 
 
