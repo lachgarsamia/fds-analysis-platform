@@ -1056,3 +1056,43 @@ class TestNotebookReport:
     def test_empty_notebook_report(self):
         html = rb.build_notebook_report([])
         assert "No saved evidence" in html
+
+
+import registry as regm  # noqa: E402
+import derived_quantities as dqm  # noqa: E402
+
+
+class TestQuantityBreadth:
+    def test_status_partitions(self):
+        assert regm.quantity_status("TEMPERATURE") == "available"
+        assert regm.quantity_status("TEMPERATURE RISE") == "derived"
+        assert regm.quantity_status("PRESSURE") == "gated"
+        assert set(regm.available_quantities()) == {"TEMPERATURE", "VELOCITY", "SOOT DENSITY"}
+        assert "U-VELOCITY" in regm.gated_quantities()
+        assert set(regm.derived_quantity_names()) == {"TEMPERATURE RISE", "DYNAMIC PRESSURE"}
+
+    def test_legacy_views_exclude_gated_and_derived(self):
+        # config's derived views must still see only the original real quantities
+        assert set(regm.display_dict()) == {"TEMPERATURE", "VELOCITY", "SOOT DENSITY"}
+        assert set(regm.isotherm_dict()) <= {"TEMPERATURE", "VELOCITY", "SOOT DENSITY"}
+        assert "PRESSURE" not in regm.display_dict()
+        assert "TEMPERATURE RISE" not in regm.isotherm_dict()
+
+    def test_every_gated_quantity_documents_its_gate(self):
+        for name in regm.gated_quantities():
+            q = regm.get_quantity(name)
+            assert q.gated and q.gate_reason and q.interpretation
+            assert "M-SIM" in q.gate_reason
+
+    def test_derived_math(self):
+        f = np.array([[20.0, 120.0], [320.0, 20.0]])
+        np.testing.assert_allclose(dqm.temperature_rise(f), [[0, 100], [300, 0]])
+        assert dqm.dynamic_pressure(np.array([2.0]))[0] == pytest.approx(0.5 * 1.2 * 4)
+
+    def test_derive_dispatch_and_unknown(self):
+        assert dqm.source_quantity("TEMPERATURE RISE") == "TEMPERATURE"
+        assert dqm.source_quantity("DYNAMIC PRESSURE") == "VELOCITY"
+        assert dqm.source_quantity("nope") is None
+        np.testing.assert_allclose(dqm.derive("TEMPERATURE RISE", np.array([25.0])), [5.0])
+        with pytest.raises(KeyError):
+            dqm.derive("PRESSURE", np.array([1.0]))  # not a derived quantity

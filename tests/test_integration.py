@@ -2731,3 +2731,41 @@ class TestPublicationExport:
         assert "Peak 469 C" in out.read_text()
         assert callable(window.evidence_dock._export_report)
         window.close()
+
+
+class TestQuantitiesPanel:
+    """V4-M11: quantity breadth + gating, non-breaking."""
+
+    def test_panel_lists_all_and_tools_exclude_gated(self, qapp):
+        import registry as reg
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "quantities_panel", None) is None
+            window.close()
+            return
+        panel = window.quantities_panel
+        assert panel.table.rowCount() == len(reg.QUANTITY_REGISTRY)
+        # gated (and derived) quantities never enter the data-driven tool combos
+        tool_qs = [k.quantity for _l, k in window._quantity_options()]
+        assert not any(reg.get_quantity(q).gated for q in tool_qs)
+        assert not any(reg.get_quantity(q).kind == "derived" for q in tool_qs)
+        window.close()
+
+    def test_derived_preview_computes_on_real_data(self, qapp):
+        import registry as reg
+        from PyQt5 import QtCore
+        window = MainWindow(load_simulation_data())
+        if window.quantities_panel is None:
+            window.close()
+            return
+        panel = window.quantities_panel
+        for r in range(panel.table.rowCount()):
+            name = panel.table.item(r, 0).data(QtCore.Qt.UserRole)
+            if reg.quantity_status(name) == "derived":
+                panel.table.selectRow(r)
+                break
+        assert panel.preview_button.isEnabled()
+        panel._preview_derived()
+        assert "preview on" in panel.detail.text() and "min" in panel.detail.text()
+        window.close()

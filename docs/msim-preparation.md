@@ -59,3 +59,28 @@ For a y-normal (PBY) slice, **U (x) and W (z) are the two in-plane components** 
 ## 6. Decision
 
 **NO-GO to execute or to edit `fds/template.fds` now** — the gate (M0.1 closed) is not met and no cluster is available. Everything needed to execute the instant both conditions hold is specified above; nothing further can be done in this environment without violating the gate or fabricating output.
+
+## 7. Registered-but-gated quantities (V4-M11)
+
+The quantity registry (`src/registry.py`) now carries the target quantities
+as first-class entries (units, colormap, hazard bands, plain-language
+interpretation) so every analysis tool works on them the moment data
+arrives. They are marked `gated=True` with `gate_reason=MSIM_GATE` and are
+**excluded from the data-driven quantity discovery**, so they never enter
+the tool combos and cannot break any feature; they appear only in the
+read-only **Quantities** reference panel. Wire real data by having FDS emit
+the corresponding `&SLCF` (see §3) — no registry change is then needed.
+
+| Registered quantity | Unblocks | Needs (per §3) |
+|---|---|---|
+| `U-VELOCITY`, `W-VELOCITY` | true vector field / streamlines / quiver | `&SLCF QUANTITY='U-VELOCITY'`, `'W-VELOCITY'` |
+| `CARBON MONOXIDE VOLUME FRACTION` | full FED tenability (retires the temperature-only disclaimer) | `CO_YIELD` in `&REAC` + CO `&SLCF` (modeling review) |
+| `PRESSURE` | vent-driving / doorway flow | `&SLCF QUANTITY='PRESSURE'` |
+| `VISIBILITY` | egress tenability | `&SLCF QUANTITY='VISIBILITY'` |
+| `HEAT FLUX` | burn/ignition thresholds | surface/gas `&SLCF` heat-flux quantity |
+| `SOOT MASS FRACTION` | 2D smoke read without the `.s3d` decode | `&SLCF QUANTITY='SOOT MASS FRACTION'` |
+
+**Ungated now (V4-M11):** two *derived* quantities computed from existing
+fields ship immediately — `TEMPERATURE RISE` (T − ambient) and
+`DYNAMIC PRESSURE` (½ρ|v|²) — implemented in `src/derived_quantities.py`
+and previewable in the Quantities panel. These need no re-run.

@@ -72,6 +72,7 @@ from time_window_panel import TimeWindowPanel
 from measurement_panel import MeasurementPanel
 from advanced_compare_panel import AdvancedComparePanel
 from experiments_panel import ExperimentsPanel
+from quantities_panel import QuantitiesPanel
 import experiment as experiment_mod
 from sessions_panel import SessionsPanel
 import session_store
@@ -735,6 +736,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.experiments_panel = ExperimentsPanel(
                 self.controller.store, self.sim_data.manifest,
                 experiment_mod.default_experiments_dir())
+            # Quantity reference/breadth (V4-M11): available / derived / gated.
+            self.quantities_panel = QuantitiesPanel(
+                self.controller.store, self.sim_data.manifest)
             # Named analysis sessions (V4-M6): save/browse/reload/export the
             # whole investigation. Pure UI; main_window collects/applies state.
             self.sessions_panel = SessionsPanel()
@@ -762,6 +766,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.measurement_panel = None
             self.advanced_compare_panel = None
             self.experiments_panel = None
+            self.quantities_panel = None
             self.sessions_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
@@ -801,6 +806,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 measurement_content=self.measurement_panel,
                 advanced_compare_content=self.advanced_compare_panel,
                 experiments_content=self.experiments_panel,
+                quantities_content=self.quantities_panel,
                 sessions_content=self.sessions_panel),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),

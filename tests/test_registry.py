@@ -25,7 +25,11 @@ class TestRegistry:
 
 class TestDerivedViews:
     def test_display_dict_matches_registry(self):
-        for name, q in registry.QUANTITY_REGISTRY.items():
+        # V4-M11: the legacy display view covers only the directly-readable
+        # quantities (gated/derived entries are reference metadata, absent here).
+        assert set(config.QUANTITY_DISPLAY) == set(registry.available_quantities())
+        for name in registry.available_quantities():
+            q = registry.QUANTITY_REGISTRY[name]
             d = config.QUANTITY_DISPLAY[name]
             assert d["label"] == q.label and d["unit"] == q.unit
             assert d["cmap"] == q.cmap and d["vmin"] == q.vmin
