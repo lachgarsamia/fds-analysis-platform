@@ -2931,3 +2931,53 @@ class TestSensitivityPanel:
             return
         assert "Estimated from Existing Scenarios" in window.sensitivity_panel.note.text()
         window.close()
+
+
+class TestResearchWorkspace:
+    """V5-M4: hazard spaces + mission-control dashboard + workspace hook."""
+
+    def test_hazard_panel_syncs_and_classifies(self, qapp):
+        import hazard_spaces as hz
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "hazard_panel", None) is None
+            window.close()
+            return
+        panel = window.hazard_panel
+        panel.ensure_loaded()
+        assert panel._series["classes"].shape[0] == panel._data.shape[0]
+        # bus scenario/time changes drive the panel (bound like every other)
+        window.selection_bus.update(origin=None, scenario=2, time_s=10.0)
+        assert panel.scenario_combo.currentData() == 2
+        assert panel.frame_slider.value() == int(round(10.0 * window.time_controller.timesteps_per_second))
+        window.close()
+
+    def test_dashboard_reads_selection_live(self, qapp):
+        from selection import Selection
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        d = window.dashboard_panel
+        window.selection_bus.set(Selection(scenario=3, time_s=8.0))
+        assert d._cards["Time"].text() == "8.0 s"
+        assert d._cards["Max hazard"].text() in ("Safe", "Warning", "Critical", "Untenable")
+        assert "level" in d._cards["Door"].text()
+        # live update on time change
+        window.selection_bus.update(origin=None, time_s=50.0)
+        assert d._cards["Time"].text() == "50.0 s"
+        window.close()
+
+    def test_workspace_preset_raises_tab(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.dashboard_panel is None:
+            window.close()
+            return
+        got = []
+        window.dashboard_panel.workspace_requested.connect(got.append)
+        window.dashboard_panel.preset_combo.setCurrentText("Ventilation study")
+        window.dashboard_panel._on_preset(0)
+        assert got and got[0] == "sensitivity_panel"
+        window.close()

@@ -81,6 +81,8 @@ from quantity_provider import QuantityProvider
 from analysis_panel_base import bind_to_bus
 from study_panel import StudyPanel
 from sensitivity_panel import SensitivityPanel
+from hazard_panel import HazardPanel
+from dashboard_panel import DashboardPanel
 from sessions_panel import SessionsPanel
 import session_store
 from evidence_notebook_panel import EvidenceNotebookDock
@@ -749,6 +751,14 @@ class MainWindow(QtWidgets.QMainWindow):
             # Safe Assistant (V4-M12): bounded, deterministic organization of
             # computed evidence; main_window supplies context and runs it.
             self.assistant_panel = AssistantPanel()
+            # Research workspace (V5-M4): hazard spaces + mission-control
+            # dashboard. Per-scenario, so any study (not just the factorial).
+            self.hazard_panel = HazardPanel(
+                self.controller.store, self.sim_data.manifest,
+                self.sim_data.timesteps_per_second)
+            self.dashboard_panel = DashboardPanel(
+                self.controller.store, self.sim_data.manifest,
+                self.sim_data.timesteps_per_second)
             # Named analysis sessions (V4-M6): save/browse/reload/export the
             # whole investigation. Pure UI; main_window collects/applies state.
             self.sessions_panel = SessionsPanel()
@@ -792,6 +802,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.experiments_panel = None
             self.quantities_panel = None
             self.assistant_panel = None
+            self.hazard_panel = None
+            self.dashboard_panel = None
             self.sessions_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
@@ -832,6 +844,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 advanced_compare_content=self.advanced_compare_panel,
                 study_content=self.study_panel,
                 sensitivity_content=self.sensitivity_panel,
+                hazard_content=self.hazard_panel,
+                dashboard_content=self.dashboard_panel,
                 experiments_content=self.experiments_panel,
                 quantities_content=self.quantities_panel,
                 assistant_content=self.assistant_panel,
@@ -896,7 +910,7 @@ class MainWindow(QtWidgets.QMainWindow):
                      "query_panel", "state_space_panel", "attention_panel", "cause_panel",
                      "factor_effects_panel", "tenability_panel", "timeseries_panel",
                      "energy_panel", "forecasting_panel", "quantities_panel",
-                     "advanced_compare_panel", "study_panel"):
+                     "advanced_compare_panel", "study_panel", "hazard_panel"):
             panel = getattr(self, attr, None)
             if panel is not None:
                 bind_to_bus(panel, self.selection_bus, fps)
@@ -905,7 +919,20 @@ class MainWindow(QtWidgets.QMainWindow):
         # selection by snapping its sliders -- it has its own set_bus.
         if self.sensitivity_panel is not None:
             self.sensitivity_panel.set_bus(self.selection_bus)
+        # V5-M4: the dashboard reads the whole selection (scenario + time) and
+        # its workspace preset raises the most relevant analysis tab.
+        if self.dashboard_panel is not None:
+            self.dashboard_panel.set_bus(self.selection_bus)
+            self.dashboard_panel.workspace_requested.connect(self._on_workspace_preset)
         self.selection_bus.changed.connect(self._on_bus_changed)
+
+    def _on_workspace_preset(self, panel_attr: str) -> None:
+        """Adaptive Workspace hook (V5-M4): raise the analysis tab a preset
+        points at (empty string = stay)."""
+        panel = getattr(self, panel_attr, None) if panel_attr else None
+        if panel is not None:
+            self._navigate_to("analysis")
+            self.pages["analysis"].show_tab(panel)
 
     def _on_bus_changed(self, selection, origin) -> None:
         """React to the shared selection in the Live Viewer: seek playback to

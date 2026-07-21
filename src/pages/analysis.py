@@ -45,6 +45,8 @@ class AnalysisPage(Page):
                  advanced_compare_content: QtWidgets.QWidget = None,
                  study_content: QtWidgets.QWidget = None,
                  sensitivity_content: QtWidgets.QWidget = None,
+                 hazard_content: QtWidgets.QWidget = None,
+                 dashboard_content: QtWidgets.QWidget = None,
                  experiments_content: QtWidgets.QWidget = None,
                  quantities_content: QtWidgets.QWidget = None,
                  assistant_content: QtWidgets.QWidget = None,
@@ -65,6 +67,8 @@ class AnalysisPage(Page):
         # pane at once. Only supplied (non-None) surfaces get a tab; demo
         # mode supplies none.
         sections = [
+            ("Dashboard", dashboard_content),
+            ("Hazard", hazard_content),
             ("Ensemble analytics", content),
             ("Height", height_content),
             ("Zones", zone_content),

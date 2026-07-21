@@ -1255,3 +1255,40 @@ class TestSensitivity:
         xs, ys, z = sen.response_surface(t, "max_temp_c", "vod", "door",
                                          {"candles": 0, "door": 0, "vod": 0, "voc": 0}, n=5)
         assert xs.shape == (5,) and ys.shape == (5,) and z.shape == (5, 5)
+
+
+import hazard_spaces as hzs  # noqa: E402
+
+
+class TestHazardSpaces:
+    THR = (60.0, 100.0, 300.0)
+
+    def test_classify_instant_bands(self):
+        frame = np.array([[20.0, 80.0], [150.0, 400.0]])
+        np.testing.assert_array_equal(hzs.classify_instant(frame, self.THR),
+                                      [[0, 1], [2, 3]])
+
+    def test_exposure_escalates_to_untenable(self):
+        # a cell held at 70 C (Warning) long enough is escalated to Untenable.
+        data = np.full((10, 1, 1), 70.0, dtype=np.float32)
+        cls = hzs.classify_series(data, self.THR, fps=1, exposure_limit_s=5.0)
+        assert cls[0, 0, 0] == 1              # early: instantaneous Warning
+        assert cls[-1, 0, 0] == 3             # late: escalated by exposure
+
+    def test_class_fractions_sum_to_one(self):
+        data = np.array([[[20.0, 80.0], [150.0, 400.0]]], dtype=np.float32)
+        fr = hzs.class_fractions(hzs.classify_series(data, self.THR, 1, 1e9))
+        assert fr.shape == (1, 4)
+        assert fr.sum(axis=1)[0] == pytest.approx(1.0)
+
+    def test_worst_class_and_critical_fraction(self):
+        data = np.array([[[20.0, 80.0], [150.0, 400.0]]], dtype=np.float32)
+        cls = hzs.classify_series(data, self.THR, 1, 1e9)
+        assert hzs.worst_class(cls)[0] == 3
+        assert hzs.critical_fraction(cls)[0] == pytest.approx(0.5)  # 2 of 4 cells >= Critical
+
+    def test_flashover_indicator(self):
+        data = np.zeros((3, 2, 2), dtype=np.float32)
+        data[2, 0, 0] = 520.0                 # only the last frame crosses 500
+        indicated, first = hzs.flashover_indicator(data)
+        assert first == 2 and bool(indicated[2]) and not bool(indicated[0])
