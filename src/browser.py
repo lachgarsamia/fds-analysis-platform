@@ -254,6 +254,22 @@ class ExperimentBrowserDock(QtWidgets.QDockWidget):
         self.table.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.setWidget(root)
 
+    def get_filter_state(self) -> dict:
+        """V4-M6: the current text + per-factor filter selections, for
+        saving in a named session."""
+        return {"text": self.search_edit.text(),
+                "factors": {f: c.currentData() for f, c in self.factor_combos.items()}}
+
+    def set_filter_state(self, state: dict) -> None:
+        """Restore a filter state produced by get_filter_state (missing or
+        unknown values are simply skipped -> "All")."""
+        self.search_edit.setText((state or {}).get("text", ""))
+        factors = (state or {}).get("factors", {}) or {}
+        for factor, combo in self.factor_combos.items():
+            value = factors.get(factor)
+            idx = combo.findData(value)
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+
     def _on_selection_changed(self, _selected, _deselected):
         rows = sorted({idx.row() for idx in self.table.selectionModel().selectedRows()})
         if not rows:

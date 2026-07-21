@@ -213,6 +213,40 @@ class TimeWindowPanel(QtWidgets.QWidget):
     def _on_insight(self, insight) -> None:
         pass  # interval stats are spans; nothing to seek here
 
+    # -------------------------------------------------- session state (V4-M6)
+    def get_state(self) -> dict:
+        """The current interval selection, for a named session."""
+        return {"scenario": self.scenario_combo.currentData(),
+                "quantity": self.quantity_combo.currentIndex(),
+                "mode": self._mode, "t0": self._t0, "t1": self._t1,
+                "split": self._split}
+
+    def set_state(self, state: dict) -> None:
+        if not state:
+            return
+        self.ensure_loaded()
+        case = state.get("scenario")
+        if case is not None:
+            i = self.scenario_combo.findData(case)
+            if i >= 0:
+                self.scenario_combo.setCurrentIndex(i)  # triggers _reload
+        qi = state.get("quantity")
+        if qi is not None and 0 <= qi < self.quantity_combo.count():
+            self.quantity_combo.setCurrentIndex(qi)
+        self._mode = state.get("mode", "window")
+        self.mode_combo.blockSignals(True)
+        self.mode_combo.setCurrentIndex(0 if self._mode == "window" else 1)
+        self.mode_combo.blockSignals(False)
+        if state.get("t0") is not None:
+            self._t0 = state["t0"]
+        if state.get("t1") is not None:
+            self._t1 = state["t1"]
+        if state.get("split") is not None:
+            self._split = state["split"]
+        self._clicks = []
+        self._render()
+        self._compute()
+
     # --------------------------------------------------------------- render
     def _render(self) -> None:
         if self._series is None:

@@ -57,7 +57,8 @@ from tenability_panel import TenabilityPanel
 from fire_mri_panel import FireMRIPanel
 from figure_export import (PublicationExportDialog, export_publication_figure,
                            provenance_line, figure_png_bytes)
-from report_builder import build_scenario_report, build_comparison_report, write_report
+from report_builder import (build_scenario_report, build_comparison_report,
+                            build_session_report, write_report)
 from semantic_diff import compare as compare_scenarios, difference_statements
 from semantic_diff_panel import SemanticDiffPanel
 from query_panel import QueryPanel
@@ -68,6 +69,8 @@ from height_panel import HeightPanel
 from linked_panel import LinkedInspectionPanel
 from zone_panel import ZonePanel
 from time_window_panel import TimeWindowPanel
+from sessions_panel import SessionsPanel
+import session_store
 from evidence_notebook_panel import EvidenceNotebookDock
 from evidence_notebook import EvidenceNotebook
 from diff_analysis import DifferenceOverTimeDialog
@@ -709,6 +712,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.time_window_panel = TimeWindowPanel(
                 self.controller.store, self.sim_data.manifest,
                 self._quantity_options(), self.sim_data.timesteps_per_second)
+            # Named analysis sessions (V4-M6): save/browse/reload/export the
+            # whole investigation. Pure UI; main_window collects/applies state.
+            self.sessions_panel = SessionsPanel()
             # Factor-effect maps (M3.1) need the candle factorial's factor
             # axes; a generic guest study has none, so it's factorial-only.
             self.factor_effects_panel = (
@@ -730,6 +736,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.linked_panel = None
             self.zone_panel = None
             self.time_window_panel = None
+            self.sessions_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
         analysis_content = self.analytics_panel.widget() if self.analytics_panel is not None else None
@@ -764,7 +771,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 height_content=self.height_panel,
                 linked_content=self.linked_panel,
                 zone_content=self.zone_panel,
-                interval_content=self.time_window_panel),
+                interval_content=self.time_window_panel,
+                sessions_content=self.sessions_panel),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
             "about": AboutPage(),
@@ -802,9 +810,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(shell)
 
         self._build_evidence_notebook()
+        self._build_sessions()
 
         self._active_page_key = None
         self._navigate_to("live")
+
+    def _build_sessions(self) -> None:
+        """Named analysis sessions (V4-M6): wire the Sessions panel's
+        intents to state collection/application here (main_window owns the
+        grid, notebook, zones, and time window), and populate its list."""
+        self._sessions_dir = session_store.default_sessions_dir()
+        if self.sessions_panel is None:
+            return
+        self.sessions_panel.save_requested.connect(self._on_session_save)
+        self.sessions_panel.load_requested.connect(self._on_session_load)
+        self.sessions_panel.delete_requested.connect(self._on_session_delete)
+        self.sessions_panel.export_requested.connect(self._on_session_export)
+        self._refresh_sessions()
 
     def _build_evidence_notebook(self) -> None:
         """Evidence Notebook (V4-M2): a dockable, session-backed collection
@@ -2727,6 +2749,94 @@ class MainWindow(QtWidgets.QMainWindow):
         self.close()
 
     # ------------------------------------------------------------- session (M2.4)
+    def _collect_session_dict(self, name: str = "", intent: str = "") -> dict:
+        """The full analysis-session snapshot (V4-M6): grid + view + the
+        Evidence Notebook + zones + the interval selection + browser
+        filters + metadata (author, timestamps, data fingerprint). Shared
+        by the file-based Save Session and the named Sessions panel."""
+        visible_cells = self.view_grid.visible_cells()
+        active_index = visible_cells.index(self.view_grid.active_cell())
+        metadata = session_store.make_metadata(
+            data_version=session_store.data_fingerprint(self.sim_data.manifest))
+        return build_session_dict(
+            self.view_grid.layout_name, visible_cells,
+            active_index, self.time_controller.index,
+            getattr(self, "_link_clim", False), self.current_colormap,
+            self.isotherms_action.isChecked(),
+            notebook=self.evidence_dock.notebook.to_list(),
+            zones=self.zone_panel.get_zones() if self.zone_panel is not None else [],
+            name=name, intent=intent, metadata=metadata,
+            time_window=(self.time_window_panel.get_state()
+                         if self.time_window_panel is not None else {}),
+            filters=(self.experiment_browser.get_filter_state()
+                     if self.experiment_browser is not None else {}))
+
+    # --------------------------------------------------- named sessions (M6)
+    def _refresh_sessions(self) -> None:
+        if self.sessions_panel is not None:
+            self.sessions_panel.set_sessions(
+                session_store.list_sessions(self._sessions_dir))
+
+    def _on_session_save(self, name: str, intent: str) -> None:
+        session = self._collect_session_dict(name, intent)
+        try:
+            session_store.save_session(self._sessions_dir, session)
+        except OSError as e:
+            QtWidgets.QMessageBox.warning(self, "Save session", f"Could not save: {e}")
+            return
+        self._refresh_sessions()
+        self.statusBar().showMessage(f"Saved session '{name}'", 4000)
+
+    def _on_session_load(self, path: str) -> None:
+        try:
+            session = session_store.load_session(path)
+        except ValueError as e:
+            QtWidgets.QMessageBox.warning(self, "Load session", str(e))
+            return
+        # Version pinning: warn (do not block) if the session was made
+        # against a different data run than the one currently loaded.
+        saved_fp = (session.get("metadata") or {}).get("data_version", "")
+        current_fp = session_store.data_fingerprint(self.sim_data.manifest)
+        if saved_fp and current_fp and saved_fp != current_fp:
+            QtWidgets.QMessageBox.warning(
+                self, "Different data run",
+                "This session was saved against a different data run. The view "
+                "and annotations are restored, but computed values may differ.")
+        self._apply_analysis_session(session)
+        self.statusBar().showMessage(f"Loaded session '{session.get('name', '')}'", 4000)
+
+    def _on_session_delete(self, path: str) -> None:
+        session_store.delete_session(path)
+        self._refresh_sessions()
+
+    def _on_session_export(self, path: str) -> None:
+        try:
+            session = session_store.load_session(path)
+        except ValueError as e:
+            QtWidgets.QMessageBox.warning(self, "Export report", str(e))
+            return
+        out, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export session report", "session_report.html", "HTML (*.html)")
+        if not out:
+            return
+        if not out.lower().endswith(".html"):
+            out += ".html"
+        try:
+            write_report(out, build_session_report(session))
+        except OSError as e:
+            QtWidgets.QMessageBox.warning(self, "Export report", f"Could not write: {e}")
+            return
+        self.statusBar().showMessage(f"Exported report {out}", 4000)
+
+    def _apply_analysis_session(self, session: dict) -> None:
+        """Restore a full named session: grid/view/notebook/zones via
+        _apply_session, plus the interval selection and browser filters."""
+        self._apply_session(session)
+        if self.time_window_panel is not None:
+            self.time_window_panel.set_state(session.get("time_window", {}))
+        if self.experiment_browser is not None:
+            self.experiment_browser.set_filter_state(session.get("filters", {}))
+
     def _save_session(self):
         if not self.sim_data.manifest:
             QtWidgets.QMessageBox.information(self, "Save Session", "No experiment data available (demo mode).")
@@ -2737,15 +2847,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if not path.lower().endswith(".json"):
             path += ".json"
-        visible_cells = self.view_grid.visible_cells()
-        active_index = visible_cells.index(self.view_grid.active_cell())
-        session = build_session_dict(
-            self.view_grid.layout_name, visible_cells,
-            active_index, self.time_controller.index,
-            getattr(self, "_link_clim", False), self.current_colormap,
-            self.isotherms_action.isChecked(),
-            notebook=self.evidence_dock.notebook.to_list(),
-            zones=self.zone_panel.get_zones() if self.zone_panel is not None else [])
+        session = self._collect_session_dict()
         try:
             write_session(path, session)
         except OSError as e:
@@ -3059,6 +3161,13 @@ class MainWindow(QtWidgets.QMainWindow):
     def closeEvent(self, event: QtGui.QCloseEvent):
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("splitter_state", self.splitter.saveState())
+        # V4-M6: autosave a draft session so an unsaved investigation is
+        # recoverable next launch (best-effort; never blocks close).
+        if getattr(self, "sessions_panel", None) is not None and self.sim_data.manifest:
+            try:
+                session_store.save_draft(self._sessions_dir, self._collect_session_dict())
+            except OSError:
+                pass
         self.time_controller.pause()
         # A cache-miss prefetch left in flight when the window closes
         # (SimulationController._prefetch_workers is fire-and-forget by

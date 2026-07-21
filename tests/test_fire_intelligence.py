@@ -824,3 +824,75 @@ class TestTimeWindow:
 
     def test_phase_windows_empty(self):
         assert twm.phase_windows([], t_end=5.0) == []
+
+
+import session_store as sst  # noqa: E402
+import report_builder as rb  # noqa: E402
+from session import build_session_dict as _bsd  # noqa: E402
+
+
+class _FakeEntry:
+    def __init__(self, folder):
+        self.folder = folder
+
+
+class TestSessionStore:
+    def test_slugify(self):
+        assert sst.slugify("Door Study — Case A") == "door-study-case-a"
+        assert sst.slugify("") == "session"
+        assert sst.slugify("!!!") == "session"
+
+    def test_data_fingerprint_is_stable_and_discriminating(self):
+        a = [_FakeEntry("c1"), _FakeEntry("c2")]
+        assert sst.data_fingerprint(a) == sst.data_fingerprint(list(reversed(a)))  # order-free
+        assert sst.data_fingerprint(a) != sst.data_fingerprint([_FakeEntry("c1")])
+        assert sst.data_fingerprint(a).startswith("2:")
+
+    def test_detect_conflict(self):
+        assert sst.detect_conflict("2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z")
+        assert not sst.detect_conflict("2026-01-02T00:00:00Z", "2026-01-01T00:00:00Z")
+        assert not sst.detect_conflict("", "2026-01-02T00:00:00Z")  # missing -> no conflict
+
+    def test_make_metadata_fields(self):
+        m = sst.make_metadata(author="bob", data_version="24:abc")
+        assert m["author"] == "bob" and m["data_version"] == "24:abc"
+        assert m["created"] and m["modified"] and m["app"] == "fdsvisualizer"
+
+    def test_save_list_load_delete_roundtrip(self, tmp_path):
+        d = str(tmp_path)
+        sess = _bsd("1x1", [], 0, 0, False, "inferno", False,
+                    name="Door study", intent="doorway A", notebook=[{"insight": {"statement": "x"}}])
+        path = sst.save_session(d, sess)
+        infos = sst.list_sessions(d)
+        assert len(infos) == 1 and infos[0].name == "Door study"
+        assert infos[0].intent == "doorway A" and infos[0].n_notebook == 1
+        assert "modified" in sst.load_session(path)["metadata"]
+        sst.delete_session(path)
+        assert sst.list_sessions(d) == []
+
+    def test_list_skips_unreadable_files(self, tmp_path):
+        (tmp_path / "junk.json").write_text("not json at all")
+        assert sst.list_sessions(str(tmp_path)) == []
+
+    def test_draft_overwrites_single_file(self, tmp_path):
+        d = str(tmp_path)
+        sst.save_draft(d, _bsd("1x1", [], 0, 0, False, "inferno", False))
+        sst.save_draft(d, _bsd("1x2", [], 0, 0, False, "inferno", False))
+        infos = sst.list_sessions(d)
+        assert len(infos) == 1 and infos[0].is_draft
+
+    def test_session_report_is_built_from_saved_state(self):
+        sess = _bsd("1x1", [], 0, 0, False, "inferno", False,
+                    name="Door study", intent="doorway growth phase",
+                    notebook=[{"insight": {"statement": "Peak 469 C.", "time_s": 8.0},
+                               "note": "candle A", "tags": ["plume"]}],
+                    zones=[{"name": "doorway", "x0": 0.8, "x1": 1.0, "z0": 0.0, "z1": 0.3}],
+                    time_window={"mode": "window", "t0": 10.0, "t1": 40.0})
+        html = rb.build_session_report(sess)
+        for token in ("Door study", "doorway growth phase", "Peak 469 C", "candle A",
+                      "plume", "10.0", "40.0"):
+            assert token in html
+
+    def test_session_report_handles_empty_session(self):
+        html = rb.build_session_report(_bsd("1x1", [], 0, 0, False, "inferno", False, name="Empty"))
+        assert "Empty" in html and "No saved evidence" in html

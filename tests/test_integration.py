@@ -2455,3 +2455,83 @@ class TestTimeWindowPanel:
         panel.insights.insight_saved.emit(panel.insights.item(0).data(QtCore.Qt.UserRole))
         assert len(window.evidence_dock.notebook) == 1
         window.close()
+
+
+class TestNamedSessions:
+    """V4-M6: named, reproducible analysis sessions."""
+
+    def _investigate(self, window):
+        """Set up an investigation: a notebook entry, a zone, an interval."""
+        from insight import Insight
+        import zone_stats as zst
+        window.evidence_dock.add_insight(Insight(
+            "Peak 469 C at t=8s.", category="query", quantity="TEMPERATURE",
+            time_s=8.0, value=469.0, basis="max"))
+        window.zone_panel.ensure_loaded()
+        window.zone_panel._zones.append(zst.Zone("doorway", 0.8, 1.0, 0.0, 0.3))
+        window.zone_panel._select_zone(0)
+        window.time_window_panel.ensure_loaded()
+        window.time_window_panel._mode = "window"
+        window.time_window_panel._t0 = 10.0
+        window.time_window_panel._t1 = 40.0
+
+    def test_panel_present_only_with_manifest(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert window.sessions_panel is None
+        else:
+            assert window.sessions_panel is not None
+        window.close()
+
+    def test_save_then_reopen_restores_state_exactly(self, qapp, tmp_path):
+        import session_store
+        sim_data = load_simulation_data()
+        if sim_data.is_demo:
+            return
+        w1 = MainWindow(sim_data)
+        w1._sessions_dir = str(tmp_path)
+        self._investigate(w1)
+        w1._on_session_save("Door study", "doorway 10-40 s")
+        infos = session_store.list_sessions(str(tmp_path))
+        assert len(infos) == 1
+        w1.close()
+        # a fresh window (as if the app was reopened) restores the session
+        w2 = MainWindow(load_simulation_data())
+        w2._sessions_dir = str(tmp_path)
+        w2._on_session_load(infos[0].path)
+        assert len(w2.evidence_dock.notebook) == 1
+        assert len(w2.zone_panel._zones) == 1
+        assert w2.zone_panel._zones[0].name == "doorway"
+        assert w2.time_window_panel._t0 == 10.0 and w2.time_window_panel._t1 == 40.0
+        w2.close()
+
+    def test_export_report_writes_html(self, qapp, tmp_path):
+        import session_store
+        window = MainWindow(load_simulation_data())
+        if window.sessions_panel is None:
+            window.close()
+            return
+        window._sessions_dir = str(tmp_path)
+        self._investigate(window)
+        window._on_session_save("Door study", "doorway growth")
+        path = session_store.list_sessions(str(tmp_path))[0].path
+        out = tmp_path / "report.html"
+        from report_builder import build_session_report, write_report
+        write_report(str(out), build_session_report(session_store.load_session(path)))
+        html = out.read_text()
+        assert "Door study" in html and "Peak 469 C" in html and "doorway" in html.lower()
+        window.close()
+
+    def test_empty_session_roundtrips(self, qapp, tmp_path):
+        import session_store
+        window = MainWindow(load_simulation_data())
+        if window.sessions_panel is None:
+            window.close()
+            return
+        window._sessions_dir = str(tmp_path)
+        window._on_session_save("Empty", "")
+        infos = session_store.list_sessions(str(tmp_path))
+        assert len(infos) == 1 and infos[0].n_notebook == 0 and infos[0].n_zones == 0
+        window._on_session_load(infos[0].path)  # must not raise
+        window.close()

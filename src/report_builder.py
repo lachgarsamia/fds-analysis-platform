@@ -138,6 +138,70 @@ def build_comparison_report(entry_a, entry_b, summary_a, summary_b,
     return _document(f"Comparison — {entry_a.folder} vs {entry_b.folder}", body)
 
 
+def _notebook_block(notebook: list) -> str:
+    """Evidence Notebook entries as a list (statement, time, note, tags)."""
+    if not notebook:
+        return "<p class='prose'>No saved evidence.</p>"
+    items = []
+    for entry in notebook:
+        ins = entry.get("insight", {}) or {}
+        t = ins.get("time_s")
+        when = ""
+        if isinstance(t, (int, float)):
+            when = f"<span class='provenance'>t = {float(t):.1f} s</span> "
+        note = f"<br><em>{_esc(entry.get('note'))}</em>" if entry.get("note") else ""
+        tags = entry.get("tags") or []
+        tag_html = f" <span class='provenance'>[{_esc(', '.join(tags))}]</span>" if tags else ""
+        items.append(f"<li>{when}{_esc(ins.get('statement', ''))}{tag_html}{note}</li>")
+    return f"<ul>{''.join(items)}</ul>"
+
+
+def _zones_block(zones: list) -> str:
+    if not zones:
+        return ""
+    items = "".join(
+        f"<li>{_esc(z.get('name', 'zone'))}: x [{z.get('x0')}, {z.get('x1')}], "
+        f"z [{z.get('z0')}, {z.get('z1')}]</li>" for z in zones)
+    return f"<h2>Named zones</h2><ul>{items}</ul>"
+
+
+def _time_window_block(tw: dict) -> str:
+    if not tw:
+        return ""
+    if tw.get("mode") == "split" and tw.get("split") is not None:
+        sel = f"before / after split at {float(tw['split']):.1f} s"
+    elif tw.get("t0") is not None and tw.get("t1") is not None:
+        sel = f"interval {float(tw['t0']):.1f}–{float(tw['t1']):.1f} s"
+    else:
+        return ""
+    return f"<h2>Time window</h2><p class='prose'>{_esc(sel)}</p>"
+
+
+def build_session_report(session: dict, timeline_png: bytes = None) -> str:
+    """Self-contained HTML report for a named analysis session (V4-M6):
+    metadata, intent, the Evidence Notebook, zones, the time-window
+    selection, and an optional timeline snapshot. Assembled purely from
+    the saved session (no recomputation), so it reproduces exactly."""
+    meta = session.get("metadata", {}) or {}
+    name = session.get("name") or "Analysis session"
+    meta_rows = "".join(
+        f"<tr><td>{_esc(k)}</td><td>{_esc(v)}</td></tr>"
+        for k, v in (("Author", meta.get("author", "")),
+                     ("Created", meta.get("created", "")),
+                     ("Last modified", meta.get("modified", "")),
+                     ("Data run", meta.get("data_version", "")))
+        if v)
+    body = (
+        f"<h1>{_esc(name)}</h1>"
+        f"<p class='prose'>{_esc(session.get('intent', '') or '(no description)')}</p>"
+        f"<table><tbody>{meta_rows}</tbody></table>"
+        f"{_figure_block(timeline_png, 'Timeline at save time.') if timeline_png else ''}"
+        f"{_time_window_block(session.get('time_window', {}))}"
+        f"<h2>Evidence Notebook</h2>{_notebook_block(session.get('notebook', []))}"
+        f"{_zones_block(session.get('zones', []))}")
+    return _document(f"Session — {name}", body)
+
+
 def write_report(path: str, html_text: str) -> None:
     with open(path, "w", encoding="utf-8") as f:
         f.write(html_text)

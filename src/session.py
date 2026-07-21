@@ -37,7 +37,9 @@ def cell_to_dict(cell) -> dict:
 
 def build_session_dict(layout_name: str, cells: list, active_index: int, time_index: int,
                         link_clim: bool, colormap: str, isotherms_enabled: bool,
-                        notebook: list | None = None, zones: list | None = None) -> dict:
+                        notebook: list | None = None, zones: list | None = None,
+                        name: str = "", intent: str = "", metadata: dict | None = None,
+                        time_window: dict | None = None, filters: dict | None = None) -> dict:
     return {
         "version": SESSION_VERSION,
         "layout": layout_name,
@@ -49,6 +51,12 @@ def build_session_dict(layout_name: str, cells: list, active_index: int, time_in
         "isotherms_enabled": isotherms_enabled,
         "notebook": notebook or [],  # V4-M2 Evidence Notebook (serialized entries)
         "zones": zones or [],        # V4-M4 named zones (physical rectangles)
+        # V4-M6 named-analysis-session fields (optional; older readers ignore).
+        "name": name,
+        "intent": intent,
+        "metadata": metadata or {},
+        "time_window": time_window or {},   # V4-M5 interval selection
+        "filters": filters or {},           # experiment-browser filter state
     }
 
 
