@@ -2586,3 +2586,45 @@ class TestMeasurementPanel:
         assert panel._measurements[0].interval is True
         assert "averaged" in panel._measurements[0].readout
         window.close()
+
+
+class TestAdvancedComparePanel:
+    """V4-M8: advanced comparison workflows (temporal / spatial / physics)."""
+
+    def test_axes_populate_and_physics_is_honest(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or len(sim_data.manifest) < 2:
+            assert getattr(window, "advanced_compare_panel", None) is None
+            window.close()
+            return
+        panel = window.advanced_compare_panel
+        panel.ensure_loaded()
+        assert panel.combo_a.count() == len(sim_data.manifest)
+        total = (panel.temporal_list.count() + panel.spatial_list.count()
+                 + panel.physics_list.count())
+        assert total >= 1
+        for i in range(panel.physics_list.count()):
+            ins = panel.physics_list.item(i).data(QtCore.Qt.UserRole)
+            assert "not a proven cause" in ins.statement  # association-not-causation gate
+        # a comparison Insight saves to the Evidence Notebook
+        for lst in (panel.temporal_list, panel.spatial_list, panel.physics_list):
+            if lst.count():
+                lst.insight_saved.emit(lst.item(0).data(QtCore.Qt.UserRole))
+                break
+        assert len(window.evidence_dock.notebook) == 1
+        window.close()
+
+    def test_same_scenario_clears_axes(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if window.advanced_compare_panel is None:
+            window.close()
+            return
+        panel = window.advanced_compare_panel
+        panel.ensure_loaded()
+        panel.combo_b.setCurrentIndex(panel.combo_a.currentIndex())  # A == B
+        assert panel.temporal_list.count() == 0
+        assert panel.spatial_list.count() == 0
+        assert panel.physics_list.count() == 0
+        window.close()

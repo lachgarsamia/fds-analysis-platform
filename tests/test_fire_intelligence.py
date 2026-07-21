@@ -932,3 +932,45 @@ class TestMeasure:
         m = mzt.Measurement("rect", [(0.8, 0.0), (1.0, 0.3)], label="doorway",
                             readout="area 0.06", interval=True)
         assert mzt.Measurement.from_dict(m.to_dict()) == m
+
+
+import advanced_compare as advc  # noqa: E402
+
+
+class TestAdvancedCompare:
+    def test_find_crossover_lead_flip(self):
+        a = [100.0] * 10
+        b = [50, 60, 70, 80, 90, 110, 120, 130, 140, 150]
+        cross = advc.find_crossover(a, b, fps=1, label_a="A", label_b="B")
+        assert cross == (5.0, "A", "B")  # A leads, B overtakes at t=5
+
+    def test_find_crossover_none_when_one_leads(self):
+        assert advc.find_crossover([1, 2, 3], [5, 6, 7], 1, "A", "B") is None
+
+    def test_region_differences_ranks_hottest_block(self):
+        field = np.zeros((9, 9))
+        field[6:, 6:] = 30.0            # lower-right block differs most
+        regions = advc.region_differences(field)
+        assert regions[0][0] == "lower-right"
+        assert regions[0][1] == pytest.approx(30.0)
+
+    def test_advanced_compare_axes_and_honesty(self):
+        na = np.full((10, 9, 9), 100.0, dtype=np.float32)          # A: flat hot
+        b_vals = np.linspace(50.0, 150.0, 10)
+        nb = np.stack([np.full((9, 9), v, dtype=np.float32) for v in b_vals])  # B: ramps up
+        res = advc.advanced_compare(na, nb, (0.0, 1.0, 0.0, 1.0), fps=1,
+                                    quantity="TEMPERATURE", label_a="A", label_b="B")
+        assert any("peak temperature" in i.statement for i in res["temporal"])  # crossover
+        assert len(res["spatial"]) >= 1
+        assert len(res["physics"]) >= 1
+        # honesty gate: every physics Insight is association, not causation
+        for ins in res["physics"]:
+            assert "not a proven cause" in ins.statement
+            assert "not causation" in ins.basis
+
+    def test_physics_drops_negligible_delta(self):
+        # two near-identical fields -> no meaningful driver survives
+        base = np.full((6, 6, 6), 100.0, dtype=np.float32)
+        res = advc.advanced_compare(base, base.copy(), (0.0, 1.0, 0.0, 1.0), 1,
+                                    "TEMPERATURE", "A", "B")
+        assert res["physics"] == []

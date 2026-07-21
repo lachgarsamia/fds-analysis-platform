@@ -70,6 +70,7 @@ from linked_panel import LinkedInspectionPanel
 from zone_panel import ZonePanel
 from time_window_panel import TimeWindowPanel
 from measurement_panel import MeasurementPanel
+from advanced_compare_panel import AdvancedComparePanel
 from sessions_panel import SessionsPanel
 import session_store
 from evidence_notebook_panel import EvidenceNotebookDock
@@ -718,6 +719,14 @@ class MainWindow(QtWidgets.QMainWindow):
             self.measurement_panel = MeasurementPanel(
                 self.controller.store, self.sim_data.manifest,
                 self._quantity_options(), self.sim_data.timesteps_per_second)
+            # Advanced comparison (V4-M8): temporal / spatial / physics axes.
+            # Needs two scenarios to compare (like the semantic diff).
+            self.advanced_compare_panel = (
+                AdvancedComparePanel(
+                    self.controller.store, self.sim_data.manifest,
+                    self._quantity_options(), self.sim_data.timesteps_per_second,
+                    summaries=getattr(self, "_scenario_summaries", None))
+                if len(self.sim_data.manifest) >= 2 else None)
             # Named analysis sessions (V4-M6): save/browse/reload/export the
             # whole investigation. Pure UI; main_window collects/applies state.
             self.sessions_panel = SessionsPanel()
@@ -743,6 +752,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.zone_panel = None
             self.time_window_panel = None
             self.measurement_panel = None
+            self.advanced_compare_panel = None
             self.sessions_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
@@ -780,6 +790,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 zone_content=self.zone_panel,
                 interval_content=self.time_window_panel,
                 measurement_content=self.measurement_panel,
+                advanced_compare_content=self.advanced_compare_panel,
                 sessions_content=self.sessions_panel),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
@@ -852,6 +863,9 @@ class MainWindow(QtWidgets.QMainWindow):
             ("inspector", "story_list"), ("height_panel", "insights"),
             ("linked_panel", "insights"), ("zone_panel", "insights"),
             ("time_window_panel", "insights"),
+            ("advanced_compare_panel", "temporal_list"),
+            ("advanced_compare_panel", "spatial_list"),
+            ("advanced_compare_panel", "physics_list"),
             ("query_panel", "results"), ("semantic_diff_panel", "list"),
             ("cause_panel", "chain"),
         ):

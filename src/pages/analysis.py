@@ -42,6 +42,7 @@ class AnalysisPage(Page):
                  zone_content: QtWidgets.QWidget = None,
                  interval_content: QtWidgets.QWidget = None,
                  measurement_content: QtWidgets.QWidget = None,
+                 advanced_compare_content: QtWidgets.QWidget = None,
                  sessions_content: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self._on_shown = on_shown
@@ -72,6 +73,7 @@ class AnalysisPage(Page):
             ("Why is it hot?", cause_content),
             ("State space", state_space_content),
             ("Semantic diff", semantic_diff_content),
+            ("Compare axes", advanced_compare_content),
             ("Factor effects", factor_effects_content),
             ("Tenability", tenability_content),
             ("Time series", timeseries_content),
