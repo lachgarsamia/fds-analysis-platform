@@ -2423,3 +2423,35 @@ class TestZonePanel:
         assert len(window.zone_panel._zones) == 1
         assert window.zone_panel._zones[0].name == "window"
         window.close()
+
+
+class TestTimeWindowPanel:
+    """V4-M5: time-window / interval analysis."""
+
+    def test_intervals_phases_and_before_after(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "time_window_panel", None) is None
+            window.close()
+            return
+        panel = window.time_window_panel
+        panel.ensure_loaded()
+        assert panel.scenario_combo.count() == len(sim_data.manifest)
+        assert len(panel._series["phases"]) >= 1
+        # whole-run window produces stats + an insight
+        assert "s</b>" in panel.stats_label.text()
+        assert panel.insights.count() == 1
+        # selecting a detected phase narrows the window
+        if len(panel._series["phases"]) >= 1:
+            panel._on_phase_selected(1)
+            _name, a, b = panel._series["phases"][0]
+            assert panel._t0 == a and panel._t1 == b
+        # before/after mode compares two halves and saves to the notebook
+        panel._on_mode_changed(1)
+        panel._split = 20.0
+        panel._compute()
+        assert "Before" in panel.stats_label.text() and "After" in panel.stats_label.text()
+        panel.insights.insight_saved.emit(panel.insights.item(0).data(QtCore.Qt.UserRole))
+        assert len(window.evidence_dock.notebook) == 1
+        window.close()

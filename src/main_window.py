@@ -67,6 +67,7 @@ from cause_panel import CausePanel
 from height_panel import HeightPanel
 from linked_panel import LinkedInspectionPanel
 from zone_panel import ZonePanel
+from time_window_panel import TimeWindowPanel
 from evidence_notebook_panel import EvidenceNotebookDock
 from evidence_notebook import EvidenceNotebook
 from diff_analysis import DifferenceOverTimeDialog
@@ -703,6 +704,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.zone_panel = ZonePanel(
                 self.controller.store, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
+            # Time-window / interval analysis (V4-M5): time as a selectable
+            # dimension -- interval stats, before/after, detected phases.
+            self.time_window_panel = TimeWindowPanel(
+                self.controller.store, self.sim_data.manifest,
+                self._quantity_options(), self.sim_data.timesteps_per_second)
             # Factor-effect maps (M3.1) need the candle factorial's factor
             # axes; a generic guest study has none, so it's factorial-only.
             self.factor_effects_panel = (
@@ -723,6 +729,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.height_panel = None
             self.linked_panel = None
             self.zone_panel = None
+            self.time_window_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
         analysis_content = self.analytics_panel.widget() if self.analytics_panel is not None else None
@@ -756,7 +763,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 cause_content=self.cause_panel,
                 height_content=self.height_panel,
                 linked_content=self.linked_panel,
-                zone_content=self.zone_panel),
+                zone_content=self.zone_panel,
+                interval_content=self.time_window_panel),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
             "about": AboutPage(),
@@ -813,6 +821,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for panel_attr, list_attr in (
             ("inspector", "story_list"), ("height_panel", "insights"),
             ("linked_panel", "insights"), ("zone_panel", "insights"),
+            ("time_window_panel", "insights"),
             ("query_panel", "results"), ("semantic_diff_panel", "list"),
             ("cause_panel", "chain"),
         ):

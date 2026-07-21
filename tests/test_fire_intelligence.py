@@ -788,3 +788,39 @@ class TestZoneStats:
         acc = zst.smoke_accumulation(soot, (0.0, 1.0, 0.0, 1.0),
                                      zst.Zone("all", 0.0, 1.0, 0.0, 1.0), fps=2)
         assert acc == pytest.approx(4.0)  # mean 2 per frame * 4 frames / fps
+
+
+import time_window as twm  # noqa: E402
+
+
+class TestTimeWindow:
+    T = np.array([0.0, 1.0, 2.0, 3.0])
+    MEAN = np.array([10.0, 20.0, 30.0, 40.0])
+    MAX = np.array([10.0, 20.0, 30.0, 40.0])
+
+    def test_window_indices_inclusive(self):
+        assert twm.window_indices(self.T, 1.0, 3.0) == (1, 3)
+        assert twm.window_indices(self.T, 3.0, 1.0) == (1, 3)  # order-independent
+
+    def test_interval_stats_hand_computed(self):
+        st = twm.interval_stats(self.MEAN, self.MAX, self.T, 1.0, 3.0)
+        assert st["mean"] == pytest.approx(30.0)
+        assert st["peak"] == pytest.approx(40.0)
+        assert st["integral"] == pytest.approx(60.0)   # trapz of [20,30,40] over [1,2,3]
+        assert st["slope"] == pytest.approx(10.0)
+        assert st["delta"] == pytest.approx(20.0)
+        assert st["n_frames"] == 3
+
+    def test_before_after_split(self):
+        before, after = twm.before_after_split(self.MEAN, self.MAX, self.T, 1.5)
+        assert (before["t0"], before["t1"]) == (0.0, 1.0)
+        assert (after["t0"], after["t1"]) == (2.0, 3.0)
+        assert before["mean"] == pytest.approx(15.0)   # [10,20]
+        assert after["mean"] == pytest.approx(35.0)    # [30,40]
+
+    def test_phase_windows_with_pre_ignition(self):
+        w = twm.phase_windows([(2.0, "B"), (1.0, "A")], t_end=5.0)
+        assert w == [("Pre-ignition", 0.0, 1.0), ("A", 1.0, 2.0), ("B", 2.0, 5.0)]
+
+    def test_phase_windows_empty(self):
+        assert twm.phase_windows([], t_end=5.0) == []

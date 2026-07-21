@@ -39,7 +39,8 @@ class AnalysisPage(Page):
                  cause_content: QtWidgets.QWidget = None,
                  height_content: QtWidgets.QWidget = None,
                  linked_content: QtWidgets.QWidget = None,
-                 zone_content: QtWidgets.QWidget = None, parent=None):
+                 zone_content: QtWidgets.QWidget = None,
+                 interval_content: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self._on_shown = on_shown
         layout = QtWidgets.QVBoxLayout(self)
@@ -59,6 +60,7 @@ class AnalysisPage(Page):
             ("Ensemble analytics", content),
             ("Height", height_content),
             ("Zones", zone_content),
+            ("Intervals", interval_content),
             ("Inspect moment", linked_content),
             ("Ask", query_content),
             ("Fire MRI", fire_mri_content),
