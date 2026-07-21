@@ -86,6 +86,7 @@ from dashboard_panel import DashboardPanel
 from spacetime_panel import SpaceTimePanel
 from narrative_panel import NarrativePanel
 from ensemble_panel import EnsemblePanel
+from graph_panel import GraphPanel
 from figure_export import save_figure
 from report_builder import build_publication_manifest
 import study_analytics as study_analytics_mod
@@ -836,6 +837,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.ensemble_panel = EnsemblePanel(
                 self.controller.store, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
+            # Research Knowledge Graph (V5 Phase 6): laboratory memory over
+            # every existing artifact. `app=self` lets it gather live artifacts.
+            self.graph_panel = GraphPanel(
+                self.controller.store, self.sim_data.manifest,
+                self.sim_data.timesteps_per_second, app=self)
             # Named analysis sessions (V4-M6): save/browse/reload/export the
             # whole investigation. Pure UI; main_window collects/applies state.
             self.sessions_panel = SessionsPanel()
@@ -884,6 +890,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.spacetime_panel = None
             self.narrative_panel = None
             self.ensemble_panel = None
+            self.graph_panel = None
             self.sessions_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
@@ -929,6 +936,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 spacetime_content=self.spacetime_panel,
                 narrative_content=self.narrative_panel,
                 ensemble_content=self.ensemble_panel,
+                graph_content=self.graph_panel,
                 experiments_content=self.experiments_panel,
                 quantities_content=self.quantities_panel,
                 assistant_content=self.assistant_panel,
@@ -1014,6 +1022,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # V5-M5: a narrative step publishes its Insight's selection (seek + sync).
         if self.narrative_panel is not None:
             self.narrative_panel.event_activated.connect(self._on_insight_activated)
+        # V5 Phase 6: the knowledge graph publishes a node's Selection and
+        # rebuilds its selected-scenario events when the selection changes.
+        if self.graph_panel is not None:
+            self.graph_panel.set_bus(self.selection_bus)
         self.selection_bus.changed.connect(self._on_bus_changed)
 
     # Adaptive Workspace presets (V5-M4/P4): each focuses the app on a task by

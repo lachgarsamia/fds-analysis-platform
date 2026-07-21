@@ -3085,3 +3085,52 @@ class TestPhase5Communication:
         write_report(str(man), build_publication_manifest(figs, [], {"Scenarios": "24"}))
         assert "Publication bundle" in man.read_text() and figs[0][0] in man.read_text()
         window.close()
+
+
+class TestKnowledgeGraph:
+    """V5 Phase 6: the Research Knowledge Graph."""
+
+    def test_graph_builds_and_nodes_publish_selection(self, qapp):
+        from insight import Insight
+        import zone_stats as zst
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "graph_panel", None) is None
+            window.close()
+            return
+        window.evidence_dock.add_insight(Insight(
+            "Peak 469 C.", category="query", quantity="TEMPERATURE",
+            time_s=8.0, location=(0.9, 0.1), basis="max"))
+        window.zone_panel.ensure_loaded()
+        window.zone_panel._zones.append(zst.Zone("doorway", 0.8, 1.0, 0.0, 0.3))
+        g = window.graph_panel
+        g._current_scenario = 3
+        g._loaded = True
+        g._rebuild()
+        assert len(g._graph.nodes_of("scenario")) == len(sim_data.manifest)
+        assert g._graph.nodes_of("insight") and g._graph.nodes_of("zone")
+        # a scenario node publishes its scenario; an insight node its time/point
+        g._select_node("scenario:3")
+        assert window.selection_bus.current.scenario == 3
+        g._select_node("insight:0")
+        assert window.selection_bus.current.time_s == 8.0
+        window.close()
+
+    def test_tag_filter_and_neighbors(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        g = window.graph_panel
+        g._loaded = True
+        g._rebuild()
+        # a factor tag connects to exactly the scenarios carrying that level
+        neigh = g._graph.neighbors("tag:vod2")
+        assert all(g._graph.nodes[n].type == "scenario" for n in neigh) and len(neigh) >= 1
+        # filtering by that tag narrows the visible set
+        g.tag_combo.setCurrentIndex(g.tag_combo.findData("vod2"))
+        visible = g._visible_ids()
+        assert "tag:vod2" in visible and len(visible) == len(neigh) + 1
+        window.close()

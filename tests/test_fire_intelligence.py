@@ -1339,3 +1339,48 @@ class TestAssistantSearch:
     def test_interpret_routes_search_and_still_refuses_causal(self):
         assert asst.interpret_request("show scenarios where smoke below 2 m") == "search_scenarios"
         assert asst.interpret_request("why are some scenarios hotter") == "refuse"
+
+
+import graph_model as gmod  # noqa: E402
+
+
+class _FakeExp:
+    def __init__(self, name, scenarios, tags=()):
+        self.name = name; self.scenarios = scenarios; self.tags = list(tags)
+
+
+class TestGraphModel:
+    def _scenarios(self):
+        return [_FakeSummary(0, "c0_d0_vod0_voc0", 0, 0, 0, 0),
+                _FakeSummary(1, "c0_d0_vod2_voc0", 0, 0, 2, 0),
+                _FakeSummary(2, "c1_d1_vod2_voc1", 1, 1, 2, 1)]
+
+    def test_scenarios_and_factor_tags(self):
+        g = gmod.build_graph(self._scenarios())
+        assert len(g.nodes_of("scenario")) == 3
+        # each scenario links to its four factor-level tags
+        assert "tag:vod2" in g.nodes and "tag:vod0" in g.nodes
+        vod2 = g.neighbors("tag:vod2")
+        assert set(vod2) == {"scenario:1", "scenario:2"}   # the two vod=2 runs
+
+    def test_experiment_links_member_scenarios(self):
+        g = gmod.build_graph(self._scenarios(),
+                             experiments=[_FakeExp("study", ["c0_d0_vod0_voc0", "c1_d1_vod2_voc1"],
+                                                   tags=["ventilation"])])
+        n = g.neighbors("experiment:study")
+        assert "scenario:0" in n and "scenario:2" in n and "tag:ventilation" in n
+
+    def test_events_link_to_their_scenario(self):
+        evs = {2: [Insight("Ignition: x", quantity="TEMPERATURE", time_s=0.5)]}
+        g = gmod.build_graph(self._scenarios(), events_by_scenario=evs)
+        ev_nodes = g.nodes_of("event")
+        assert len(ev_nodes) == 1
+        assert "scenario:2" in g.neighbors(ev_nodes[0].id)
+
+    def test_node_to_selection(self):
+        g = gmod.build_graph(self._scenarios())
+        assert g.nodes["scenario:1"].to_selection().scenario == 1
+        assert g.nodes["tag:vod2"].to_selection() is None      # organizational node
+        ins = gmod.Node("i", "insight", "x", time_s=8.0, point=(0.9, 0.1))
+        sel = ins.to_selection()
+        assert sel.time_s == 8.0 and sel.point == (0.9, 0.1)
