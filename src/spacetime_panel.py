@@ -74,6 +74,14 @@ class SpaceTimePanel(QtWidgets.QWidget):
         self.scenario_combo.currentIndexChanged.connect(self._reload)
         self.loc_canvas.mpl_connect("button_press_event", self._on_click)
 
+    # V6 hook (GATED): multi-plane linked cross-sections (XY / XZ / YZ). This
+    # panel already reshapes the single stored y-normal plane into x–time and
+    # z–time. True XY/XZ/YZ views need FDS to output slices on those additional
+    # planes (docs/msim-preparation.md). When present, add plane selectors here
+    # and read each plane's SliceKey (direction/offset) -- the store already
+    # keys slices by (quantity, direction, offset), so no new data path is
+    # needed, only the extra SLCF output.
+
     # ------------------------------------------------------------- bus (M1)
     def set_bus(self, bus) -> None:
         self._bus = bus

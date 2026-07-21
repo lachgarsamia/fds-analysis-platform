@@ -11,6 +11,13 @@ not imply full FED without CO"). CO2 from the volumetric `.s3d` data
 (feature F8) is a documented future extension, not part of M3.2.
 
 Pure computation, Qt-free and testable.
+
+V6 hook (GATED): full FED. When the M-SIM re-run adds a CO output (registry
+'CARBON MONOXIDE VOLUME FRACTION', currently gated), the toxic-gas FED integral
+combines with the convected-heat dose here into a full FED, and the partial-
+screen disclaimer retires. Add `fed_gas_dose(co_field, fps)` beside the heat
+functions and sum the two contributions; no other surface changes. See
+docs/msim-preparation.md §3 and ROADMAP-V6.md.
 """
 
 from __future__ import annotations

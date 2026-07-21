@@ -1,5 +1,51 @@
 # Changelog
 
+## v5.0.0 — Computational Fire Scientist (connected analysis environment)
+
+V5's theme is **connection**: the panels (live), the artifacts (memory), and the
+scenarios (study-level science) are unified through one shared selection. Phases
+0–7, all honesty-gated where data is unavailable; the suite is green.
+
+### Highlights
+
+- **Phase 0 — Architecture Stabilization** — a three-layer model (Data /
+  Selection / Presentation); the `SelectionModel` (immutable), `SelectionContext`
+  (façade), and `SelectionBus` (origin-guarded, no feedback loops); an additive
+  `AnalysisPanelBase` + binder; and the `QuantityProvider` computation layer that
+  wraps the store and resolves raw *and* derived quantities.
+- **M1 — Shared Selection Model** — one selection (scenario · point · region ·
+  height · time · interval · phase · quantity · comparison) broadcast to every
+  panel; the Insight becomes a first-class selection payload; the Live Viewer
+  participates, migrated last. Quantity is a shared field too.
+- **M2 — Study-Level Analytics** — the 24-run factorial as a designed experiment:
+  parallel coordinates, factor influence, correlation, outliers, statistics.
+- **M3 — Sensitivity Explorer** — "what-if" by multilinear interpolation across
+  the existing runs (response surfaces, tornado), labelled *Estimated from
+  Existing Scenarios*, never a new simulation.
+- **Phase 4 — Research Workspace** — Hazard Spaces (Safe/Warning/Critical/
+  Untenable + flashover *indicator*), a live Mission-Control Dashboard, fuller
+  Adaptive Workspace presets (tab + quantity focus), and a lightweight
+  Space-Time Cube.
+- **Phase 5 — Scientific Communication** — Fire Narrative++ (expandable
+  evidence-backed event chain), Publication Mode (one-click journal-styled figure
+  bundle + manifest), Assistant++ (bounded experiment search over the closed
+  grammar), and Ensemble Spread (parametric min/mean/max envelopes).
+- **Phase 6 — Research Knowledge Graph** — the laboratory memory: experiments →
+  scenarios → sessions → insights → zones → measurements → events → tags, all
+  navigable; click a node to jump the workspace, click a tag to surface
+  everything connected to it.
+- **Phase 7 — V6 Preparation** — gated interfaces prepared (not implemented):
+  `QuantityProvider.get_vector` + `GatedQuantityError`, a `validation.py` stub,
+  and panel/registry seams for 3D velocity, multi-plane cross-sections, full FED,
+  and validation. See `ROADMAP-V6.md`.
+
+### Principles
+
+Everything reads from Layer 2, never from another panel. Every estimate carries
+its honesty label (*Estimated from Existing Scenarios*, *parametric ensemble
+spread*, temperature-only partial FED, association-not-causation, the M-SIM
+gate). All V2/V3/V4 behaviour and the cinematic Live viewer preserved.
+
 ## v4.0.0 — Researcher-Centered Interactive Analysis Environment
 
 V4 turns the FDS slice viewer into an interactive scientific *analysis
