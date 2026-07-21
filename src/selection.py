@@ -54,6 +54,41 @@ class Selection:
             return None
         return int(round(self.time_s * max(1, fps)))
 
+    def to_dict(self) -> dict:
+        """JSON-safe plain values for the session (V5-M1). Only non-default
+        fields are written, so an empty selection round-trips to {}."""
+        out = {}
+        for name in ("scenario", "quantity", "point", "region", "height",
+                     "time_s", "interval", "phase", "comparison"):
+            value = getattr(self, name)
+            if value is not None and not (name == "quantity" and value == "TEMPERATURE"):
+                out[name] = list(value) if isinstance(value, tuple) else value
+        return out
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Selection":
+        d = d or {}
+        def _tuple(key):
+            v = d.get(key)
+            return tuple(v) if isinstance(v, (list, tuple)) else None
+        return cls(scenario=d.get("scenario"), quantity=d.get("quantity", "TEMPERATURE"),
+                   point=_tuple("point"), region=_tuple("region"), height=d.get("height"),
+                   time_s=d.get("time_s"), interval=_tuple("interval"),
+                   phase=d.get("phase"), comparison=_tuple("comparison"))
+
+    @classmethod
+    def from_insight(cls, insight, scenario=None) -> "Selection":
+        """Build a Selection from any Insight-like object (duck-typed, so
+        this module imports nothing). Mirror of Insight.to_selection."""
+        t = getattr(insight, "time_s", None)
+        time_s = float(t) if isinstance(t, (int, float)) else None
+        interval = tuple(t) if isinstance(t, tuple) else None
+        return cls(scenario=scenario,
+                   quantity=getattr(insight, "quantity", None) or "TEMPERATURE",
+                   point=getattr(insight, "location", None),
+                   region=getattr(insight, "region", None),
+                   time_s=time_s, interval=interval)
+
 
 class SelectionContext:
     """A read-oriented façade over a `Selection` (Layer 2). Consumers depend

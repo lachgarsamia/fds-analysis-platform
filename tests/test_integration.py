@@ -2822,3 +2822,55 @@ class TestSafeAssistantPanel:
         cap = window._assistant_figure_caption()
         assert "peak" in cap and "°C" in cap  # a real computed value, descriptive only
         window.close()
+
+
+class TestSharedSelectionModel:
+    """V5-M1: the shared selection bus wired across panels + Live Viewer."""
+
+    def test_bus_and_provider_present(self, qapp):
+        window = MainWindow(load_simulation_data())
+        assert window.selection_bus is not None
+        assert window.quantity_provider is not None
+        window.close()
+
+    def test_cross_panel_scenario_and_time_sync(self, qapp):
+        import numpy as np
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window.height_panel.ensure_loaded()
+        window.linked_panel.ensure_loaded()
+        # changing one panel's scenario publishes it; the other panel follows
+        window.height_panel.scenario_combo.setCurrentIndex(3)
+        assert window.selection_bus.current.scenario == window.height_panel.scenario_combo.currentData()
+        assert window.linked_panel.scenario_combo.currentData() == window.selection_bus.current.scenario
+        # a published time syncs a panel's frame slider
+        window.selection_bus.update(origin=None, time_s=10.0)
+        fps = window.time_controller.timesteps_per_second
+        assert window.height_panel.frame_slider.value() == int(round(10.0 * fps))
+        window.close()
+
+    def test_insight_activation_routes_through_bus(self, qapp):
+        from insight import Insight
+        window = MainWindow(load_simulation_data())
+        window._on_insight_activated(Insight(
+            "peak", category="query", quantity="TEMPERATURE", time_s=8.0, basis="m"))
+        assert window.selection_bus.current.time_s == 8.0
+        window.close()
+
+    def test_selection_survives_session_roundtrip(self, qapp):
+        from selection import Selection
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window.selection_bus.set(Selection(scenario=2, quantity="VELOCITY", point=(0.9, 0.1)))
+        sd = window._collect_session_dict("t", "")
+        window.selection_bus.set(Selection())
+        window._apply_analysis_session(sd)
+        s = window.selection_bus.current
+        assert s.scenario == 2 and s.quantity == "VELOCITY" and s.point == (0.9, 0.1)
+        window.close()
