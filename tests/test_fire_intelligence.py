@@ -663,3 +663,59 @@ class TestHeightRealData:
         jet = haz.ceiling_jet_series(data)
         assert np.all(np.isfinite(plume)) and plume.max() <= extent[3] + 1e-6
         assert np.all(np.isfinite(jet)) and jet.max() >= 20.0
+
+
+import evidence_notebook as enb  # noqa: E402
+from insight import Insight as _Insight  # noqa: E402
+
+
+class TestEvidenceNotebook:
+    def _ins(self, s="Peak temperature is 320 C."):
+        return _Insight(s, category="query", quantity="TEMPERATURE",
+                        time_s=42.0, value=320.0, unit="C", basis="global max")
+
+    def test_add_remove_clear(self):
+        nb = enb.EvidenceNotebook()
+        assert nb.is_empty()
+        nb.add(self._ins()); nb.add(self._ins("second"))
+        assert len(nb) == 2 and not nb.is_empty()
+        nb.remove(0)
+        assert len(nb) == 1 and nb.entries[0].insight.statement == "second"
+        nb.clear()
+        assert nb.is_empty()
+
+    def test_move_reorders_and_clamps(self):
+        nb = enb.EvidenceNotebook()
+        nb.add(self._ins("a")); nb.add(self._ins("b")); nb.add(self._ins("c"))
+        assert nb.move(0, 1) == 1  # a<->b
+        assert [e.insight.statement for e in nb.entries] == ["b", "a", "c"]
+        assert nb.move(0, -1) == 0  # already at top: no-op
+        assert nb.move(2, 1) == 2   # already at bottom: no-op
+
+    def test_note_and_tags_are_cleaned(self):
+        nb = enb.EvidenceNotebook()
+        nb.add(self._ins())
+        nb.set_note(0, "growth phase")
+        nb.set_tags(0, [" plume ", "", "  ", "caseA"])
+        assert nb.entries[0].note == "growth phase"
+        assert nb.entries[0].tags == ["plume", "caseA"]  # blanks dropped, stripped
+
+    def test_serialization_roundtrip_preserves_everything(self):
+        nb = enb.EvidenceNotebook()
+        nb.add(_Insight("Layer descends during (12, 40) s.", category="event",
+                        quantity="TEMPERATURE", time_s=(12.0, 40.0),
+                        location=(0.9, 0.1), region=(0.0, 1.0, 0.0, 0.4),
+                        value=0.2, unit="m", basis="interval stat"),
+               note="door open", tags=["ventilation"])
+        back = enb.EvidenceNotebook.from_list(nb.to_list())
+        e = back.entries[0]
+        assert e.note == "door open" and e.tags == ["ventilation"]
+        assert e.insight.time_s == (12.0, 40.0)  # tuple survives JSON list round-trip
+        assert e.insight.location == (0.9, 0.1)
+        assert e.insight.region == (0.0, 1.0, 0.0, 0.4)
+        assert e.insight.primary_time() == 12.0
+
+    def test_from_list_tolerates_none_and_junk(self):
+        assert enb.EvidenceNotebook.from_list(None).is_empty()
+        nb = enb.EvidenceNotebook.from_list([{"insight": {"statement": "x"}}, "bad"])
+        assert len(nb) == 1 and nb.entries[0].insight.statement == "x"

@@ -65,6 +65,8 @@ from state_space_panel import StateSpacePanel
 from attention_panel import AttentionPanel
 from cause_panel import CausePanel
 from height_panel import HeightPanel
+from evidence_notebook_panel import EvidenceNotebookDock
+from evidence_notebook import EvidenceNotebook
 from diff_analysis import DifferenceOverTimeDialog
 from session import build_session_dict, read_session, write_session
 from nav import NavRail
@@ -430,6 +432,18 @@ class MainWindow(QtWidgets.QMainWindow):
         view_menu.addAction(self.cinematic_action)
         view_menu.addSeparator()
 
+        # Evidence Notebook (V4-M2): dock is created after the menu, so the
+        # action just toggles it and stays in sync via visibilityChanged.
+        self.evidence_notebook_action = QtWidgets.QAction("Evidence Notebook", self, checkable=True)
+        self.evidence_notebook_action.setToolTip(
+            "Show the Evidence Notebook: the saved, annotatable measurements "
+            "for this study. Right-click any finding and choose \"Save to "
+            "Evidence Notebook\" to collect it here.")
+        self.evidence_notebook_action.triggered.connect(
+            lambda checked: self.evidence_dock.setVisible(checked))
+        view_menu.addAction(self.evidence_notebook_action)
+        view_menu.addSeparator()
+
         fullscreen_action = QtWidgets.QAction("Toggle Fullscreen\tF11", self)
         fullscreen_action.triggered.connect(self._toggle_fullscreen)
         view_menu.addAction(fullscreen_action)
@@ -763,8 +777,32 @@ class MainWindow(QtWidgets.QMainWindow):
         shell_layout.addWidget(self.page_stack, 1)
         self.setCentralWidget(shell)
 
+        self._build_evidence_notebook()
+
         self._active_page_key = None
         self._navigate_to("live")
+
+    def _build_evidence_notebook(self) -> None:
+        """Evidence Notebook (V4-M2): a dockable, session-backed collection
+        of saved measurements. Every panel's InsightList already exposes a
+        "Save to Evidence Notebook" action (insight.py) and an
+        insight_saved signal, so wiring is one connection per panel; the
+        dock's own click reuses the shared navigation. Starts hidden (View
+        menu toggles it); the first saved insight reveals it."""
+        self.evidence_dock = EvidenceNotebookDock(self)
+        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.evidence_dock)
+        self.evidence_dock.insight_activated.connect(self._on_insight_activated)
+        self.evidence_dock.visibilityChanged.connect(self.evidence_notebook_action.setChecked)
+        self.evidence_dock.hide()
+        for panel_attr, list_attr in (
+            ("inspector", "story_list"), ("height_panel", "insights"),
+            ("query_panel", "results"), ("semantic_diff_panel", "list"),
+            ("cause_panel", "chain"),
+        ):
+            panel = getattr(self, panel_attr, None)
+            insight_list = getattr(panel, list_attr, None) if panel is not None else None
+            if insight_list is not None:
+                insight_list.insight_saved.connect(self.evidence_dock.add_insight)
 
     def _on_analysis_page_shown(self) -> None:
         """Analysis page on_enter: kick the analytics panel's one-shot
@@ -2679,7 +2717,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.view_grid.layout_name, visible_cells,
             active_index, self.time_controller.index,
             getattr(self, "_link_clim", False), self.current_colormap,
-            self.isotherms_action.isChecked())
+            self.isotherms_action.isChecked(),
+            notebook=self.evidence_dock.notebook.to_list())
         try:
             write_session(path, session)
         except OSError as e:
@@ -2746,6 +2785,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._set_link_clim(bool(session.get("link_clim", False)))
         self.isotherms_action.setChecked(bool(session.get("isotherms_enabled", False)))
         self._set_isotherms_enabled(bool(session.get("isotherms_enabled", False)))
+
+        # V4-M2: restore the Evidence Notebook (absent in v1 sessions -> empty).
+        self.evidence_dock.load_notebook(EvidenceNotebook.from_list(session.get("notebook")))
+        if not self.evidence_dock.notebook.is_empty():
+            self.evidence_dock.show()
 
         time_index = session.get("time_index", 0)
         self.time_controller.seek(min(max(time_index, 0), self._current_n_frames - 1))

@@ -2292,3 +2292,57 @@ class TestHeightPanel:
         panel._on_click(_Evt())
         assert panel._x_col is not None
         window.close()
+
+
+class TestEvidenceNotebookIntegration:
+    """V4-M2: dockable, session-backed Evidence Notebook."""
+
+    def test_dock_starts_hidden_and_save_reveals_and_stores(self, qapp):
+        from insight import Insight
+        window = MainWindow(load_simulation_data())
+        assert window.evidence_dock.isHidden()
+        ins = Insight("Peak temperature is 320 C.", category="query",
+                      quantity="TEMPERATURE", time_s=42.0, value=320.0, basis="max")
+        window.evidence_dock.add_insight(ins)
+        assert len(window.evidence_dock.notebook) == 1
+        assert not window.evidence_dock.isHidden()  # first save reveals it
+        window.close()
+
+    def test_panel_insight_lists_are_wired_to_the_notebook(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        from insight import Insight
+        ins = Insight("Plume peaks at 0.28 m.", category="query",
+                      quantity="TEMPERATURE", time_s=2.5, value=0.28, basis="max hot cell")
+        # emitting the shared save signal from a real panel's list lands it
+        window.height_panel.insights.insight_saved.emit(ins)
+        assert len(window.evidence_dock.notebook) == 1
+        window.close()
+
+    def test_session_roundtrip_carries_the_notebook(self, qapp, tmp_path):
+        from insight import Insight
+        from session import read_session
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        window.evidence_dock.add_insight(
+            Insight("Ceiling peaks at 41 C.", category="query", quantity="TEMPERATURE",
+                    time_s=39.0, value=41.0, basis="near-ceiling band"))
+        window.evidence_dock.notebook.set_note(0, "case A")
+        p = str(tmp_path / "sess.json")
+        # _save_session shows a file dialog; drive the same serialization it uses.
+        from session import build_session_dict, write_session
+        cells = window.view_grid.visible_cells()
+        sess = build_session_dict(window.view_grid.layout_name, cells, 0, 0, False,
+                                  window.current_colormap, False,
+                                  notebook=window.evidence_dock.notebook.to_list())
+        write_session(p, sess)
+        window.evidence_dock.notebook.clear()
+        window._apply_session(read_session(p))
+        assert len(window.evidence_dock.notebook) == 1
+        assert window.evidence_dock.notebook.entries[0].note == "case A"
+        window.close()

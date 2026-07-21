@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import json
 
-SESSION_VERSION = 1
+SESSION_VERSION = 2          # v2 adds the Evidence Notebook (V4-M2)
+_SUPPORTED_VERSIONS = (1, 2)  # v1 sessions still load (notebook simply absent)
 
 
 def cell_to_dict(cell) -> dict:
@@ -35,7 +36,8 @@ def cell_to_dict(cell) -> dict:
 
 
 def build_session_dict(layout_name: str, cells: list, active_index: int, time_index: int,
-                        link_clim: bool, colormap: str, isotherms_enabled: bool) -> dict:
+                        link_clim: bool, colormap: str, isotherms_enabled: bool,
+                        notebook: list | None = None) -> dict:
     return {
         "version": SESSION_VERSION,
         "layout": layout_name,
@@ -45,6 +47,7 @@ def build_session_dict(layout_name: str, cells: list, active_index: int, time_in
         "link_clim": link_clim,
         "colormap": colormap,
         "isotherms_enabled": isotherms_enabled,
+        "notebook": notebook or [],  # V4-M2 Evidence Notebook (serialized entries)
     }
 
 
@@ -62,7 +65,7 @@ def read_session(path: str) -> dict:
             session = json.load(f)
     except (OSError, ValueError) as e:
         raise ValueError(f"could not read session file: {e}") from e
-    if not isinstance(session, dict) or session.get("version") != SESSION_VERSION:
+    if not isinstance(session, dict) or session.get("version") not in _SUPPORTED_VERSIONS:
         raise ValueError(f"unsupported session file (expected version {SESSION_VERSION})")
     if "layout" not in session or "cells" not in session:
         raise ValueError("session file is missing required fields")

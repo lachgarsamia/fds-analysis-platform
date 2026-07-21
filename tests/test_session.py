@@ -44,13 +44,21 @@ class TestBuildSessionDict:
         cells = [FakeCell("slice", case_index=0), FakeCell("slice", case_index=1)]
         session = build_session_dict("1x2", cells, active_index=1, time_index=42,
                                       link_clim=True, colormap="viridis", isotherms_enabled=False)
-        assert session["version"] == 1
+        assert session["version"] == 2  # V4-M2 bumped the schema for the notebook
         assert session["layout"] == "1x2"
         assert len(session["cells"]) == 2
         assert session["active_index"] == 1
         assert session["time_index"] == 42
         assert session["link_clim"] is True
         assert session["colormap"] == "viridis"
+        assert session["notebook"] == []  # empty by default
+
+    def test_v1_session_still_loads(self, tmp_path):
+        # backward compatibility: a pre-notebook session reads without error
+        path = tmp_path / "v1.json"
+        path.write_text('{"version": 1, "layout": "1x1", "cells": []}')
+        loaded = read_session(str(path))
+        assert loaded["version"] == 1 and "notebook" not in loaded
 
 
 class TestReadWriteRoundTrip:

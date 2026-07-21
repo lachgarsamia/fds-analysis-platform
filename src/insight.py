@@ -55,7 +55,8 @@ class InsightList(QtWidgets.QListWidget):
     quantity, flash its location), so every V3 feature that produces
     Insights gets the same navigation for free."""
 
-    insight_activated = QtCore.pyqtSignal(object)  # the Insight
+    insight_activated = QtCore.pyqtSignal(object)  # the Insight (navigate)
+    insight_saved = QtCore.pyqtSignal(object)      # the Insight (-> Evidence Notebook, V4-M2)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -64,6 +65,22 @@ class InsightList(QtWidgets.QListWidget):
         self.setAlternatingRowColors(True)
         self.itemClicked.connect(self._emit)
         self.itemActivated.connect(self._emit)
+        # V4-M2: any measurement (an Insight, produced by every panel) can
+        # be saved to the Evidence Notebook via a right-click, so the save
+        # affordance is defined once and inherited everywhere.
+        self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._context_menu)
+
+    def _context_menu(self, pos) -> None:
+        item = self.itemAt(pos)
+        if item is None:
+            return
+        menu = QtWidgets.QMenu(self)
+        act = menu.addAction("Save to Evidence Notebook")
+        if menu.exec_(self.viewport().mapToGlobal(pos)) is act:
+            ins = item.data(QtCore.Qt.UserRole)
+            if ins is not None:
+                self.insight_saved.emit(ins)
 
     def set_insights(self, insights: list) -> None:
         self.clear()
