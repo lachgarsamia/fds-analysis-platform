@@ -43,6 +43,7 @@ class AnalysisPage(Page):
                  interval_content: QtWidgets.QWidget = None,
                  measurement_content: QtWidgets.QWidget = None,
                  advanced_compare_content: QtWidgets.QWidget = None,
+                 experiments_content: QtWidgets.QWidget = None,
                  sessions_content: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self._on_shown = on_shown
@@ -65,6 +66,7 @@ class AnalysisPage(Page):
             ("Zones", zone_content),
             ("Intervals", interval_content),
             ("Measure", measurement_content),
+            ("Experiments", experiments_content),
             ("Sessions", sessions_content),
             ("Inspect moment", linked_content),
             ("Ask", query_content),
@@ -93,6 +95,14 @@ class AnalysisPage(Page):
             for label, w in available:
                 self.tabs.addTab(w, label)
             layout.addWidget(self.tabs, 1)
+
+    def show_tab(self, widget: QtWidgets.QWidget) -> None:
+        """Raise the tab hosting `widget` (V4-M9 comparison hand-off)."""
+        tabs = getattr(self, "tabs", None)
+        if tabs is not None and widget is not None:
+            idx = tabs.indexOf(widget)
+            if idx >= 0:
+                tabs.setCurrentIndex(idx)
 
     def on_enter(self) -> None:
         if self._on_shown is not None:

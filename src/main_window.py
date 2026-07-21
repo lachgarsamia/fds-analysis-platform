@@ -71,6 +71,8 @@ from zone_panel import ZonePanel
 from time_window_panel import TimeWindowPanel
 from measurement_panel import MeasurementPanel
 from advanced_compare_panel import AdvancedComparePanel
+from experiments_panel import ExperimentsPanel
+import experiment as experiment_mod
 from sessions_panel import SessionsPanel
 import session_store
 from evidence_notebook_panel import EvidenceNotebookDock
@@ -727,6 +729,12 @@ class MainWindow(QtWidgets.QMainWindow):
                     self._quantity_options(), self.sim_data.timesteps_per_second,
                     summaries=getattr(self, "_scenario_summaries", None))
                 if len(self.sim_data.manifest) >= 2 else None)
+            # Experiment management (V4-M9): named, tagged batches of
+            # scenarios with a baseline; self-contained CRUD, only the
+            # comparison hand-off comes back to main_window.
+            self.experiments_panel = ExperimentsPanel(
+                self.controller.store, self.sim_data.manifest,
+                experiment_mod.default_experiments_dir())
             # Named analysis sessions (V4-M6): save/browse/reload/export the
             # whole investigation. Pure UI; main_window collects/applies state.
             self.sessions_panel = SessionsPanel()
@@ -753,6 +761,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.time_window_panel = None
             self.measurement_panel = None
             self.advanced_compare_panel = None
+            self.experiments_panel = None
             self.sessions_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
@@ -791,6 +800,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 interval_content=self.time_window_panel,
                 measurement_content=self.measurement_panel,
                 advanced_compare_content=self.advanced_compare_panel,
+                experiments_content=self.experiments_panel,
                 sessions_content=self.sessions_panel),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
@@ -846,6 +856,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sessions_panel.delete_requested.connect(self._on_session_delete)
         self.sessions_panel.export_requested.connect(self._on_session_export)
         self._refresh_sessions()
+        # V4-M9: an experiment hands a baseline-vs-scenario pair to the
+        # Advanced Comparison panel and raises that tab.
+        if self.experiments_panel is not None:
+            self.experiments_panel.compare_requested.connect(self._on_experiment_compare)
+
+    def _on_experiment_compare(self, baseline_folder: str, other_folder: str) -> None:
+        if self.advanced_compare_panel is None:
+            return
+        by_folder = {e.folder: e.case_index for e in self.sim_data.manifest}
+        ca, cb = by_folder.get(baseline_folder), by_folder.get(other_folder)
+        if ca is None or cb is None:
+            return
+        self.advanced_compare_panel.set_scenarios(ca, cb)
+        self._navigate_to("analysis")
+        self.pages["analysis"].show_tab(self.advanced_compare_panel)
 
     def _build_evidence_notebook(self) -> None:
         """Evidence Notebook (V4-M2): a dockable, session-backed collection

@@ -116,6 +116,16 @@ class AdvancedComparePanel(QtWidgets.QWidget):
         return next((e.folder for e in self._manifest if e.case_index == case_index),
                     str(case_index))
 
+    def set_scenarios(self, case_a, case_b) -> None:
+        """Select A and B by case index (V4-M9 comparison hand-off)."""
+        self.ensure_loaded()
+        ia = self.combo_a.findData(case_a)
+        ib = self.combo_b.findData(case_b)
+        if ia >= 0:
+            self.combo_a.setCurrentIndex(ia)
+        if ib >= 0:
+            self.combo_b.setCurrentIndex(ib)  # triggers _recompute
+
     # --------------------------------------------------------------- compute
     def _recompute(self) -> None:
         if not self._loaded:

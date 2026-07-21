@@ -974,3 +974,41 @@ class TestAdvancedCompare:
         res = advc.advanced_compare(base, base.copy(), (0.0, 1.0, 0.0, 1.0), 1,
                                     "TEMPERATURE", "A", "B")
         assert res["physics"] == []
+
+
+import experiment as expm  # noqa: E402
+
+
+class TestExperiment:
+    def test_serialization_roundtrip(self):
+        e = expm.Experiment(name="Door study", description="vary vents",
+                            tags=["ventilation"], scenarios=["a", "b"], baseline="a",
+                            shared_params={"hrr": 100})
+        back = expm.Experiment.from_dict(e.to_dict())
+        assert back == e
+        assert e.to_dict()["kind"] == "experiment"
+
+    def test_status_ready_missing_completion(self):
+        e = expm.Experiment(name="x", scenarios=["a", "b", "ghost"])
+        st = expm.experiment_status(e, {"a", "b"})
+        assert st["ready"] == 2 and st["missing"] == 1 and st["total"] == 3
+        assert st["statuses"]["ghost"] == "missing" and st["statuses"]["a"] == "ready"
+        assert st["completion"] == pytest.approx(2 / 3)
+
+    def test_status_empty_experiment(self):
+        st = expm.experiment_status(expm.Experiment(name="e"), set())
+        assert st["total"] == 0 and st["completion"] == 0.0
+
+    def test_save_list_load_delete(self, tmp_path):
+        d = str(tmp_path)
+        e = expm.Experiment(name="Door study", description="d", scenarios=["a", "b"], baseline="a")
+        path = expm.save_experiment(d, e)
+        infos = expm.list_experiments(d)
+        assert len(infos) == 1 and infos[0].name == "Door study" and infos[0].n_scenarios == 2
+        assert expm.load_experiment(path).baseline == "a"
+        expm.delete_experiment(path)
+        assert expm.list_experiments(d) == []
+
+    def test_list_ignores_non_experiment_json(self, tmp_path):
+        (tmp_path / "session.json").write_text('{"version": 2, "layout": "1x1", "cells": []}')
+        assert expm.list_experiments(str(tmp_path)) == []

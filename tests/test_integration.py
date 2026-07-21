@@ -2628,3 +2628,71 @@ class TestAdvancedComparePanel:
         assert panel.spatial_list.count() == 0
         assert panel.physics_list.count() == 0
         window.close()
+
+
+class TestExperimentsPanel:
+    """V4-M9: experiment management."""
+
+    def _make(self, panel, n=3):
+        import experiment as ex
+        from PyQt5 import QtCore
+        panel._current = ex.Experiment(name="Door study")
+        panel._sync_editor_from_model()
+        panel.desc_edit.setText("vary vents")
+        panel.tags_edit.setText("ventilation, doorway")
+        for i in range(n):
+            panel.scenario_list.item(i).setCheckState(QtCore.Qt.Checked)
+        panel._refresh_baseline_combo()
+        panel.baseline_combo.setCurrentIndex(1)  # first checked scenario
+
+    def test_build_check_and_persist(self, qapp, tmp_path):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "experiments_panel", None) is None
+            window.close()
+            return
+        panel = window.experiments_panel
+        panel._dir = str(tmp_path)
+        self._make(panel)
+        exp = panel._collect()
+        assert exp.name == "Door study" and len(exp.scenarios) == 3 and exp.baseline
+        panel._check()
+        assert panel._status["ready"] == 3 and panel._status["completion"] == 1.0
+        # save -> library lists it -> load restores structure
+        import experiment as ex
+        ex.save_experiment(str(tmp_path), exp)
+        panel._refresh_library()
+        assert panel.library.count() == 1
+        window.close()
+
+    def test_compare_handoff_sets_compare_panel_and_tab(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.experiments_panel is None:
+            window.close()
+            return
+        panel = window.experiments_panel
+        self._make(panel)
+        from PyQt5 import QtCore
+        panel.scenario_list.setCurrentRow(2)          # pick a different scenario as B
+        panel._compare()                              # emits compare_requested -> handler
+        acp = window.advanced_compare_panel
+        assert acp.combo_a.currentText() == panel._collect().baseline
+        assert acp.combo_b.currentText() == panel._folders[2]
+        assert window._active_page_key == "analysis"
+        window.close()
+
+    def test_export_summary_writes_html(self, qapp, tmp_path):
+        window = MainWindow(load_simulation_data())
+        if window.experiments_panel is None:
+            window.close()
+            return
+        panel = window.experiments_panel
+        self._make(panel)
+        panel._check()
+        from report_builder import build_experiment_report, write_report
+        out = tmp_path / "exp.html"
+        write_report(str(out), build_experiment_report(panel._collect().to_dict(), panel._status))
+        html = out.read_text()
+        assert "Door study" in html and "pre-computed cluster runs" in html
+        window.close()
