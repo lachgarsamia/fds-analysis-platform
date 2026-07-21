@@ -2769,3 +2769,56 @@ class TestQuantitiesPanel:
         panel._preview_derived()
         assert "preview on" in panel.detail.text() and "min" in panel.detail.text()
         window.close()
+
+
+class TestSafeAssistantPanel:
+    """V4-M12: bounded, deterministic assistant."""
+
+    def test_action_produces_savable_output(self, qapp):
+        from insight import Insight
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "assistant_panel", None) is None
+            window.close()
+            return
+        window.evidence_dock.add_insight(Insight(
+            "Peak 469 C at t=8s.", category="query", quantity="TEMPERATURE",
+            time_s=8.0, basis="max"))
+        panel = window.assistant_panel
+        window._on_assistant_action("list_key_findings")
+        assert "Peak 469" in panel.output.toPlainText()
+        assert panel.save_button.isEnabled()
+        window.close()
+
+    def test_causal_query_is_refused_and_not_savable(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.assistant_panel is None:
+            window.close()
+            return
+        panel = window.assistant_panel
+        window._on_assistant_query("why is the doorway hotter?")
+        assert "cannot infer why" in panel.output.toPlainText()
+        assert not panel.save_button.isEnabled()   # a refusal cannot be saved
+        window.close()
+
+    def test_saving_assistant_output_records_no_cause_basis(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.assistant_panel is None:
+            window.close()
+            return
+        before = len(window.evidence_dock.notebook)
+        window._on_assistant_action("summarize_session")
+        window._on_assistant_save(window.assistant_panel.last_output)
+        assert len(window.evidence_dock.notebook) == before + 1
+        assert "no cause inferred" in window.evidence_dock.notebook.entries[-1].insight.basis
+        window.close()
+
+    def test_figure_caption_uses_computed_peak(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.assistant_panel is None:
+            window.close()
+            return
+        cap = window._assistant_figure_caption()
+        assert "peak" in cap and "°C" in cap  # a real computed value, descriptive only
+        window.close()

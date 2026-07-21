@@ -73,6 +73,8 @@ from measurement_panel import MeasurementPanel
 from advanced_compare_panel import AdvancedComparePanel
 from experiments_panel import ExperimentsPanel
 from quantities_panel import QuantitiesPanel
+from assistant_panel import AssistantPanel
+import assistant as assistant_mod
 import experiment as experiment_mod
 from sessions_panel import SessionsPanel
 import session_store
@@ -739,6 +741,9 @@ class MainWindow(QtWidgets.QMainWindow):
             # Quantity reference/breadth (V4-M11): available / derived / gated.
             self.quantities_panel = QuantitiesPanel(
                 self.controller.store, self.sim_data.manifest)
+            # Safe Assistant (V4-M12): bounded, deterministic organization of
+            # computed evidence; main_window supplies context and runs it.
+            self.assistant_panel = AssistantPanel()
             # Named analysis sessions (V4-M6): save/browse/reload/export the
             # whole investigation. Pure UI; main_window collects/applies state.
             self.sessions_panel = SessionsPanel()
@@ -767,6 +772,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.advanced_compare_panel = None
             self.experiments_panel = None
             self.quantities_panel = None
+            self.assistant_panel = None
             self.sessions_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
@@ -807,6 +813,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 advanced_compare_content=self.advanced_compare_panel,
                 experiments_content=self.experiments_panel,
                 quantities_content=self.quantities_panel,
+                assistant_content=self.assistant_panel,
                 sessions_content=self.sessions_panel),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
@@ -866,6 +873,78 @@ class MainWindow(QtWidgets.QMainWindow):
         # Advanced Comparison panel and raises that tab.
         if self.experiments_panel is not None:
             self.experiments_panel.compare_requested.connect(self._on_experiment_compare)
+        # V4-M12: the Safe Assistant runs on computed context supplied here.
+        if self.assistant_panel is not None:
+            self.assistant_panel.action_requested.connect(self._on_assistant_action)
+            self.assistant_panel.query_submitted.connect(self._on_assistant_query)
+            self.assistant_panel.save_requested.connect(self._on_assistant_save)
+
+    def _run_assistant(self, action: str) -> str:
+        """Gather computed context and run one deterministic assistant
+        action. No physics is inferred -- every result is a template filled
+        from already-computed values."""
+        if action == "summarize_session":
+            return assistant_mod.summarize_session(self._collect_session_dict())
+        if action == "list_key_findings":
+            return assistant_mod.list_key_findings(self.evidence_dock.notebook.to_list())
+        if action == "report_outline":
+            return assistant_mod.report_outline(self.evidence_dock.notebook.to_list())
+        if action == "compare_intervals":
+            return self._assistant_compare_intervals()
+        if action == "figure_caption":
+            return self._assistant_figure_caption()
+        return assistant_mod.REFUSAL
+
+    def _assistant_compare_intervals(self) -> str:
+        import time_window as tw
+        p = self.time_window_panel
+        if p is None or getattr(p, "_series", None) is None:
+            return "Open the Intervals tab and select a window first."
+        s = p._series
+        if p._mode == "split" and p._split is not None:
+            a, b = tw.before_after_split(s["mean"], s["max"], s["times"], p._split)
+            la, lb = f"before {p._split:.0f} s", f"after {p._split:.0f} s"
+        else:
+            a = tw.interval_stats(s["mean"], s["max"], s["times"], p._t0, p._t1)
+            b = tw.interval_stats(s["mean"], s["max"], s["times"],
+                                  float(s["times"][0]), float(s["times"][-1]))
+            la, lb = "selected window", "whole run"
+        return assistant_mod.compare_intervals(a, b, la, lb, s["unit"])
+
+    def _assistant_figure_caption(self) -> str:
+        import numpy as np
+        from registry import get_quantity
+        cell = self.view_grid.active_cell()
+        if cell is None or cell.cell_type != "slice":
+            return "Select a single-scenario cell in the Live viewer for a caption."
+        data = np.asarray(self.controller.store.get(cell.case_index, cell.quantity_key))
+        idx = min(self.time_controller.index, data.shape[0] - 1)
+        peak = float(data[idx].max())
+        scenario = next((e.folder for e in self.sim_data.manifest
+                         if e.case_index == cell.case_index), str(cell.case_index))
+        q = get_quantity(cell.quantity_key.quantity)
+        fps = self.time_controller.timesteps_per_second
+        return assistant_mod.figure_caption(scenario, q.label, q.unit, idx / fps, peak)
+
+    def _on_assistant_action(self, action: str) -> None:
+        self.assistant_panel.show_result(self._run_assistant(action))
+
+    def _on_assistant_query(self, text: str) -> None:
+        action = assistant_mod.interpret_request(text)
+        if action == "refuse":
+            self.assistant_panel.show_result(assistant_mod.REFUSAL, savable=False)
+        else:
+            self.assistant_panel.show_result(self._run_assistant(action))
+
+    def _on_assistant_save(self, text: str) -> None:
+        if not text:
+            return
+        from insight import Insight
+        first_line = text.strip().splitlines()[0] if text.strip() else "Assistant note"
+        self.evidence_dock.add_insight(Insight(
+            first_line[:200], category="query",
+            basis="assistant: organized from computed evidence (no cause inferred)"))
+        self.statusBar().showMessage("Saved assistant output to the Evidence Notebook", 4000)
 
     def _on_experiment_compare(self, baseline_folder: str, other_folder: str) -> None:
         if self.advanced_compare_panel is None:

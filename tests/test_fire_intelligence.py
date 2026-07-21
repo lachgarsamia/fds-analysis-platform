@@ -1096,3 +1096,53 @@ class TestQuantityBreadth:
         np.testing.assert_allclose(dqm.derive("TEMPERATURE RISE", np.array([25.0])), [5.0])
         with pytest.raises(KeyError):
             dqm.derive("PRESSURE", np.array([1.0]))  # not a derived quantity
+
+
+import assistant as asst  # noqa: E402
+
+
+class TestSafeAssistant:
+    NB = [{"insight": {"statement": "Peak 469 C.", "time_s": 8.0, "basis": "max"},
+           "note": "candle A", "tags": ["plume"]}]
+
+    def test_interpret_refuses_causal_and_maps_safe(self):
+        assert asst.interpret_request("why is case B hotter?") == "refuse"
+        assert asst.interpret_request("what caused the peak?") == "refuse"
+        assert asst.interpret_request("explain why smoke descends") == "refuse"
+        assert asst.interpret_request("") == "refuse"
+        assert asst.interpret_request("gibberish") == "refuse"
+        assert asst.interpret_request("summarize the session") == "summarize_session"
+        assert asst.interpret_request("list key findings") == "list_key_findings"
+        assert asst.interpret_request("give me a figure caption") == "figure_caption"
+        assert asst.interpret_request("compare the intervals") == "compare_intervals"
+
+    def test_every_action_is_a_known_safe_action(self):
+        for action in asst.SAFE_ACTIONS:
+            assert hasattr(asst, action)  # each safe action has an engine function
+
+    def test_outputs_carry_disclaimer_and_are_traceable(self):
+        session = {"name": "Door study", "intent": "vary vents", "notebook": self.NB,
+                   "zones": [{"name": "z"}], "measurements": [], "time_window": {}}
+        summary = asst.summarize_session(session)
+        assert "Door study" in summary and "1 finding" in summary
+        assert asst.DISCLAIMER in summary
+        findings = asst.list_key_findings(self.NB)
+        assert "Peak 469 C" in findings and "basis: max" in findings and asst.DISCLAIMER in findings
+
+    def test_report_outline_groups_by_tag(self):
+        out = asst.report_outline(self.NB)
+        assert "## plume" in out and "Peak 469 C" in out
+
+    def test_compare_intervals_states_numbers_no_cause(self):
+        a = {"t0": 0.0, "t1": 10.0, "mean": 20.0, "peak": 100.0}
+        b = {"t0": 10.0, "t1": 20.0, "mean": 30.0, "peak": 120.0}
+        text = asst.compare_intervals(a, b, "A", "B", "°C")
+        assert "10.0" in text and "higher" in text and asst.DISCLAIMER in text
+        assert "cause" not in text.lower().replace("no physical causes", "")  # no causal claim
+
+    def test_figure_caption_is_descriptive(self):
+        cap = asst.figure_caption("c1", "Temperature", "°C", 8.0, 469.0)
+        assert "c1" in cap and "469.0 °C" in cap and asst.DISCLAIMER in cap
+
+    def test_refusal_asserts_no_physics(self):
+        assert "cannot infer why" in asst.REFUSAL and "cause" in asst.REFUSAL

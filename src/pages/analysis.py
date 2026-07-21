@@ -45,6 +45,7 @@ class AnalysisPage(Page):
                  advanced_compare_content: QtWidgets.QWidget = None,
                  experiments_content: QtWidgets.QWidget = None,
                  quantities_content: QtWidgets.QWidget = None,
+                 assistant_content: QtWidgets.QWidget = None,
                  sessions_content: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self._on_shown = on_shown
@@ -69,6 +70,7 @@ class AnalysisPage(Page):
             ("Measure", measurement_content),
             ("Experiments", experiments_content),
             ("Quantities", quantities_content),
+            ("Assistant", assistant_content),
             ("Sessions", sessions_content),
             ("Inspect moment", linked_content),
             ("Ask", query_content),
