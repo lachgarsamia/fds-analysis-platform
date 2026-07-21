@@ -58,6 +58,10 @@ class LinkedInspectionPanel(QtWidgets.QWidget):
         self.scenario_combo = QtWidgets.QComboBox()
         self.scenario_combo.setAccessibleName("Linked inspection scenario")
         header.addWidget(self.scenario_combo)
+        self.export_button = QtWidgets.QPushButton("Export figure…")
+        self.export_button.setAccessibleName("Export linked figure")
+        self.export_button.clicked.connect(self._export_figure)
+        header.addWidget(self.export_button)
         layout.addLayout(header)
 
         self.caption = QtWidgets.QLabel(
@@ -98,6 +102,10 @@ class LinkedInspectionPanel(QtWidgets.QWidget):
         self.scenario_combo.currentIndexChanged.connect(self._reload)
         self.frame_slider.valueChanged.connect(self._on_frame)
         self.insights.insight_activated.connect(self._on_insight)
+
+    def _export_figure(self) -> None:
+        from figure_export import export_figure_interactive
+        export_figure_interactive(self, self.plots_canvas.fig, "linked_inspection")
 
     def showEvent(self, event):
         super().showEvent(event)

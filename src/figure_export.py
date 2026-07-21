@@ -154,6 +154,69 @@ def figure_png_bytes(frame, *, cmap, vmin, vmax, extent, colorbar_label,
     return buf.getvalue()
 
 
+# --------------------------------------------------------- export presets (M10)
+# Publication presets: (width inches, dpi, aspect override or None to keep the
+# figure's own). Journal presets match the 90 mm / 190 mm column widths at
+# print resolution; the slide preset is a 16:9 raster for talks.
+EXPORT_PRESETS = {
+    "Journal — single column": (3.5, 300, None),
+    "Journal — double column": (7.2, 300, None),
+    "Slide (16:9)": (10.0, 150, 9.0 / 16.0),
+}
+EXPORT_FORMATS = FORMATS  # reuse the SVG / PDF / PNG choices
+
+
+def preset_extension(fmt: str) -> str:
+    return _FORMAT_EXTENSIONS.get(fmt, ".png")
+
+
+def save_figure(fig, path: str, preset: str, dpi: int = None) -> None:
+    """Export an arbitrary matplotlib Figure (a panel's own plot) at a
+    named preset's physical size and resolution, then restore its on-screen
+    size. Vector formats (.svg/.pdf) ignore dpi. Reused by every analysis
+    panel's "Export figure" affordance (V4-M10)."""
+    width_in, preset_dpi, aspect = EXPORT_PRESETS.get(
+        preset, (7.2, 300, None))
+    dpi = dpi or preset_dpi
+    orig = fig.get_size_inches().copy()
+    cur_w, cur_h = orig
+    height_in = width_in * (aspect if aspect is not None
+                            else (cur_h / cur_w if cur_w else 0.75))
+    try:
+        fig.set_size_inches(width_in, height_in)
+        fig.savefig(path, dpi=dpi)
+    finally:
+        fig.set_size_inches(orig)
+
+
+def export_figure_interactive(parent, fig, default_name: str = "figure") -> bool:
+    """Ask for a preset + format, then save the given Figure. Returns True
+    if a file was written. Shared by the analysis panels so the affordance
+    is defined once."""
+    preset, ok = QtWidgets.QInputDialog.getItem(
+        parent, "Export figure", "Preset:", list(EXPORT_PRESETS.keys()), 0, False)
+    if not ok:
+        return False
+    fmt, ok = QtWidgets.QInputDialog.getItem(
+        parent, "Export figure", "Format:", list(EXPORT_FORMATS), 0, False)
+    if not ok:
+        return False
+    ext = preset_extension(fmt)
+    path, _ = QtWidgets.QFileDialog.getSaveFileName(
+        parent, "Export figure", default_name + ext,
+        f"{fmt} (*{ext})")
+    if not path:
+        return False
+    if not path.lower().endswith(ext):
+        path += ext
+    try:
+        save_figure(fig, path, preset)
+    except OSError:
+        QtWidgets.QMessageBox.warning(parent, "Export figure", "Could not write the file.")
+        return False
+    return True
+
+
 class PublicationExportDialog(QtWidgets.QDialog):
     """Collects export options (format, width preset, font size, PNG
     DPI, contour labels, provenance footer). The caller reads options()

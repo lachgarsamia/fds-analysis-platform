@@ -56,6 +56,10 @@ class HeightPanel(QtWidgets.QWidget):
             self.quantity_combo.addItem(label)
         self.quantity_combo.setEnabled(len(self._quantity_options) > 1)
         header.addWidget(self.quantity_combo)
+        self.export_button = QtWidgets.QPushButton("Export figure…")
+        self.export_button.setAccessibleName("Export height figure")
+        self.export_button.clicked.connect(self._export_figure)
+        header.addWidget(self.export_button)
         layout.addLayout(header)
 
         self.caption = QtWidgets.QLabel(
@@ -94,6 +98,10 @@ class HeightPanel(QtWidgets.QWidget):
         self.frame_slider.valueChanged.connect(self._on_frame)
         self.insights.insight_activated.connect(self._on_insight)
         self.loc_canvas.mpl_connect("button_press_event", self._on_click)
+
+    def _export_figure(self) -> None:
+        from figure_export import export_figure_interactive
+        export_figure_interactive(self, self.plot_canvas.fig, "height_profile")
 
     def showEvent(self, event):
         super().showEvent(event)

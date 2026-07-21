@@ -54,6 +54,7 @@ class EvidenceNotebookDock(QtWidgets.QDockWidget):
             ("Down", lambda: self._move(1), "notebook-down"),
             ("Remove", self._remove, "notebook-remove"),
             ("Clear", self._clear, "notebook-clear"),
+            ("Export report", self._export_report, "notebook-export"),
         ):
             btn = QtWidgets.QPushButton(text)
             btn.setAccessibleName(name)
@@ -145,6 +146,31 @@ class EvidenceNotebookDock(QtWidgets.QDockWidget):
         if i >= 0:
             self.notebook.remove(i)
             self._refresh()
+
+    def _export_report(self) -> None:
+        """V4-M10: assemble the notebook's findings into an HTML report."""
+        if self.notebook.is_empty():
+            QtWidgets.QMessageBox.information(
+                self, "Export report", "Save some evidence first.")
+            return
+        from report_builder import build_notebook_report, write_report
+        from session_store import now_iso
+        out, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export evidence report", "evidence_report.html", "HTML (*.html)")
+        if not out:
+            return
+        if not out.lower().endswith(".html"):
+            out += ".html"
+        provenance = (f"Evidence Notebook — {len(self.notebook)} finding(s), "
+                      f"exported {now_iso()}. Numbers are computed from simulation "
+                      f"output; prose is templated.")
+        try:
+            write_report(out, build_notebook_report(
+                self.notebook.to_list(), provenance=provenance,
+                title="Evidence report",
+                intro="Saved findings from the analysis session."))
+        except OSError as e:
+            QtWidgets.QMessageBox.warning(self, "Export report", f"Could not write: {e}")
 
     def _clear(self) -> None:
         if self.notebook.is_empty():

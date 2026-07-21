@@ -2696,3 +2696,38 @@ class TestExperimentsPanel:
         html = out.read_text()
         assert "Door study" in html and "pre-computed cluster runs" in html
         window.close()
+
+
+class TestPublicationExport:
+    """V4-M10: export presets + panel figure export + notebook report."""
+
+    def test_analysis_panels_export_figures(self, qapp, tmp_path):
+        import figure_export as fex
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        for name, canvas_attr in (("height_panel", "plot_canvas"),
+                                   ("zone_panel", "plot_canvas"),
+                                   ("linked_panel", "plots_canvas")):
+            panel = getattr(window, name)
+            panel.ensure_loaded()
+            assert hasattr(panel, "export_button")
+            out = tmp_path / f"{name}.png"
+            fex.save_figure(getattr(panel, canvas_attr).fig, str(out), "Slide (16:9)")
+            assert out.stat().st_size > 0
+        window.close()
+
+    def test_notebook_dock_exports_report(self, qapp, tmp_path):
+        from insight import Insight
+        from report_builder import build_notebook_report, write_report
+        window = MainWindow(load_simulation_data())
+        window.evidence_dock.add_insight(Insight(
+            "Peak 469 C.", category="query", quantity="TEMPERATURE", time_s=8.0, basis="max"))
+        out = tmp_path / "evidence.html"
+        write_report(str(out), build_notebook_report(
+            window.evidence_dock.notebook.to_list(), provenance="p"))
+        assert "Peak 469 C" in out.read_text()
+        assert callable(window.evidence_dock._export_report)
+        window.close()

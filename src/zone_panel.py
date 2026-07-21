@@ -53,6 +53,10 @@ class ZonePanel(QtWidgets.QWidget):
         self.scenario_combo = QtWidgets.QComboBox()
         self.scenario_combo.setAccessibleName("Zone scenario")
         header.addWidget(self.scenario_combo)
+        self.export_button = QtWidgets.QPushButton("Export figure…")
+        self.export_button.setAccessibleName("Export zone figure")
+        self.export_button.clicked.connect(self._export_figure)
+        header.addWidget(self.export_button)
         layout.addLayout(header)
 
         self.caption = QtWidgets.QLabel(
@@ -110,6 +114,10 @@ class ZonePanel(QtWidgets.QWidget):
         self.insights.insight_activated.connect(self._on_insight)
         self.loc_canvas.mpl_connect("button_press_event", self._on_press)
         self.loc_canvas.mpl_connect("button_release_event", self._on_release)
+
+    def _export_figure(self) -> None:
+        from figure_export import export_figure_interactive
+        export_figure_interactive(self, self.plot_canvas.fig, "zone_stats")
 
     # ------------------------------------------------------------- lifecycle
     def showEvent(self, event):

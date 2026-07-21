@@ -212,6 +212,23 @@ def build_session_report(session: dict, timeline_png: bytes = None) -> str:
     return _document(f"Session — {name}", body)
 
 
+def build_notebook_report(notebook: list, figures: list = None, provenance: str = "",
+                          title: str = "Evidence report", intro: str = "") -> str:
+    """Assemble the Evidence Notebook's findings, optional figures, and a
+    provenance note into one self-contained HTML report (V4-M10). Figures
+    are [(png_bytes, caption), ...]. Numbers come from the saved Insights;
+    prose is templated, matching the app's honesty rule."""
+    fig_html = "".join(_figure_block(png, cap) for png, cap in (figures or []) if png)
+    body = (
+        f"<h1>{_esc(title)}</h1>"
+        + (f"<p class='prose'>{_esc(intro)}</p>" if intro else "")
+        + (f"<h2>Figures</h2>{fig_html}" if fig_html else "")
+        + f"<h2>Findings</h2>{_notebook_block(notebook)}"
+        + (f"<h2>Provenance</h2><div class='provenance'>{_esc(provenance)}</div>"
+           if provenance else ""))
+    return _document(title, body)
+
+
 def build_experiment_report(exp: dict, status: dict = None) -> str:
     """Self-contained HTML summary of an experiment (V4-M9): description,
     tags, baseline, shared parameters, and the scenario list with its

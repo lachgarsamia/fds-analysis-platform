@@ -1012,3 +1012,47 @@ class TestExperiment:
     def test_list_ignores_non_experiment_json(self, tmp_path):
         (tmp_path / "session.json").write_text('{"version": 2, "layout": "1x1", "cells": []}')
         assert expm.list_experiments(str(tmp_path)) == []
+
+
+import figure_export as fex  # noqa: E402
+
+
+class TestPublicationExport:
+    def test_presets_exist(self):
+        assert "Journal — single column" in fex.EXPORT_PRESETS
+        assert "Slide (16:9)" in fex.EXPORT_PRESETS
+        for w, dpi, _aspect in fex.EXPORT_PRESETS.values():
+            assert w > 0 and dpi >= 72
+
+    def test_save_figure_writes_and_restores_size(self, tmp_path):
+        from matplotlib.figure import Figure
+        fig = Figure(figsize=(6.0, 4.0))
+        fig.add_subplot(111).plot([0, 1, 2], [0, 1, 4])
+        for ext in (".png", ".pdf", ".svg"):
+            p = str(tmp_path / ("f" + ext))
+            fex.save_figure(fig, p, "Journal — single column")
+            assert os.path.getsize(p) > 0
+        assert tuple(fig.get_size_inches()) == (6.0, 4.0)  # restored after export
+
+    def test_save_figure_applies_preset_width(self, tmp_path):
+        from matplotlib.figure import Figure
+        fig = Figure(figsize=(6.0, 4.0))
+        fig.add_subplot(111).plot([0, 1], [0, 1])
+        p = str(tmp_path / "f.png")
+        fex.save_figure(fig, p, "Journal — double column")  # 7.2 in wide
+        assert os.path.getsize(p) > 0
+        assert tuple(fig.get_size_inches()) == (6.0, 4.0)
+
+
+class TestNotebookReport:
+    def test_assembles_findings_figures_provenance(self):
+        nb = [{"insight": {"statement": "Peak 469 C.", "time_s": 8.0},
+               "note": "candle A", "tags": ["plume"]}]
+        html = rb.build_notebook_report(
+            nb, figures=[(b"\x89PNG\r\n", "demo")], provenance="run xyz", title="Evidence")
+        assert "Peak 469 C" in html and "candle A" in html and "plume" in html
+        assert "data:image/png" in html and "run xyz" in html
+
+    def test_empty_notebook_report(self):
+        html = rb.build_notebook_report([])
+        assert "No saved evidence" in html
