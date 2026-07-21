@@ -719,3 +719,26 @@ class TestEvidenceNotebook:
         assert enb.EvidenceNotebook.from_list(None).is_empty()
         nb = enb.EvidenceNotebook.from_list([{"insight": {"statement": "x"}}, "bad"])
         assert len(nb) == 1 and nb.entries[0].insight.statement == "x"
+
+
+import linked_inspection as lki  # noqa: E402
+
+
+class TestLinkedInspection:
+    def test_value_at_time_interpolates_and_clamps(self):
+        times = np.array([0.0, 1.0, 2.0])
+        vals = np.array([10.0, 20.0, 40.0])
+        assert lki.value_at_time(times, vals, 0.5) == pytest.approx(15.0)  # interpolate
+        assert lki.value_at_time(times, vals, 1.5) == pytest.approx(30.0)
+        assert lki.value_at_time(times, vals, -5.0) == pytest.approx(10.0)  # clamp low
+        assert lki.value_at_time(times, vals, 99.0) == pytest.approx(40.0)  # clamp high
+
+    def test_value_at_time_empty_is_none(self):
+        assert lki.value_at_time([], [], 1.0) is None
+
+    def test_peak_over_time_is_per_frame_spatial_max(self):
+        d = np.zeros((3, 4, 5), dtype=np.float32)
+        d[0, 1, 1] = 5.0
+        d[1, 0, 0] = 12.0
+        d[2, 3, 4] = 7.0
+        np.testing.assert_allclose(lki.peak_over_time(d), [5.0, 12.0, 7.0])

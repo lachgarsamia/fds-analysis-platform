@@ -65,6 +65,7 @@ from state_space_panel import StateSpacePanel
 from attention_panel import AttentionPanel
 from cause_panel import CausePanel
 from height_panel import HeightPanel
+from linked_panel import LinkedInspectionPanel
 from evidence_notebook_panel import EvidenceNotebookDock
 from evidence_notebook import EvidenceNotebook
 from diff_analysis import DifferenceOverTimeDialog
@@ -691,6 +692,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.height_panel = HeightPanel(
                 self.controller.store, self.sim_data.manifest,
                 self._quantity_options(), self.sim_data.timesteps_per_second)
+            # Linked multi-quantity inspection (V4-M3): one moment across
+            # temperature / HRR / smoke layer / velocity, shared time cursor.
+            self.linked_panel = LinkedInspectionPanel(
+                self.controller.store, self.sim_data.manifest,
+                self.sim_data.timesteps_per_second)
             # Factor-effect maps (M3.1) need the candle factorial's factor
             # axes; a generic guest study has none, so it's factorial-only.
             self.factor_effects_panel = (
@@ -709,6 +715,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.attention_panel = None
             self.cause_panel = None
             self.height_panel = None
+            self.linked_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
         analysis_content = self.analytics_panel.widget() if self.analytics_panel is not None else None
@@ -740,7 +747,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 state_space_content=self.state_space_panel,
                 attention_content=self.attention_panel,
                 cause_content=self.cause_panel,
-                height_content=self.height_panel),
+                height_content=self.height_panel,
+                linked_content=self.linked_panel),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
             "about": AboutPage(),
@@ -796,6 +804,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.evidence_dock.hide()
         for panel_attr, list_attr in (
             ("inspector", "story_list"), ("height_panel", "insights"),
+            ("linked_panel", "insights"),
             ("query_panel", "results"), ("semantic_diff_panel", "list"),
             ("cause_panel", "chain"),
         ):

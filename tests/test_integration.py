@@ -2346,3 +2346,33 @@ class TestEvidenceNotebookIntegration:
         assert len(window.evidence_dock.notebook) == 1
         assert window.evidence_dock.notebook.entries[0].note == "case A"
         window.close()
+
+
+class TestLinkedInspectionPanel:
+    """V4-M3: linked multi-quantity inspection."""
+
+    def test_fmt_hrr_uses_watts_when_sub_kilowatt(self):
+        from linked_panel import _fmt_hrr
+        assert _fmt_hrr(0.077) == "77 W"    # candle: sub-kW reads in W, not "0 kW"
+        assert _fmt_hrr(1500.0) == "1500.0 kW"
+
+    def test_panel_links_quantities_at_one_instant(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "linked_panel", None) is None
+            window.close()
+            return
+        panel = window.linked_panel
+        panel.ensure_loaded()
+        assert panel.scenario_combo.count() == len(sim_data.manifest)
+        assert panel.insights.count() >= 1  # at least the temperature-peak moment
+        import numpy as np
+        pk = int(np.argmax(panel._series["peak_t"]))
+        panel.frame_slider.setValue(pk)
+        # the readout reports several quantities at the one selected instant
+        assert "peak T" in panel.readout.text() and "smoke layer" in panel.readout.text()
+        # and a saved moment lands in the Evidence Notebook (M2 wiring)
+        panel.insights.insight_saved.emit(panel.insights.item(0).data(QtCore.Qt.UserRole))
+        assert len(window.evidence_dock.notebook) == 1
+        window.close()
