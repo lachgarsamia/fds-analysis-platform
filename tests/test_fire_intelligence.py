@@ -1146,3 +1146,56 @@ class TestSafeAssistant:
 
     def test_refusal_asserts_no_physics(self):
         assert "cannot infer why" in asst.REFUSAL and "cause" in asst.REFUSAL
+
+
+import study_analytics as sam  # noqa: E402
+
+
+class _FakeSummary:
+    def __init__(self, ci, folder, candles, door, vod, voc, **resp):
+        self.case_index = ci; self.folder = folder
+        self.candles = candles; self.door = door; self.vod = vod; self.voc = voc
+        for k in sam.RESPONSE_KEYS:
+            setattr(self, k, resp.get(k))
+
+
+class TestStudyAnalytics:
+    def _summaries(self):
+        # peak T depends only on `vod` (0 -> 100, 1 -> 300): a clean influence signal.
+        rows = []
+        for i, (c, d, vod, voc) in enumerate(
+                [(0, 0, 0, 0), (0, 0, 1, 0), (0, 1, 0, 0), (0, 1, 1, 0)]):
+            rows.append(_FakeSummary(i, f"c{c}_d{d}_vod{vod}_voc{voc}", c, d, vod, voc,
+                                     max_temp_c=100.0 + 200.0 * vod, peak_hrr_kw=0.08))
+        return rows
+
+    def test_build_table(self):
+        t = sam.build_table(self._summaries())
+        assert len(t) == 4 and t[0]["params"]["vod"] == 0.0
+        assert t[1]["responses"]["max_temp_c"] == 300.0
+
+    def test_factor_influence_isolates_the_driver(self):
+        t = sam.build_table(self._summaries())
+        infl = sam.factor_influence(t, "max_temp_c")
+        assert infl["vod"] == pytest.approx(200.0)   # 300 - 100 across vod levels
+        assert infl["door"] == 0.0 and infl["candles"] == 0.0
+        ranking = sam.influence_ranking(t, "max_temp_c")
+        assert ranking[0][0] == "vod" and ranking[0][2] == pytest.approx(1.0)
+
+    def test_study_statistics(self):
+        st = sam.study_statistics(sam.build_table(self._summaries()))["max_temp_c"]
+        assert st["min"] == 100.0 and st["max"] == 300.0 and st["mean"] == 200.0 and st["n"] == 4
+
+    def test_correlation_diag_is_one(self):
+        c = sam.correlation_matrix(sam.build_table(self._summaries()))
+        assert np.allclose(np.diag(c), 1.0)
+
+    def test_outlier_scores_nonnegative(self):
+        scores = sam.outlier_scores(sam.build_table(self._summaries()))
+        assert len(scores) == 4 and np.all(scores >= 0)
+
+    def test_normalized_axes_in_unit_range(self):
+        t = sam.build_table(self._summaries())
+        norm = sam.normalized_axes(t, ["vod", "max_temp_c"], {"vod": "param", "max_temp_c": "response"})
+        finite = norm[~np.isnan(norm)]
+        assert finite.min() == pytest.approx(0.0) and finite.max() == pytest.approx(1.0)

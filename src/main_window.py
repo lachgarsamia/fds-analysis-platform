@@ -79,6 +79,7 @@ import experiment as experiment_mod
 from selection import Selection, SelectionBus
 from quantity_provider import QuantityProvider
 from analysis_panel_base import bind_to_bus
+from study_panel import StudyPanel
 from sessions_panel import SessionsPanel
 import session_store
 from evidence_notebook_panel import EvidenceNotebookDock
@@ -756,10 +757,17 @@ class MainWindow(QtWidgets.QMainWindow):
                 FactorEffectsPanel(self.controller.store, self.sim_data.manifest,
                                    self._quantity_options(), self.sim_data.timesteps_per_second)
                 if self.is_factorial else None)
+            # Study-level analytics (V5-M2): the factorial as a designed
+            # experiment. Needs the factor axes + computed summaries.
+            self.study_panel = (
+                StudyPanel(getattr(self, "_scenario_summaries", None) or [],
+                           self.sim_data.manifest)
+                if self.is_factorial else None)
         else:
             self.timeseries_panel = None
             self.energy_panel = None
             self.factor_effects_panel = None
+            self.study_panel = None
             self.tenability_panel = None
             self.fire_mri_panel = None
             self.semantic_diff_panel = None
@@ -814,6 +822,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 interval_content=self.time_window_panel,
                 measurement_content=self.measurement_panel,
                 advanced_compare_content=self.advanced_compare_panel,
+                study_content=self.study_panel,
                 experiments_content=self.experiments_panel,
                 quantities_content=self.quantities_panel,
                 assistant_content=self.assistant_panel,
@@ -878,7 +887,7 @@ class MainWindow(QtWidgets.QMainWindow):
                      "query_panel", "state_space_panel", "attention_panel", "cause_panel",
                      "factor_effects_panel", "tenability_panel", "timeseries_panel",
                      "energy_panel", "forecasting_panel", "quantities_panel",
-                     "advanced_compare_panel"):
+                     "advanced_compare_panel", "study_panel"):
             panel = getattr(self, attr, None)
             if panel is not None:
                 bind_to_bus(panel, self.selection_bus, fps)

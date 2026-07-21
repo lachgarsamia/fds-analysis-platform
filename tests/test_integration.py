@@ -2874,3 +2874,26 @@ class TestSharedSelectionModel:
         s = window.selection_bus.current
         assert s.scenario == 2 and s.quantity == "VELOCITY" and s.point == (0.9, 0.1)
         window.close()
+
+
+class TestStudyPanel:
+    """V5-M2: study-level analytics + selection sync."""
+
+    def test_panel_builds_and_syncs_scenario(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            assert getattr(window, "study_panel", None) is None
+            window.close()
+            return
+        panel = window.study_panel
+        assert len(panel._table) == len(sim_data.manifest)
+        # study scenario pick publishes to the bus; a linked panel follows
+        window.height_panel.ensure_loaded()
+        panel.scenario_combo.setCurrentIndex(5)
+        assert window.selection_bus.current.scenario == panel.scenario_combo.currentData()
+        assert window.height_panel.scenario_combo.currentData() == panel.scenario_combo.currentData()
+        # reverse: a bus scenario change highlights the study selection
+        window.selection_bus.update(origin=None, scenario=9)
+        assert panel.scenario_combo.currentData() == 9
+        window.close()
