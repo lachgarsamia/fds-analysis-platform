@@ -25,13 +25,39 @@ DEFAULT_OFFSET = 0
 class SliceKey:
     """Identifies a readable slice: which physical quantity, which axis
     it's normal to, and at what offset along that axis. Hashable (frozen)
-    so it can be used directly as a cache dict key."""
+    so it can be used directly as a cache dict key.
+
+    plane_pos (M2.2 any-plane slicing) is the physical (meters) position
+    of an `.s3d`-derived plane along `direction`'s axis -- used only for
+    volumetric SOOT DENSITY data (see load_data.py's dispatch), where the
+    integer `offset` (a `.sf` mesh-cell index) has no meaning. It stays
+    None for every `.sf` slice, so every pre-M2.2 SliceKey is unchanged:
+    the field defaults to None, so existing constructions and all their
+    equality/hash relationships are byte-for-byte identical."""
     quantity: str
     direction: int = DEFAULT_DIRECTION
     offset: int = DEFAULT_OFFSET
+    plane_pos: float = None
 
 
 DEFAULT_SLICE_KEY = SliceKey(DEFAULT_QUANTITY, DEFAULT_DIRECTION, DEFAULT_OFFSET)
+
+# DataKey (V2 roadmap M0.2): SliceKey is the app's unified data key. It
+# already spans both 2D `.sf` slices (plane_pos is None) and volumetric
+# `.s3d` planes (plane_pos set; quantity dispatched in load_data, M2.2),
+# so it *is* the "DataKey union" the roadmap called for -- this alias
+# names that role for call sites that key on data of any kind. Derived-
+# field keys (F7) would extend this same type when that feature lands;
+# no separate class is introduced now (the roadmap's "resist inventing
+# more abstractions" rule -- F7 isn't built).
+DataKey = SliceKey
+
+# Volumetric SOOT DENSITY (read from `.s3d`, M2.1/M2.2) vs the app's
+# original `.sf` slice quantities. Axis letter <-> SliceKey.direction,
+# matching fds.slice.slice's own 0=x/1=y/2=z convention.
+SOOT_QUANTITY = 'SOOT DENSITY'
+DIRECTION_TO_AXIS = {0: 'x', 1: 'y', 2: 'z'}
+AXIS_TO_DIRECTION = {v: k for k, v in DIRECTION_TO_AXIS.items()}
 
 
 class SliceInfo(NamedTuple):

@@ -12,6 +12,7 @@ from __future__ import annotations
 import numpy as np
 
 from slice_key import DEFAULT_SLICE_KEY
+from tenability import TENABILITY_THRESHOLD_C
 
 # Landmark x-zones (meters) a peak-temperature pixel is classified against
 # for the "(near ...)" spatial descriptor. Derived from the real .fds
@@ -97,7 +98,26 @@ def generate_summary(entry, summary, all_summaries: list, store,
         sentence2 = " Never exceeded 300°C."
 
     comparison_sentence = _vent_comparison_sentence(entry, summary, all_summaries)
-    return sentence1 + sentence2 + comparison_sentence
+
+    # V2 roadmap M1.2: t-squared growth coefficient, only when the HRR
+    # fit produced one (None = no CSV / no growth segment -- sentence
+    # simply absent, same convention as the threshold sentence's split).
+    alpha = getattr(summary, "growth_alpha_kw_s2", None)
+    growth_sentence = f" Fire growth fit: α = {alpha:.2g} kW/s²." if alpha is not None else ""
+
+    # V2 roadmap M2.3: worst-case (lowest) smoke-layer height, when the
+    # summary index was built with geometry available.
+    layer_min = getattr(summary, "layer_min_height_m", None)
+    layer_sentence = f" Smoke layer descended to {layer_min:.2f} m at its lowest." if layer_min is not None else ""
+
+    # V2 roadmap M3.2: convected-heat tenability onset (temperature-only,
+    # not full FED -- see tenability.py).
+    untenable = getattr(summary, "time_to_untenable_s", None)
+    tenability_sentence = (f" Untenable heat (>{int(TENABILITY_THRESHOLD_C)}°C) first appeared at t={untenable:.0f}s."
+                           if untenable is not None else "")
+
+    return (sentence1 + sentence2 + comparison_sentence + growth_sentence
+            + layer_sentence + tenability_sentence)
 
 
 def generate_all_summaries(entries: list, summaries: list, store, fps: int,

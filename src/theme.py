@@ -40,12 +40,12 @@ RADIUS = {
 }
 
 TYPE_SCALE = {
-    "caption": 11,
-    "body": 13,
-    "label": 13,
-    "subtitle": 16,
-    "title": 20,
-    "display": 26,
+    "caption": 13,
+    "body": 15,
+    "label": 15,
+    "subtitle": 19,
+    "title": 24,
+    "display": 34,
 }
 
 FONT_FAMILY = '"Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif'
@@ -274,6 +274,19 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
         font-size: {caption};
     }}
 
+    /* Inspector panel (the right-hand bar): text there reads at normal
+    body/caption size everywhere else in the app, but the Inspector is
+    read at a glance during playback, so it gets a size bump of its own
+    rather than changing the global "value"/"caption" roles used
+    everywhere else (control panel, home page stat tiles, timeline). */
+    QWidget#inspectorPanel QLabel[role="value"] {{
+        font-size: {subtitle};
+    }}
+
+    QWidget#inspectorPanel QLabel[role="caption"] {{
+        font-size: {body};
+    }}
+
     QFrame#divider {{
         background-color: {p.border};
         max-height: 1px;
@@ -309,7 +322,7 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
         background-color: {p.bg_sunken};
         border: none;
         border-radius: {r_md};
-        padding: {pad_sm} {pad_lg};
+        padding: {pad_sm} {pad_md};
         color: {p.text_primary};
         font-weight: 500;
         min-height: 26px;
@@ -330,7 +343,7 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
 
     QPushButton:focus {{
         border: 2px solid {p.focus_ring};
-        padding: {px(SPACE["sm"] - 1)} {px(SPACE["lg"] - 1)};
+        padding: {px(SPACE["sm"] - 1)} {px(SPACE["md"] - 1)};
     }}
 
     /* Toggle-style buttons (checkable) used in ToggleGroup */

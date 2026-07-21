@@ -229,6 +229,20 @@ class SliceView:
         self.heatmap.set_clim(vmin=vmin, vmax=vmax)
         self.canvas.capture_background()
 
+    def set_extent(self, extent) -> None:
+        """Update the plotted plane's physical extent in place (M2.2):
+        needed when a cell switches to a quantity on a *different* plane
+        (e.g. a SOOT doorway slice vs the standard side view), whose
+        physical box and array shape differ from the current one. Unlike
+        M2.6's assumption that a cell's extent is fixed for its lifetime,
+        an `.s3d` any-plane quantity can legitimately change it. Keeps
+        probe/isotherm coordinate mapping correct, since both read
+        self._extent."""
+        self._extent = extent
+        if extent is not None:
+            self.heatmap.set_extent(extent)
+        self.canvas.capture_background()
+
     def set_interpolation(self, name: str) -> None:
         self.heatmap.set_interpolation(name)
         self.canvas.capture_background()
@@ -589,6 +603,9 @@ class DifferenceView:
     def set_clim(self, vmin: float, vmax: float) -> None:
         self._inner.set_clim(vmin, vmax)
 
+    def set_extent(self, extent) -> None:
+        self._inner.set_extent(extent)
+
     def set_interpolation(self, name: str) -> None:
         self._inner.set_interpolation(name)
 
@@ -726,6 +743,9 @@ class EnsembleView:
 
     def set_clim(self, vmin: float, vmax: float) -> None:
         self._inner.set_clim(vmin, vmax)
+
+    def set_extent(self, extent) -> None:
+        self._inner.set_extent(extent)
 
     def set_interpolation(self, name: str) -> None:
         self._inner.set_interpolation(name)
@@ -1212,6 +1232,7 @@ class ViewGrid(QtWidgets.QWidget):
         "1x2": (1, 2),
         "1x3": (1, 3),
         "2x2": (2, 2),
+        "3x3": (3, 3),
     }
 
     cell_created = QtCore.pyqtSignal(object)             # a newly-instantiated GridCell, needs init_plot

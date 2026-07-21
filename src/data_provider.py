@@ -26,7 +26,7 @@ import numpy as np
 from config import N_CANDLES, N_DOORS, N_VOD, N_VOC, FRAMES_PER_SECOND, SCENARIO_CACHE_SIZE
 from load_data import check_scenario_count, SIM_ROOT
 from scenario_store import ScenarioStore, list_scenario_folders, build_data_matrix
-from manifest import get_manifest, data_matrix_from_manifest
+from manifest import get_manifest, data_matrix_from_manifest, scan_study
 
 
 class DataLoadError(Exception):
@@ -61,6 +61,13 @@ class SimulationData:
     # folder list. None in demo mode -- there's no real .smv to scan, so
     # there's nothing to build an entry from.
     manifest: list = None
+    # Whether this study is the candle 2x2x3x2 factorial (True) or a
+    # generic/degenerate guest study opened via "Open Study…" (M2.5).
+    # Non-factorial studies have no candle/door/vent factor axes, so the
+    # UI hides those scenario-parameter controls, the schematic, and the
+    # Compare/analytics surfaces for them (read-only viz + browser only,
+    # per the roadmap's guest-study scope).
+    is_factorial: bool = True
 
 
 class DemoScenarioStore:
@@ -158,3 +165,43 @@ def load_simulation_data(cache_size: int = SCENARIO_CACHE_SIZE) -> SimulationDat
             "To unpack split archives on Linux/macOS:\n"
             "cat sim.tar.gz.a* > ./sim.tar.gz && tar -xf sim.tar.gz\n\n"
             f"Original error: {type(e).__name__}: {e}") from e
+
+
+def load_study(root: str, cache_size: int = SCENARIO_CACHE_SIZE) -> SimulationData:
+    """Load an arbitrary FDS-output directory as a study (V2 roadmap M2.5,
+    "Open Study…"). Handles the candle factorial, a generic multi-scenario
+    directory, and a single FDS case (degenerate manifest -- first-class,
+    not an error). Raises DataLoadError with a user-facing message if the
+    directory has no readable FDS output.
+
+    Unlike load_simulation_data(), this never falls back to demo data:
+    the user explicitly picked a directory, so an empty one is a real
+    error to surface, not a silent substitution.
+    """
+    if not os.path.isdir(root):
+        raise DataLoadError(f"Not a directory: {root}")
+    try:
+        entries, is_factorial = scan_study(root)
+    except Exception as e:
+        raise DataLoadError(
+            f"Could not read a study from {root}.",
+            f"Original error: {type(e).__name__}: {e}") from e
+    if not entries:
+        raise DataLoadError(
+            f"No FDS output (.smv) found in {root} or its subfolders.",
+            "Pick a directory that is an FDS case, or that contains FDS case subfolders.")
+
+    folders = [e.path for e in entries]
+    if is_factorial:
+        data_matrix = data_matrix_from_manifest(entries)
+    else:
+        # A generic study has no factor axes; expose a placeholder matrix
+        # mapping the (candles-only) axis to scenario index so the
+        # controller's default (0,0,0,0) selects the first scenario. The
+        # candle/door/vent controls that would index it are hidden anyway.
+        data_matrix = np.arange(len(entries)).reshape(len(entries), 1, 1, 1)
+    cache_dir = os.path.join(root, '.cache')
+    store = ScenarioStore(folders, cache_size=cache_size, cache_dir=cache_dir)
+    return SimulationData(store=store, data_matrix=data_matrix,
+                           timesteps_per_second=FRAMES_PER_SECOND, is_demo=False,
+                           manifest=entries, is_factorial=is_factorial)

@@ -28,7 +28,7 @@ class HomePage(Page):
 
         logo_row = QtWidgets.QHBoxLayout()
         logo_row.addStretch(1)
-        logo_row.addWidget(build_logo_widget(40))
+        logo_row.addWidget(build_logo_widget(140))
         logo_row.addStretch(1)
         layout.addLayout(logo_row)
 

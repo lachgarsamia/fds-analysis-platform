@@ -57,10 +57,12 @@ class TestPageLifecycle:
 
 
 class TestMainWindowPageSwitching:
-    def test_boots_into_home(self, qapp):
+    def test_boots_into_live(self, qapp):
+        """UI/UX modernization pass: Simulation Viewer (LivePage) is now
+        the default/main page, not Home."""
         window = MainWindow(load_simulation_data())
-        assert window._active_page_key == "home"
-        assert window.page_stack.currentWidget() is window.pages["home"]
+        assert window._active_page_key == "live"
+        assert window.page_stack.currentWidget() is window.pages["live"]
         window.close()
 
     def test_live_content_built_eagerly_regardless_of_active_page(self, qapp):
@@ -68,7 +70,7 @@ class TestMainWindowPageSwitching:
         exist as soon as MainWindow is constructed, not only once the user
         navigates there -- every pre-existing test/call site assumes this."""
         window = MainWindow(load_simulation_data())
-        assert window._active_page_key == "home"
+        assert window._active_page_key == "live"
         assert window.view_grid is not None
         assert window.timeline is not None
         window.close()

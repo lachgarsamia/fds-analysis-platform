@@ -173,7 +173,7 @@ class TestIntegration:
         be unconfigured (it may well already have a saved preference from
         another test run)."""
         from PyQt5 import QtCore
-        monkeypatch.setattr(QtCore.QSettings, "value", lambda self, key, default=None: default)
+        monkeypatch.setattr(QtCore.QSettings, "value", lambda self, key, default=None, **kw: default)
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         assert window.current_interpolation == "bilinear"
@@ -818,7 +818,9 @@ class TestIntegration:
         if sim_data.is_demo:
             pytest.skip("real dataset not present; demo mode only exposes TEMPERATURE")
         labels = {window.quantity_combo.itemText(i) for i in range(window.quantity_combo.count())}
-        assert labels == {"Temperature", "Air speed"}
+        # M2.2 adds SOOT any-plane entries when .s3d data is present; the
+        # original .sf quantities remain.
+        assert {"Temperature", "Air speed"} <= labels
         assert window.quantity_combo.isEnabled()
         window.close()
 
@@ -875,21 +877,18 @@ class TestIntegration:
         window.close()
 
     def test_simultaneous_scenario_and_quantity_switch_cache_miss_race(self, qapp):
-        """Characterizes (does not fix) the race documented in ROADMAP.md's
-        M2.1 section: `_pending_load_case` tracks case_idx only, not
-        (case_idx, key), so a scenario toggle and a quantity switch that
-        both land on the same case_idx while both are cache misses can have
-        their background prefetches finish out of order.
+        """V2-M0.1 fixed the race this once characterized: `_pending_load_case`
+        is now paired with `_pending_load_key`, so when a scenario toggle
+        and a quantity switch both land on the same case_idx, the STALE
+        key's prefetch finishing first no longer ends the busy state.
 
-        Forces the specific interleaving the roadmap note is worried about
-        -- the STALE (pre-switch) key's prefetch finishing first -- via a
-        store wrapper that deliberately delays the NEW key's load. Confirms
-        two things: (1) the end state is fully correct (right quantity,
-        right scenario, right frame data, busy state settles, cursor
-        restored) -- not just "doesn't crash"; and (2) the mechanism named
-        in the roadmap note is real, not assumed: the cursor is provably
-        already restored (busy state already ended) at the moment the GUI
-        thread starts its own blocking synchronous fetch for the new key.
+        Forces the same interleaving (the stale pre-switch key's prefetch
+        finishing first, via a store wrapper that delays the NEW key's
+        load) and confirms the *fixed* behavior: (1) the end state is fully
+        correct; and (2) the busy state waits for the new key's own
+        prefetch -- so the GUI thread never does a blocking fresh load for
+        it (its `_sync_current_scenario` fetch is a cache hit), and the
+        cursor is not restored early.
         """
         from slice_key import SliceKey
 
@@ -970,27 +969,19 @@ class TestIntegration:
         assert completed_keys_in_order[0] == DEFAULT_SLICE_KEY
         assert velocity_key in completed_keys_in_order
 
-        # -- 3. The mechanism itself: find the GUI-thread call(s) for the
-        #    new key that actually triggered a fresh (non-cached) load --
-        #    that's _sync_current_scenario's own blocking store.get(),
-        #    triggered from inside _on_prefetch_finished -- and confirm the
-        #    cursor had ALREADY been restored (busy state already ended)
-        #    before it started. This is the literal "busy indicator lies
-        #    for the hitch's duration" behavior, not an assumption. --
+        # -- 3. The fix: the GUI thread never does a blocking *fresh* load
+        #    for the new key. Because the busy state waits until VELOCITY's
+        #    own prefetch has cached it (M0.1), _sync_current_scenario's
+        #    store.get() for the new key is a cache HIT, not a fresh load
+        #    racing the background prefetch. --
         gui_thread_fresh_velocity_calls = [
             entry for entry in wrapper.completion_log
             if entry[1] == velocity_key and entry[2] and entry[4]
         ]
-        assert len(gui_thread_fresh_velocity_calls) >= 1, (
-            "expected at least one GUI-thread fresh-load fetch for the new "
-            "key (_sync_current_scenario's synchronous get racing the "
-            "still-in-flight background prefetch)"
-        )
-        assert all(entry[3] for entry in gui_thread_fresh_velocity_calls), (
-            "cursor must already have been restored (busy state already "
-            "ended) before this synchronous, GUI-thread-blocking fetch "
-            "began -- confirming the busy indicator was inaccurate for "
-            "its duration, not just eventually consistent"
+        assert gui_thread_fresh_velocity_calls == [], (
+            "with the M0.1 pending-key fix, the busy state waits for the "
+            "new key's own prefetch, so the GUI thread should never trigger "
+            "a fresh (non-cached) load for it"
         )
 
         # -- 4. Despite the race, the FINAL state is fully correct: right
@@ -1650,4 +1641,1184 @@ class TestIntegration:
         assert window.analytics_panel is not None
         assert not hasattr(window.analytics_panel, "show_frame")
         assert not hasattr(window.analytics_panel, "_on_time_changed")
+        window.close()
+
+
+class TestEventTimeline:
+    """V2 roadmap M1.3: auto-detected event markers on the scrubber."""
+
+    def test_real_scenario_gets_markers_including_peak(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert window.timeline.marker_bar.markers == []
+            window.close()
+            return
+        markers = window.timeline.marker_bar.markers
+        assert markers, "real data must produce at least the peak marker"
+        labels = [label for _f, label in markers]
+        # V3-M2: markers are now the events.py fire story (the peak event's
+        # statement is "Peak <value> °C"), richer than the M1.3 summary set.
+        assert any(label.startswith("Peak") for label in labels)
+        n = window._current_n_frames
+        assert all(0 <= frame < n for frame, _l in markers)
+        window.close()
+
+    def test_velocity_quantity_clears_markers(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        velocity_idx = next((i for i, info in enumerate(window.quantity_infos)
+                             if info.key.quantity == "VELOCITY"), None)
+        if velocity_idx is None:
+            window.close()
+            return
+        window.quantity_combo.setCurrentIndex(velocity_idx)
+        _drain_workers(qapp, window.controller._prefetch_workers)
+        qapp.processEvents()
+        assert window.timeline.marker_bar.markers == []
+        window.close()
+
+    def test_marker_click_seeks_playback(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        markers = window.timeline.marker_bar.markers
+        assert markers
+        target_frame = markers[-1][0]
+        window.timeline.marker_bar.marker_clicked.emit(target_frame)
+        assert window.time_controller.index == target_frame
+        window.close()
+
+
+class TestPublicationFigureExport:
+    """V2 roadmap M1.4: Export -> Publication figure… menu action."""
+
+    def test_export_writes_svg_for_active_slice_cell(self, qapp, tmp_path, monkeypatch):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+
+        from figure_export import PublicationExportDialog
+        out_path = str(tmp_path / "fig.svg")
+        monkeypatch.setattr(
+            PublicationExportDialog, "exec_", lambda self: QtWidgets.QDialog.Accepted)
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog, "getSaveFileName", lambda *a, **k: (out_path, ""))
+
+        window._export_publication_figure()
+        assert (tmp_path / "fig.svg").exists()
+        window.close()
+
+    def test_export_on_difference_cell_shows_message_not_crash(self, qapp, monkeypatch):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        cell = window.view_grid.active_cell()
+        cell.set_cell_type("difference")
+        window._on_cell_type_changed(cell, "difference")
+
+        monkeypatch.setattr(QtWidgets.QMessageBox, "information", lambda *a, **k: None)
+        window._export_publication_figure()  # must not raise
+        window.close()
+
+
+class TestDifferenceOverTimeButton:
+    """V2 roadmap M1.5: Inspector's "Plot difference over time…" button."""
+
+    def test_button_visible_only_for_difference_cell(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        window._navigate_to("live")
+        qapp.processEvents()
+        assert not window.inspector.diff_plot_button.isVisible()
+        cell = window.view_grid.active_cell()
+        cell.set_cell_type("difference")
+        window._on_cell_type_changed(cell, "difference")
+        window._on_time_changed(window.time_controller.index)
+        assert window.inspector.diff_plot_button.isVisible()
+        window.close()
+
+    def test_button_click_opens_dialog_without_crash(self, qapp, monkeypatch):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        cell = window.view_grid.active_cell()
+        cell.set_cell_type("difference")
+        window._on_cell_type_changed(cell, "difference")
+
+        from diff_analysis import DifferenceOverTimeDialog
+        monkeypatch.setattr(DifferenceOverTimeDialog, "exec_", lambda self: None)
+        window._show_difference_over_time()  # must not raise
+        window.close()
+
+    def test_no_op_when_active_cell_is_a_plain_slice(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        assert window.view_grid.active_cell().cell_type == "slice"
+        window._show_difference_over_time()  # must not raise
+        window.close()
+
+
+class TestSessionSaveLoad:
+    """V2 roadmap M2.4: File -> Save/Load Session."""
+
+    def test_save_then_load_restores_grid_state(self, qapp, tmp_path, monkeypatch):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+
+        window._set_grid_layout("1x2")
+        cells = window.view_grid.visible_cells()
+        options = window._scenario_options()
+        case_a, case_b = options[0][1], options[-1][1]
+        window._select_scenario_in_cell(cells[0], case_a)
+        cells[1].set_cell_type("difference")
+        window._on_cell_type_changed(cells[1], "difference")
+        window._select_difference_scenarios_in_cell(cells[1], case_a, case_b)
+        target_frame = min(3, window._current_n_frames - 1)
+        window.time_controller.seek(target_frame)
+
+        path = str(tmp_path / "session.json")
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog, "getSaveFileName", lambda *a, **k: (path, ""))
+        window._save_session()
+        assert (tmp_path / "session.json").exists()
+
+        # Reset to a different state before loading, so restoration is
+        # actually exercised rather than trivially already-true.
+        window._set_grid_layout("1x1")
+
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog, "getOpenFileName", lambda *a, **k: (path, ""))
+        window._load_session()
+
+        assert window.view_grid.layout_name == "1x2"
+        restored = window.view_grid.visible_cells()
+        assert restored[0].case_index == case_a
+        assert restored[1].cell_type == "difference"
+        assert restored[1].case_index_a == case_a
+        assert restored[1].case_index_b == case_b
+        assert window.time_controller.index == target_frame
+        window.close()
+
+    def test_load_rejects_malformed_file_without_crash(self, qapp, tmp_path, monkeypatch):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        path = tmp_path / "bad.json"
+        path.write_text("not json")
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog, "getOpenFileName", lambda *a, **k: (str(path), ""))
+        monkeypatch.setattr(QtWidgets.QMessageBox, "warning", lambda *a, **k: None)
+        window._load_session()  # must not raise
+        window.close()
+
+
+class TestSootAnyPlaneUI:
+    """V2 roadmap M2.2: SOOT DENSITY any-plane slicing surfaced in the UI."""
+
+    def test_soot_planes_absent_in_demo_mode(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if not sim_data.is_demo:
+            window.close()
+            return
+        quantities = {info.key.quantity for info in window.quantity_infos}
+        assert "SOOT DENSITY" not in quantities
+        window.close()
+
+    def test_soot_planes_appear_with_real_s3d_data(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        soot = [i for i in window.quantity_infos if i.key.quantity == "SOOT DENSITY"]
+        assert len(soot) == 2  # side view + doorway
+        positions = {i.key.plane_pos for i in soot}
+        assert positions == {0.0, 0.25}
+        # Labels are plane-distinct (not two identical "Smoke (soot)" entries).
+        labels = [window._quantity_label(i) for i in soot]
+        assert len(set(labels)) == 2
+        window.close()
+
+    def test_switching_to_doorway_plane_changes_extent_and_shape(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        door_idx = next((i for i, info in enumerate(window.quantity_infos)
+                         if info.key.plane_pos == 0.25), None)
+        assert door_idx is not None
+        before_shape = window.heatmap.get_array().shape
+        window.quantity_combo.setCurrentIndex(door_idx)
+        _drain_workers(qapp, window.controller._prefetch_workers)
+        qapp.processEvents()
+        after_shape = window.heatmap.get_array().shape
+        # Doorway (y x z) plane differs in width from the side (x x z) plane.
+        assert after_shape != before_shape
+        assert window.view_grid.active_view()._extent[0] < 0  # y spans negative
+        window.close()
+
+
+class TestMultiStudyGuestStudy:
+    """V2 roadmap M2.5: a generic guest study opened via load_study --
+    validated against a real single candle-scenario folder as a
+    standalone degenerate study (the line-burner has no computed output
+    to open)."""
+
+    def _guest_case_dir(self):
+        import os
+        from load_data import SIM_ROOT
+        return os.path.join(SIM_ROOT, "c1_d0_vod0_voc0")
+
+    def test_degenerate_study_builds_with_candle_ui_hidden(self, qapp):
+        import os
+        from data_provider import load_study
+        case_dir = self._guest_case_dir()
+        if not os.path.isdir(case_dir):
+            pytest.skip("real dataset not present")
+        window = MainWindow(load_study(case_dir))
+        assert window.is_factorial is False
+        assert not window.candle_toggle.isVisibleTo(window)
+        assert window.analytics_panel is None
+        in_stack = any(window.page_stack.widget(i) is window.pages["compare"]
+                       for i in range(window.page_stack.count()))
+        assert in_stack is False
+        window.close()
+
+    def test_degenerate_study_renders_and_switches_quantity(self, qapp):
+        import os
+        from data_provider import load_study
+        case_dir = self._guest_case_dir()
+        if not os.path.isdir(case_dir):
+            pytest.skip("real dataset not present")
+        window = MainWindow(load_study(case_dir))
+        assert window.heatmap.get_array().shape == (49, 101)
+        door_idx = next((i for i, info in enumerate(window.quantity_infos)
+                        if info.key.plane_pos == 0.25), None)
+        assert door_idx is not None
+        window.quantity_combo.setCurrentIndex(door_idx)
+        _drain_workers(qapp, window.controller._prefetch_workers)
+        qapp.processEvents()
+        assert window.heatmap.get_array().shape == (49, 31)
+        window.close()
+
+
+class TestFactorEffectsPanel:
+    """V2 roadmap M3.1: factor-effect maps on the Analysis page."""
+
+    def test_panel_present_for_factorial_absent_for_guest(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "factor_effects_panel", None) is None
+            window.close()
+            return
+        assert window.factor_effects_panel is not None
+        window.close()
+        # A generic guest study (degenerate single case) has no factor axes.
+        import os
+        from data_provider import load_study
+        from load_data import SIM_ROOT
+        case_dir = os.path.join(SIM_ROOT, "c1_d0_vod0_voc0")
+        guest = MainWindow(load_study(case_dir))
+        assert guest.factor_effects_panel is None
+        guest.close()
+
+    def test_ensure_loaded_builds_table_and_field(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        panel = window.factor_effects_panel
+        panel.ensure_loaded()
+        assert panel.table.rowCount() == 4  # candles, door, vod, voc
+        assert panel._current_field is not None
+        assert panel._image is not None
+        # Interaction mode: pick a second factor, field recomputes.
+        panel.interaction_combo.setCurrentIndex(1)  # first "× factor" entry
+        assert panel._current_field is not None
+        window.close()
+
+
+class TestReportBuilder:
+    """V2 roadmap M3.3: browser "Generate report…" -> HTML report."""
+
+    def _window_with_summaries(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            return window, True
+        _drain_workers(qapp, [], timeout=0.1)
+        deadline = time.perf_counter() + 5.0
+        while not getattr(window, "_scenario_summaries", None) and time.perf_counter() < deadline:
+            qapp.processEvents()
+            time.sleep(0.01)
+        return window, False
+
+    def test_scenario_report_written(self, qapp, tmp_path, monkeypatch):
+        window, demo = self._window_with_summaries(qapp)
+        if demo:
+            window.close()
+            return
+        out = str(tmp_path / "r.html")
+        monkeypatch.setattr(QtWidgets.QFileDialog, "getSaveFileName", lambda *a, **k: (out, ""))
+        window._export_report([0])
+        assert (tmp_path / "r.html").exists()
+        text = (tmp_path / "r.html").read_text()
+        assert "data:image/png;base64," in text and "<table>" in text
+        window.close()
+
+    def test_comparison_report_written(self, qapp, tmp_path, monkeypatch):
+        window, demo = self._window_with_summaries(qapp)
+        if demo:
+            window.close()
+            return
+        out = str(tmp_path / "cmp.html")
+        monkeypatch.setattr(QtWidgets.QFileDialog, "getSaveFileName", lambda *a, **k: (out, ""))
+        window._export_report([0, 12])
+        assert (tmp_path / "cmp.html").exists()
+        assert "vs" in (tmp_path / "cmp.html").read_text()
+        window.close()
+
+    def test_report_button_present_in_browser(self, qapp):
+        window, demo = self._window_with_summaries(qapp)
+        if demo:
+            window.close()
+            return
+        assert window.experiment_browser.report_button is not None
+        window.close()
+
+
+class TestPendingKeyRace:
+    """V2 roadmap M0.1: a scenario toggle and a quantity switch landing on
+    the same case must not let the earlier key's prefetch end the busy
+    state while the current key is still loading."""
+
+    def test_finish_for_other_key_keeps_busy_until_pending_key_cached(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        from slice_key import SliceKey
+        velocity_key = SliceKey("VELOCITY")
+        cached = set()  # (case, quantity) tuples that report cached
+        window.controller.is_cached = lambda c, k=None: (c, getattr(k, "quantity", None)) in cached
+
+        window._pending_load_case = 0
+        window._pending_load_key = velocity_key
+        window._busy = True
+
+        # A prefetch for a *different* key on case 0 finishes; the pending
+        # VELOCITY load is not cached yet -> stay busy.
+        window._on_prefetch_finished(0)
+        assert window._busy is True
+        assert window._pending_load_case == 0
+
+        # Now the pending key is cached -> the next finish ends busy.
+        cached.add((0, "VELOCITY"))
+        window._on_prefetch_finished(0)
+        assert window._busy is False
+        assert window._pending_load_case is None
+        window.close()
+
+
+class TestFireMRIPanel:
+    """V3-M1: Fire MRI temporal-signature panel on the Analysis page."""
+
+    def test_panel_channels_probe_and_isochrones(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "fire_mri_panel", None) is None
+            window.close()
+            return
+        panel = window.fire_mri_panel
+        assert panel is not None
+        panel.ensure_loaded()
+        assert panel.scenario_combo.count() == len(sim_data.manifest)
+        # signature channels are populated (peak, dose, arrivals, durations)
+        names = [panel.channel_combo.itemData(i) for i in range(panel.channel_combo.count())]
+        assert "peak" in names and "thermal_dose" in names
+        assert any(n.startswith("first_crossing_") for n in names)
+        # peak channel's maximum equals the trusted per-scenario peak temperature
+        from summary_stats import compute_scenario_summary
+        summary = compute_scenario_summary(sim_data.manifest[0], sim_data.store,
+                                            sim_data.timesteps_per_second)
+        assert float(panel._sig.map("peak").max()) == pytest.approx(summary.max_temp_c, abs=0.5)
+        # isochrone overlay renders without error
+        panel.isochrone_check.setChecked(True)
+        # probe readout populates from a physical point
+        class _Evt:
+            inaxes = panel._ax
+            xdata, ydata = 0.9, 0.1
+        panel._on_move(_Evt())
+        assert "peak" in panel.probe_label.text()
+        window.close()
+
+
+class TestFireStory:
+    """V3-M2: Fire Evolution Timeline wired into Live (markers + story +
+    click-to-seek)."""
+
+    def test_story_events_markers_and_seek(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        events = window.inspector._events
+        assert events, "temperature scenario should produce fire events"
+        # physically time-ordered, and mirrored onto the timeline markers
+        times = [e.primary_time() for e in events]
+        assert times == sorted(times)
+        assert len(window.timeline.marker_bar.markers) == len(events)
+        # clicking a story event seeks playback to its frame
+        target = events[-1]
+        window._on_insight_activated(target)
+        assert window.time_controller.index == target.frame_index(
+            window.time_controller.timesteps_per_second)
+        # phase line reads during playback
+        window._on_time_changed(window._current_n_frames - 1)
+        assert "Now:" in window.inspector.phase_label.text()
+        window.close()
+
+    def test_story_cleared_for_non_temperature_quantity(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        vel_idx = next((i for i, info in enumerate(window.quantity_infos)
+                       if info.key.quantity == "VELOCITY"), None)
+        if vel_idx is None:
+            window.close()
+            return
+        window.quantity_combo.setCurrentIndex(vel_idx)
+        _drain_workers(qapp, window.controller._prefetch_workers)
+        qapp.processEvents()
+        assert window.inspector.story_list.count() == 0
+        window.close()
+
+
+class TestSemanticDiffPanel:
+    """V3-M3: semantic diff panel + report integration."""
+
+    def test_panel_lists_differences_and_shows_evidence(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "semantic_diff_panel", None) is None
+            window.close()
+            return
+        panel = window.semantic_diff_panel
+        assert panel is not None
+        panel.ensure_loaded()
+        assert panel.list.count() >= 1
+        # clicking a difference renders the A - B evidence field
+        first = panel._insights[0]
+        panel._show_evidence(first)
+        assert panel._image is not None
+        window.close()
+
+    def test_comparison_report_includes_key_differences(self, qapp, tmp_path, monkeypatch):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        deadline = time.perf_counter() + 5.0
+        while not getattr(window, "_scenario_summaries", None) and time.perf_counter() < deadline:
+            qapp.processEvents()
+            time.sleep(0.01)
+        out = str(tmp_path / "cmp.html")
+        monkeypatch.setattr(QtWidgets.QFileDialog, "getSaveFileName", lambda *a, **k: (out, ""))
+        window._export_report([0, 12])
+        text = (tmp_path / "cmp.html").read_text()
+        assert "Key differences" in text
+        window.close()
+
+
+class TestQueryPanel:
+    """V3-M4: physics query panel."""
+
+    def test_query_runs_and_shows_navigable_answer(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "query_panel", None) is None
+            window.close()
+            return
+        panel = window.query_panel
+        panel.ensure_loaded()
+        panel.query_edit.setText("hottest region")
+        panel._run()
+        assert panel.results.count() == 1
+        assert "Highest temperature" in panel.answer_label.text()
+        assert panel._image is not None  # answer marked on the field
+        window.close()
+
+    def test_unrecognized_query_is_not_answered(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        panel = window.query_panel
+        panel.ensure_loaded()
+        panel.query_edit.setText("tell me a joke")
+        panel._run()
+        assert panel.results.count() == 0
+        assert "Not understood" in panel.answer_label.text()
+        window.close()
+
+
+class TestStateSpacePanel:
+    """V3-M5: state-space + Fire Genome panel."""
+
+    def test_panel_builds_genomes_and_renders(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "state_space_panel", None) is None
+            window.close()
+            return
+        panel = window.state_space_panel
+        panel.ensure_loaded()
+        assert len(panel._genomes) == len(sim_data.manifest)
+        assert panel.scenario_combo.count() == len(sim_data.manifest)
+        # a trajectory was computed and cached for the shown scenario
+        assert panel._traj_cache
+        window.close()
+
+
+class TestAttentionPanel:
+    """V3-M6: physics attention map panel (heuristic saliency)."""
+
+    def test_panel_builds_renders_and_labels_honestly(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "attention_panel", None) is None
+            window.close()
+            return
+        panel = window.attention_panel
+        panel.ensure_loaded()
+        assert panel.scenario_combo.count() == len(sim_data.manifest)
+        assert panel._series is not None and panel._image is not None
+        # values are a normalized saliency in [0, 1]
+        assert 0.0 <= float(panel._series.min()) and float(panel._series.max()) <= 1.0 + 1e-6
+        from attention_panel import _DISCLAIMER
+        assert "not a physical field" in _DISCLAIMER.lower()
+        window.close()
+
+
+class TestCausePanel:
+    """V3-M7: cause explorer panel (gated)."""
+
+    def test_click_produces_a_labelled_cause_chain(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "cause_panel", None) is None
+            window.close()
+            return
+        panel = window.cause_panel
+        panel.ensure_loaded()
+        from cause_panel import _DISCLAIMER
+        assert "not proven causation" in _DISCLAIMER.lower()
+        # click the hottest cell's location -> a chain appears
+        data = np.asarray(sim_data.store.get(sim_data.manifest[0].case_index, DEFAULT_SLICE_KEY))
+        extent = sim_data.store.get_extent(sim_data.manifest[0].case_index, DEFAULT_SLICE_KEY)
+        fi = panel.frame_spin.value()
+        gr, gc = np.unravel_index(int(np.argmax(data[fi])), data[fi].shape)
+        n_z, n_x = data[fi].shape
+
+        class _Evt:
+            inaxes = panel._ax
+            xdata = extent[0] + gc / (n_x - 1) * (extent[1] - extent[0])
+            ydata = extent[3] - gr / (n_z - 1) * (extent[3] - extent[2])
+        panel._on_click(_Evt())
+        assert panel.chain.count() >= 1
+        window.close()
+
+
+class TestHeightPanel:
+    """V4-M1: height-aware analysis workspace."""
+
+    def test_panel_builds_picks_x_and_lists_height_insights(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "height_panel", None) is None
+            window.close()
+            return
+        panel = window.height_panel
+        panel.ensure_loaded()
+        assert panel.scenario_combo.count() == len(sim_data.manifest)
+        assert panel.insights.count() >= 2  # plume / layer / ceiling readings
+        # a locator click sets the vertical line and re-renders the profile
+        extent = sim_data.store.get_extent(0, DEFAULT_SLICE_KEY)
+
+        class _Evt:
+            inaxes = panel._loc_ax
+            xdata, ydata = 0.9, 0.1
+        panel._on_click(_Evt())
+        assert panel._x_col is not None
+        window.close()
+
+
+class TestEvidenceNotebookIntegration:
+    """V4-M2: dockable, session-backed Evidence Notebook."""
+
+    def test_dock_starts_hidden_and_save_reveals_and_stores(self, qapp):
+        from insight import Insight
+        window = MainWindow(load_simulation_data())
+        assert window.evidence_dock.isHidden()
+        ins = Insight("Peak temperature is 320 C.", category="query",
+                      quantity="TEMPERATURE", time_s=42.0, value=320.0, basis="max")
+        window.evidence_dock.add_insight(ins)
+        assert len(window.evidence_dock.notebook) == 1
+        assert not window.evidence_dock.isHidden()  # first save reveals it
+        window.close()
+
+    def test_panel_insight_lists_are_wired_to_the_notebook(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        from insight import Insight
+        ins = Insight("Plume peaks at 0.28 m.", category="query",
+                      quantity="TEMPERATURE", time_s=2.5, value=0.28, basis="max hot cell")
+        # emitting the shared save signal from a real panel's list lands it
+        window.height_panel.insights.insight_saved.emit(ins)
+        assert len(window.evidence_dock.notebook) == 1
+        window.close()
+
+    def test_session_roundtrip_carries_the_notebook(self, qapp, tmp_path):
+        from insight import Insight
+        from session import read_session
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        window.evidence_dock.add_insight(
+            Insight("Ceiling peaks at 41 C.", category="query", quantity="TEMPERATURE",
+                    time_s=39.0, value=41.0, basis="near-ceiling band"))
+        window.evidence_dock.notebook.set_note(0, "case A")
+        p = str(tmp_path / "sess.json")
+        # _save_session shows a file dialog; drive the same serialization it uses.
+        from session import build_session_dict, write_session
+        cells = window.view_grid.visible_cells()
+        sess = build_session_dict(window.view_grid.layout_name, cells, 0, 0, False,
+                                  window.current_colormap, False,
+                                  notebook=window.evidence_dock.notebook.to_list())
+        write_session(p, sess)
+        window.evidence_dock.notebook.clear()
+        window._apply_session(read_session(p))
+        assert len(window.evidence_dock.notebook) == 1
+        assert window.evidence_dock.notebook.entries[0].note == "case A"
+        window.close()
+
+
+class TestLinkedInspectionPanel:
+    """V4-M3: linked multi-quantity inspection."""
+
+    def test_fmt_hrr_uses_watts_when_sub_kilowatt(self):
+        from linked_panel import _fmt_hrr
+        assert _fmt_hrr(0.077) == "77 W"    # candle: sub-kW reads in W, not "0 kW"
+        assert _fmt_hrr(1500.0) == "1500.0 kW"
+
+    def test_panel_links_quantities_at_one_instant(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "linked_panel", None) is None
+            window.close()
+            return
+        panel = window.linked_panel
+        panel.ensure_loaded()
+        assert panel.scenario_combo.count() == len(sim_data.manifest)
+        assert panel.insights.count() >= 1  # at least the temperature-peak moment
+        import numpy as np
+        pk = int(np.argmax(panel._series["peak_t"]))
+        panel.frame_slider.setValue(pk)
+        # the readout reports several quantities at the one selected instant
+        assert "peak T" in panel.readout.text() and "smoke layer" in panel.readout.text()
+        # and a saved moment lands in the Evidence Notebook (M2 wiring)
+        panel.insights.insight_saved.emit(panel.insights.item(0).data(QtCore.Qt.UserRole))
+        assert len(window.evidence_dock.notebook) == 1
+        window.close()
+
+
+class TestZonePanel:
+    """V4-M4: named region / zone statistics."""
+
+    def test_zone_bundle_stats_and_insights(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "zone_panel", None) is None
+            window.close()
+            return
+        import zone_stats as zst
+        panel = window.zone_panel
+        panel.ensure_loaded()
+        panel._zones.append(zst.Zone("doorway", 0.8, 1.0, 0.0, 0.3))
+        panel._select_zone(0)
+        assert "doorway" in panel.stats_label.text()
+        assert "peak" in panel.stats_label.text()
+        assert panel.insights.count() >= 1
+        # cross-scenario comparison fills a row per scenario
+        panel._compare_across_scenarios()
+        assert panel.compare_table.rowCount() == len(sim_data.manifest)
+        # a zone finding saves to the Evidence Notebook (M2 wiring)
+        panel.insights.insight_saved.emit(panel.insights.item(0).data(QtCore.Qt.UserRole))
+        assert len(window.evidence_dock.notebook) == 1
+        window.close()
+
+    def test_zones_survive_session_roundtrip(self, qapp, tmp_path):
+        import zone_stats as zst
+        from session import build_session_dict, write_session, read_session
+        window = MainWindow(load_simulation_data())
+        if window.zone_panel is None:
+            window.close()
+            return
+        window.zone_panel.ensure_loaded()
+        window.zone_panel._zones.append(zst.Zone("window", 0.1, 0.3, 0.2, 0.5))
+        p = str(tmp_path / "s.json")
+        cells = window.view_grid.visible_cells()
+        write_session(p, build_session_dict(
+            window.view_grid.layout_name, cells, 0, 0, False, window.current_colormap,
+            False, zones=window.zone_panel.get_zones()))
+        window.zone_panel.set_zones([])
+        window._apply_session(read_session(p))
+        assert len(window.zone_panel._zones) == 1
+        assert window.zone_panel._zones[0].name == "window"
+        window.close()
+
+
+class TestTimeWindowPanel:
+    """V4-M5: time-window / interval analysis."""
+
+    def test_intervals_phases_and_before_after(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "time_window_panel", None) is None
+            window.close()
+            return
+        panel = window.time_window_panel
+        panel.ensure_loaded()
+        assert panel.scenario_combo.count() == len(sim_data.manifest)
+        assert len(panel._series["phases"]) >= 1
+        # whole-run window produces stats + an insight
+        assert "s</b>" in panel.stats_label.text()
+        assert panel.insights.count() == 1
+        # selecting a detected phase narrows the window
+        if len(panel._series["phases"]) >= 1:
+            panel._on_phase_selected(1)
+            _name, a, b = panel._series["phases"][0]
+            assert panel._t0 == a and panel._t1 == b
+        # before/after mode compares two halves and saves to the notebook
+        panel._on_mode_changed(1)
+        panel._split = 20.0
+        panel._compute()
+        assert "Before" in panel.stats_label.text() and "After" in panel.stats_label.text()
+        panel.insights.insight_saved.emit(panel.insights.item(0).data(QtCore.Qt.UserRole))
+        assert len(window.evidence_dock.notebook) == 1
+        window.close()
+
+
+class TestNamedSessions:
+    """V4-M6: named, reproducible analysis sessions."""
+
+    def _investigate(self, window):
+        """Set up an investigation: a notebook entry, a zone, an interval."""
+        from insight import Insight
+        import zone_stats as zst
+        window.evidence_dock.add_insight(Insight(
+            "Peak 469 C at t=8s.", category="query", quantity="TEMPERATURE",
+            time_s=8.0, value=469.0, basis="max"))
+        window.zone_panel.ensure_loaded()
+        window.zone_panel._zones.append(zst.Zone("doorway", 0.8, 1.0, 0.0, 0.3))
+        window.zone_panel._select_zone(0)
+        window.time_window_panel.ensure_loaded()
+        window.time_window_panel._mode = "window"
+        window.time_window_panel._t0 = 10.0
+        window.time_window_panel._t1 = 40.0
+
+    def test_panel_present_only_with_manifest(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert window.sessions_panel is None
+        else:
+            assert window.sessions_panel is not None
+        window.close()
+
+    def test_save_then_reopen_restores_state_exactly(self, qapp, tmp_path):
+        import session_store
+        sim_data = load_simulation_data()
+        if sim_data.is_demo:
+            return
+        w1 = MainWindow(sim_data)
+        w1._sessions_dir = str(tmp_path)
+        self._investigate(w1)
+        w1._on_session_save("Door study", "doorway 10-40 s")
+        infos = session_store.list_sessions(str(tmp_path))
+        assert len(infos) == 1
+        w1.close()
+        # a fresh window (as if the app was reopened) restores the session
+        w2 = MainWindow(load_simulation_data())
+        w2._sessions_dir = str(tmp_path)
+        w2._on_session_load(infos[0].path)
+        assert len(w2.evidence_dock.notebook) == 1
+        assert len(w2.zone_panel._zones) == 1
+        assert w2.zone_panel._zones[0].name == "doorway"
+        assert w2.time_window_panel._t0 == 10.0 and w2.time_window_panel._t1 == 40.0
+        w2.close()
+
+    def test_export_report_writes_html(self, qapp, tmp_path):
+        import session_store
+        window = MainWindow(load_simulation_data())
+        if window.sessions_panel is None:
+            window.close()
+            return
+        window._sessions_dir = str(tmp_path)
+        self._investigate(window)
+        window._on_session_save("Door study", "doorway growth")
+        path = session_store.list_sessions(str(tmp_path))[0].path
+        out = tmp_path / "report.html"
+        from report_builder import build_session_report, write_report
+        write_report(str(out), build_session_report(session_store.load_session(path)))
+        html = out.read_text()
+        assert "Door study" in html and "Peak 469 C" in html and "doorway" in html.lower()
+        window.close()
+
+    def test_empty_session_roundtrips(self, qapp, tmp_path):
+        import session_store
+        window = MainWindow(load_simulation_data())
+        if window.sessions_panel is None:
+            window.close()
+            return
+        window._sessions_dir = str(tmp_path)
+        window._on_session_save("Empty", "")
+        infos = session_store.list_sessions(str(tmp_path))
+        assert len(infos) == 1 and infos[0].n_notebook == 0 and infos[0].n_zones == 0
+        window._on_session_load(infos[0].path)  # must not raise
+        window.close()
+
+
+class TestMeasurementPanel:
+    """V4-M7: on-canvas measurement tools."""
+
+    def test_tools_readouts_and_session_roundtrip(self, qapp, tmp_path):
+        import measure as mz, session_store
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "measurement_panel", None) is None
+            window.close()
+            return
+        panel = window.measurement_panel
+        panel.ensure_loaded()
+        assert panel.scenario_combo.count() == len(sim_data.manifest)
+        panel._add(mz.Measurement("distance", [(0.0, 0.24), (1.0, 0.24)]))
+        panel._add(mz.Measurement("probe", [(0.9, 0.05)]))
+        panel._add(mz.Measurement("rect", [(0.8, 0.0), (1.0, 0.3)]))
+        assert len(panel._measurements) == 3
+        assert "m" in panel._measurements[0].readout  # distance in metres
+        assert "area" in panel._measurements[2].readout
+        # save/restore via a named session
+        window._sessions_dir = str(tmp_path)
+        window._on_session_save("Measure study", "ruler+probe+rect")
+        info = session_store.list_sessions(str(tmp_path))[0]
+        panel.set_measurements([])
+        assert len(panel._measurements) == 0
+        window._on_session_load(info.path)
+        assert len(panel._measurements) == 3
+        # report includes the measurements
+        from report_builder import build_session_report
+        html = build_session_report(session_store.load_session(info.path))
+        assert "Measurements" in html and "area" in html
+        window.close()
+
+    def test_interval_average_measurement(self, qapp):
+        import measure as mz
+        window = MainWindow(load_simulation_data())
+        if window.measurement_panel is None:
+            window.close()
+            return
+        panel = window.measurement_panel
+        panel.ensure_loaded()
+        panel.interval_check.setChecked(True)
+        panel.t0_spin.setValue(5.0)
+        panel.t1_spin.setValue(15.0)
+        panel._add(mz.Measurement("probe", [(0.9, 0.05)]))
+        assert panel._measurements[0].interval is True
+        assert "averaged" in panel._measurements[0].readout
+        window.close()
+
+
+class TestAdvancedComparePanel:
+    """V4-M8: advanced comparison workflows (temporal / spatial / physics)."""
+
+    def test_axes_populate_and_physics_is_honest(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or len(sim_data.manifest) < 2:
+            assert getattr(window, "advanced_compare_panel", None) is None
+            window.close()
+            return
+        panel = window.advanced_compare_panel
+        panel.ensure_loaded()
+        assert panel.combo_a.count() == len(sim_data.manifest)
+        total = (panel.temporal_list.count() + panel.spatial_list.count()
+                 + panel.physics_list.count())
+        assert total >= 1
+        for i in range(panel.physics_list.count()):
+            ins = panel.physics_list.item(i).data(QtCore.Qt.UserRole)
+            assert "not a proven cause" in ins.statement  # association-not-causation gate
+        # a comparison Insight saves to the Evidence Notebook
+        for lst in (panel.temporal_list, panel.spatial_list, panel.physics_list):
+            if lst.count():
+                lst.insight_saved.emit(lst.item(0).data(QtCore.Qt.UserRole))
+                break
+        assert len(window.evidence_dock.notebook) == 1
+        window.close()
+
+    def test_same_scenario_clears_axes(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if window.advanced_compare_panel is None:
+            window.close()
+            return
+        panel = window.advanced_compare_panel
+        panel.ensure_loaded()
+        panel.combo_b.setCurrentIndex(panel.combo_a.currentIndex())  # A == B
+        assert panel.temporal_list.count() == 0
+        assert panel.spatial_list.count() == 0
+        assert panel.physics_list.count() == 0
+        window.close()
+
+
+class TestExperimentsPanel:
+    """V4-M9: experiment management."""
+
+    def _make(self, panel, n=3):
+        import experiment as ex
+        from PyQt5 import QtCore
+        panel._current = ex.Experiment(name="Door study")
+        panel._sync_editor_from_model()
+        panel.desc_edit.setText("vary vents")
+        panel.tags_edit.setText("ventilation, doorway")
+        for i in range(n):
+            panel.scenario_list.item(i).setCheckState(QtCore.Qt.Checked)
+        panel._refresh_baseline_combo()
+        panel.baseline_combo.setCurrentIndex(1)  # first checked scenario
+
+    def test_build_check_and_persist(self, qapp, tmp_path):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "experiments_panel", None) is None
+            window.close()
+            return
+        panel = window.experiments_panel
+        panel._dir = str(tmp_path)
+        self._make(panel)
+        exp = panel._collect()
+        assert exp.name == "Door study" and len(exp.scenarios) == 3 and exp.baseline
+        panel._check()
+        assert panel._status["ready"] == 3 and panel._status["completion"] == 1.0
+        # save -> library lists it -> load restores structure
+        import experiment as ex
+        ex.save_experiment(str(tmp_path), exp)
+        panel._refresh_library()
+        assert panel.library.count() == 1
+        window.close()
+
+    def test_compare_handoff_sets_compare_panel_and_tab(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.experiments_panel is None:
+            window.close()
+            return
+        panel = window.experiments_panel
+        self._make(panel)
+        from PyQt5 import QtCore
+        panel.scenario_list.setCurrentRow(2)          # pick a different scenario as B
+        panel._compare()                              # emits compare_requested -> handler
+        acp = window.advanced_compare_panel
+        assert acp.combo_a.currentText() == panel._collect().baseline
+        assert acp.combo_b.currentText() == panel._folders[2]
+        assert window._active_page_key == "analysis"
+        window.close()
+
+    def test_export_summary_writes_html(self, qapp, tmp_path):
+        window = MainWindow(load_simulation_data())
+        if window.experiments_panel is None:
+            window.close()
+            return
+        panel = window.experiments_panel
+        self._make(panel)
+        panel._check()
+        from report_builder import build_experiment_report, write_report
+        out = tmp_path / "exp.html"
+        write_report(str(out), build_experiment_report(panel._collect().to_dict(), panel._status))
+        html = out.read_text()
+        assert "Door study" in html and "pre-computed cluster runs" in html
+        window.close()
+
+
+class TestPublicationExport:
+    """V4-M10: export presets + panel figure export + notebook report."""
+
+    def test_analysis_panels_export_figures(self, qapp, tmp_path):
+        import figure_export as fex
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        for name, canvas_attr in (("height_panel", "plot_canvas"),
+                                   ("zone_panel", "plot_canvas"),
+                                   ("linked_panel", "plots_canvas")):
+            panel = getattr(window, name)
+            panel.ensure_loaded()
+            assert hasattr(panel, "export_button")
+            out = tmp_path / f"{name}.png"
+            fex.save_figure(getattr(panel, canvas_attr).fig, str(out), "Slide (16:9)")
+            assert out.stat().st_size > 0
+        window.close()
+
+    def test_notebook_dock_exports_report(self, qapp, tmp_path):
+        from insight import Insight
+        from report_builder import build_notebook_report, write_report
+        window = MainWindow(load_simulation_data())
+        window.evidence_dock.add_insight(Insight(
+            "Peak 469 C.", category="query", quantity="TEMPERATURE", time_s=8.0, basis="max"))
+        out = tmp_path / "evidence.html"
+        write_report(str(out), build_notebook_report(
+            window.evidence_dock.notebook.to_list(), provenance="p"))
+        assert "Peak 469 C" in out.read_text()
+        assert callable(window.evidence_dock._export_report)
+        window.close()
+
+
+class TestQuantitiesPanel:
+    """V4-M11: quantity breadth + gating, non-breaking."""
+
+    def test_panel_lists_all_and_tools_exclude_gated(self, qapp):
+        import registry as reg
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "quantities_panel", None) is None
+            window.close()
+            return
+        panel = window.quantities_panel
+        assert panel.table.rowCount() == len(reg.QUANTITY_REGISTRY)
+        # gated (and derived) quantities never enter the data-driven tool combos
+        tool_qs = [k.quantity for _l, k in window._quantity_options()]
+        assert not any(reg.get_quantity(q).gated for q in tool_qs)
+        assert not any(reg.get_quantity(q).kind == "derived" for q in tool_qs)
+        window.close()
+
+    def test_derived_preview_computes_on_real_data(self, qapp):
+        import registry as reg
+        from PyQt5 import QtCore
+        window = MainWindow(load_simulation_data())
+        if window.quantities_panel is None:
+            window.close()
+            return
+        panel = window.quantities_panel
+        for r in range(panel.table.rowCount()):
+            name = panel.table.item(r, 0).data(QtCore.Qt.UserRole)
+            if reg.quantity_status(name) == "derived":
+                panel.table.selectRow(r)
+                break
+        assert panel.preview_button.isEnabled()
+        panel._preview_derived()
+        assert "preview on" in panel.detail.text() and "min" in panel.detail.text()
+        window.close()
+
+
+class TestSafeAssistantPanel:
+    """V4-M12: bounded, deterministic assistant."""
+
+    def test_action_produces_savable_output(self, qapp):
+        from insight import Insight
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "assistant_panel", None) is None
+            window.close()
+            return
+        window.evidence_dock.add_insight(Insight(
+            "Peak 469 C at t=8s.", category="query", quantity="TEMPERATURE",
+            time_s=8.0, basis="max"))
+        panel = window.assistant_panel
+        window._on_assistant_action("list_key_findings")
+        assert "Peak 469" in panel.output.toPlainText()
+        assert panel.save_button.isEnabled()
+        window.close()
+
+    def test_causal_query_is_refused_and_not_savable(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.assistant_panel is None:
+            window.close()
+            return
+        panel = window.assistant_panel
+        window._on_assistant_query("why is the doorway hotter?")
+        assert "cannot infer why" in panel.output.toPlainText()
+        assert not panel.save_button.isEnabled()   # a refusal cannot be saved
+        window.close()
+
+    def test_saving_assistant_output_records_no_cause_basis(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.assistant_panel is None:
+            window.close()
+            return
+        before = len(window.evidence_dock.notebook)
+        window._on_assistant_action("summarize_session")
+        window._on_assistant_save(window.assistant_panel.last_output)
+        assert len(window.evidence_dock.notebook) == before + 1
+        assert "no cause inferred" in window.evidence_dock.notebook.entries[-1].insight.basis
+        window.close()
+
+    def test_figure_caption_uses_computed_peak(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.assistant_panel is None:
+            window.close()
+            return
+        cap = window._assistant_figure_caption()
+        assert "peak" in cap and "°C" in cap  # a real computed value, descriptive only
         window.close()

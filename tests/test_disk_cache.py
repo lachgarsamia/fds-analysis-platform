@@ -121,3 +121,31 @@ class TestDiskCache:
         assert len(cache_files) == 2, f"expected 2 distinct cache files, got {cache_files}"
         assert any("TEMPERATURE" in f for f in cache_files)
         assert any("VELOCITY" in f for f in cache_files)
+
+    def test_disk_cache_filenames_differ_per_soot_plane(self, tmp_path):
+        """M2.2: two SOOT planes (same quantity, different plane_pos) must
+        land in distinct .npy files; a pre-M2.2 .sf key's filename is
+        unchanged (no plane_pos suffix)."""
+        cache_dir = str(tmp_path / "cache")
+        folder = str(tmp_path / "scenario")
+        os.makedirs(folder)
+        open(os.path.join(folder, "dummy.smv"), "w").close()
+        open(os.path.join(folder, "dummy.s3d"), "w").close()
+
+        side = SliceKey("SOOT DENSITY", 1, 0, 0.0)
+        doorway = SliceKey("SOOT DENSITY", 0, 0, 0.25)
+        temp = SliceKey("TEMPERATURE", 1, 0)
+
+        def fake_load(folder_path, key):
+            return np.full((2, 2, 2), 1.0, dtype=np.float32)
+
+        with patch("scenario_store.load_data", side_effect=fake_load):
+            store = ScenarioStore(folders=[folder], cache_size=3, cache_dir=cache_dir)
+            store.get(0, side)
+            store.get(0, doorway)
+            store.get(0, temp)
+
+        cache_files = sorted(os.listdir(cache_dir))
+        assert len(cache_files) == 3, f"expected 3 distinct cache files, got {cache_files}"
+        # The .sf temperature filename keeps its pre-M2.2 form (no _p suffix).
+        assert any(f.endswith("_off0.npy") for f in cache_files)

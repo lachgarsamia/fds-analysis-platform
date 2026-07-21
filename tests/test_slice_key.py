@@ -21,6 +21,20 @@ class TestSliceKey:
         assert DEFAULT_SLICE_KEY.direction == 1
         assert DEFAULT_SLICE_KEY.offset == 0
 
+    def test_plane_pos_defaults_none_and_leaves_existing_keys_unchanged(self):
+        # M2.2: the new plane_pos field must not perturb any pre-existing
+        # SliceKey's identity -- a 3-arg key equals a 4-arg key with the
+        # default, and hashes the same.
+        assert SliceKey("TEMPERATURE", 1, 0).plane_pos is None
+        assert SliceKey("TEMPERATURE", 1, 0) == SliceKey("TEMPERATURE", 1, 0, None)
+        assert hash(SliceKey("TEMPERATURE", 1, 0)) == hash(SliceKey("TEMPERATURE", 1, 0, None))
+
+    def test_soot_planes_at_different_positions_are_distinct_keys(self):
+        side = SliceKey("SOOT DENSITY", 1, 0, 0.0)
+        doorway = SliceKey("SOOT DENSITY", 0, 0, 0.25)
+        assert side != doorway
+        assert len({side, doorway}) == 2
+
     def test_available_slices_finds_temperature_and_velocity(self, fixtures_dir):
         """The fixture's .smv describes both quantities even though only
         TEMPERATURE's .sf data was kept on disk (see conftest.py) --

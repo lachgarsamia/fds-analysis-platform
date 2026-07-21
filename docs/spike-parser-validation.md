@@ -61,6 +61,12 @@ That exact-duplicate signature on the `fdsreader` side is the fingerprint of bou
 
 **Practical impact today: none observed.** The per-frame max-temperature agreement (§2) confirms this edge artifact doesn't reach any statistic currently computed or planned through Phase 3. It's worth a real fix before M2.6's probe/isotherm work (which reads coordinates near domain edges) or before treating `combineSlices` as trustworthy for arbitrary mesh layouts.
 
+### 3.1 Resolution (V2-M0.1, 2026-07): adjudicated in favour of our parser
+
+The open question in §3 -- is `42.58 °C` (our value at x=1.0) real, or is `fdsreader`'s duplicated `82.41 °C` correct? -- was resolved without Smokeview, using `fdsreader`'s **own per-mesh subslice** (its independent raw `.sf` decode, *before* the `to_global()` stitching that produced the duplicate). For the last mesh (x=0.75-1.0), at frame 329, its final three x-nodes read `[135.05, 82.41, 42.58]` -- i.e. `fdsreader`'s raw decode of the x=1.0 node is **42.58 °C, bit-for-bit our `combineSlices` value**.
+
+So two independent decoders (ours, and `fdsreader` at the per-mesh level) agree the true FDS value at the outer boundary node is 42.58 °C; only `fdsreader`'s `to_global()` differs, duplicating the x=0.99 value into the edge. **Our parser is correct; the discrepancy was `fdsreader`'s global-stitcher boundary padding** -- the same general-case `to_global()` weakness independently found in the M2.1 `.s3d` spike (`docs/spike-s3d-v2.md`). No fix to `combineSlices` was needed. Pinned as `tests/test_slice_parser.py::TestOuterEdgeColumn`.
+
 ## 4. Smokeview convention review — not performed
 
 Smokeview is not installed in this development environment (`command -v smokeview` → not found), and no display/GUI tooling is available in this sandboxed session to install and drive it interactively. **This task could not be completed as specified.** No visual color-band/ramp convention was observed firsthand; nothing here should be read as a Smokeview-verified recommendation.

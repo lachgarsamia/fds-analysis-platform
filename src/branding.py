@@ -18,7 +18,20 @@ def build_logo_widget(height: int = 28) -> QtWidgets.QWidget:
     if os.path.exists(path):
         try:
             from PyQt5 import QtSvg
-            widget = QtSvg.QSvgWidget(path)
+
+            class _FixedSizeSvgWidget(QtSvg.QSvgWidget):
+                """QSvgWidget.sizeHint() always reports the SVG's own
+                intrinsic viewBox size, ignoring setFixedSize() -- and
+                QMainWindow's menu bar sizes its row from the corner
+                widget's sizeHint(), not its constrained size. Left
+                un-overridden, a 24px-tall logo silently forces a
+                136px-tall menu bar (the SVG's native height) with a
+                huge dead gap above every page."""
+
+                def sizeHint(self) -> QtCore.QSize:
+                    return self.size()
+
+            widget = _FixedSizeSvgWidget(path)
             widget.setFixedSize(round(height * _ASPECT), height)
             widget.setAccessibleName("Forschungszentrum Jülich logo")
             return widget

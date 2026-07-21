@@ -99,6 +99,53 @@ def scan_scenarios(sim_root: str) -> list:
     return entries
 
 
+def _has_smv(directory: str) -> bool:
+    import glob
+    return bool(glob.glob(os.path.join(directory, '*.smv')))
+
+
+def scan_generic_study(root: str) -> list:
+    """Scan an arbitrary FDS-output directory that is NOT the candle
+    factorial (V2 roadmap M2.5 -- multi-study). Two layouts are handled,
+    both producing ScenarioEntry objects with the four factor indices
+    defaulted to 0 (a generic study has no candle/door/vent factor axes):
+
+      - `root` itself contains `.smv` output -> a single-scenario study
+        (e.g. one FDS case). The degenerate manifest the roadmap requires
+        to be first-class, not an error.
+      - `root` contains subfolders that each have `.smv` output -> a
+        multi-scenario study identified only by folder name.
+
+    Returns [] if no FDS output is found anywhere (caller reports that).
+    """
+    if _has_smv(root):
+        return [ScenarioEntry(
+            case_index=0, folder=os.path.basename(os.path.normpath(root)),
+            path=os.path.abspath(root), candles=0, door=0, vod=0, voc=0)]
+
+    entries = []
+    for folder in list_scenario_folders(root):
+        if _has_smv(folder):
+            entries.append(ScenarioEntry(
+                case_index=len(entries),
+                folder=os.path.basename(os.path.normpath(folder)),
+                path=os.path.abspath(folder), candles=0, door=0, vod=0, voc=0))
+    return entries
+
+
+def scan_study(root: str) -> tuple:
+    """Scan `root` and return (entries, is_factorial) for the study there
+    (V2 roadmap M2.5). A candle factorial (folders matching
+    c<n>_d<n>_vod<n>_voc<n>) is loaded via scan_scenarios and reported as
+    factorial; anything else falls back to scan_generic_study and is
+    reported as non-factorial (its candle/door/vent controls are hidden
+    by the UI)."""
+    factorial = scan_scenarios(root)
+    if factorial:
+        return factorial, True
+    return scan_generic_study(root), False
+
+
 def save_manifest(entries: list, manifest_path: str):
     payload = {
         "version": 1,

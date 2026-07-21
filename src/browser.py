@@ -29,6 +29,9 @@ class SummaryTableModel(QtCore.QAbstractTableModel):
         ("mean_upper_temp_c", "Mean upper T (C)"),
         ("peak_hrr_kw", "Peak HRR (kW)"),
         ("total_energy_kj", "Energy (kJ)"),
+        ("growth_alpha_kw_s2", "α fit (kW/s²)"),
+        ("layer_min_height_m", "Min layer height (m)"),
+        ("time_to_untenable_s", "Time untenable (s)"),
     )
 
     def __init__(self, summaries: list, parent=None):
@@ -71,6 +74,10 @@ class SummaryTableModel(QtCore.QAbstractTableModel):
             return "n/a"
         if key in FACTOR_LABELS:
             return FACTOR_LABELS[key].get(value, str(value))
+        if key == "growth_alpha_kw_s2":
+            # Alpha values for these small fires are tiny (~1e-5 kW/s²);
+            # fixed .1f would show a useless "0.0".
+            return f"{value:.2g}"
         if isinstance(value, float):
             return f"{value:.1f}"
         return str(value)
@@ -124,6 +131,7 @@ class ExperimentBrowserDock(QtWidgets.QDockWidget):
     open_grid_requested = QtCore.pyqtSignal(list)
     open_ensemble_requested = QtCore.pyqtSignal(list)
     export_summaries_requested = QtCore.pyqtSignal()
+    export_report_requested = QtCore.pyqtSignal(list)  # M3.3: selected case_indices (1=scenario, 2=A-vs-B)
     open_model_eval_requested = QtCore.pyqtSignal(list)  # M3.2.5: selected case_indices
     # Emitted once, the first time a row is selected while summary_texts is
     # still empty -- MainWindow's cue to start the background auto-summary
@@ -215,6 +223,14 @@ class ExperimentBrowserDock(QtWidgets.QDockWidget):
         button_row.addWidget(self.open_ensemble_button)
         layout.addLayout(button_row)
 
+        # M3.3: one scenario -> per-scenario report; two -> A-vs-B report.
+        self.report_button = QtWidgets.QPushButton("Generate report…")
+        self.report_button.setToolTip(
+            "Build a shareable HTML report: select one scenario for a single "
+            "report, or two for an A-vs-B comparison")
+        self.report_button.clicked.connect(lambda: self.export_report_requested.emit(self.selected_case_indices()))
+        layout.addWidget(self.report_button)
+
         if self._has_predictions:
             self.open_model_eval_button = QtWidgets.QPushButton("View model prediction")
             self.open_model_eval_button.setToolTip(
@@ -237,6 +253,22 @@ class ExperimentBrowserDock(QtWidgets.QDockWidget):
         self.search_edit.textChanged.connect(self.proxy.set_text_filter)
         self.table.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.setWidget(root)
+
+    def get_filter_state(self) -> dict:
+        """V4-M6: the current text + per-factor filter selections, for
+        saving in a named session."""
+        return {"text": self.search_edit.text(),
+                "factors": {f: c.currentData() for f, c in self.factor_combos.items()}}
+
+    def set_filter_state(self, state: dict) -> None:
+        """Restore a filter state produced by get_filter_state (missing or
+        unknown values are simply skipped -> "All")."""
+        self.search_edit.setText((state or {}).get("text", ""))
+        factors = (state or {}).get("factors", {}) or {}
+        for factor, combo in self.factor_combos.items():
+            value = factors.get(factor)
+            idx = combo.findData(value)
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
 
     def _on_selection_changed(self, _selected, _deselected):
         rows = sorted({idx.row() for idx in self.table.selectionModel().selectedRows()})
