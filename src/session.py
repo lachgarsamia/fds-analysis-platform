@@ -37,7 +37,7 @@ def cell_to_dict(cell) -> dict:
 
 def build_session_dict(layout_name: str, cells: list, active_index: int, time_index: int,
                         link_clim: bool, colormap: str, isotherms_enabled: bool,
-                        notebook: list | None = None) -> dict:
+                        notebook: list | None = None, zones: list | None = None) -> dict:
     return {
         "version": SESSION_VERSION,
         "layout": layout_name,
@@ -48,6 +48,7 @@ def build_session_dict(layout_name: str, cells: list, active_index: int, time_in
         "colormap": colormap,
         "isotherms_enabled": isotherms_enabled,
         "notebook": notebook or [],  # V4-M2 Evidence Notebook (serialized entries)
+        "zones": zones or [],        # V4-M4 named zones (physical rectangles)
     }
 
 

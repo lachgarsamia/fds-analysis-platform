@@ -2376,3 +2376,50 @@ class TestLinkedInspectionPanel:
         panel.insights.insight_saved.emit(panel.insights.item(0).data(QtCore.Qt.UserRole))
         assert len(window.evidence_dock.notebook) == 1
         window.close()
+
+
+class TestZonePanel:
+    """V4-M4: named region / zone statistics."""
+
+    def test_zone_bundle_stats_and_insights(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "zone_panel", None) is None
+            window.close()
+            return
+        import zone_stats as zst
+        panel = window.zone_panel
+        panel.ensure_loaded()
+        panel._zones.append(zst.Zone("doorway", 0.8, 1.0, 0.0, 0.3))
+        panel._select_zone(0)
+        assert "doorway" in panel.stats_label.text()
+        assert "peak" in panel.stats_label.text()
+        assert panel.insights.count() >= 1
+        # cross-scenario comparison fills a row per scenario
+        panel._compare_across_scenarios()
+        assert panel.compare_table.rowCount() == len(sim_data.manifest)
+        # a zone finding saves to the Evidence Notebook (M2 wiring)
+        panel.insights.insight_saved.emit(panel.insights.item(0).data(QtCore.Qt.UserRole))
+        assert len(window.evidence_dock.notebook) == 1
+        window.close()
+
+    def test_zones_survive_session_roundtrip(self, qapp, tmp_path):
+        import zone_stats as zst
+        from session import build_session_dict, write_session, read_session
+        window = MainWindow(load_simulation_data())
+        if window.zone_panel is None:
+            window.close()
+            return
+        window.zone_panel.ensure_loaded()
+        window.zone_panel._zones.append(zst.Zone("window", 0.1, 0.3, 0.2, 0.5))
+        p = str(tmp_path / "s.json")
+        cells = window.view_grid.visible_cells()
+        write_session(p, build_session_dict(
+            window.view_grid.layout_name, cells, 0, 0, False, window.current_colormap,
+            False, zones=window.zone_panel.get_zones()))
+        window.zone_panel.set_zones([])
+        window._apply_session(read_session(p))
+        assert len(window.zone_panel._zones) == 1
+        assert window.zone_panel._zones[0].name == "window"
+        window.close()

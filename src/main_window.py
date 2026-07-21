@@ -66,6 +66,7 @@ from attention_panel import AttentionPanel
 from cause_panel import CausePanel
 from height_panel import HeightPanel
 from linked_panel import LinkedInspectionPanel
+from zone_panel import ZonePanel
 from evidence_notebook_panel import EvidenceNotebookDock
 from evidence_notebook import EvidenceNotebook
 from diff_analysis import DifferenceOverTimeDialog
@@ -697,6 +698,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.linked_panel = LinkedInspectionPanel(
                 self.controller.store, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
+            # Named region / zone statistics (V4-M4): persistent zones with
+            # a full stats bundle, compared across scenarios, session-saved.
+            self.zone_panel = ZonePanel(
+                self.controller.store, self.sim_data.manifest,
+                self.sim_data.timesteps_per_second)
             # Factor-effect maps (M3.1) need the candle factorial's factor
             # axes; a generic guest study has none, so it's factorial-only.
             self.factor_effects_panel = (
@@ -716,6 +722,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.cause_panel = None
             self.height_panel = None
             self.linked_panel = None
+            self.zone_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
         analysis_content = self.analytics_panel.widget() if self.analytics_panel is not None else None
@@ -748,7 +755,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 attention_content=self.attention_panel,
                 cause_content=self.cause_panel,
                 height_content=self.height_panel,
-                linked_content=self.linked_panel),
+                linked_content=self.linked_panel,
+                zone_content=self.zone_panel),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
             "about": AboutPage(),
@@ -804,7 +812,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.evidence_dock.hide()
         for panel_attr, list_attr in (
             ("inspector", "story_list"), ("height_panel", "insights"),
-            ("linked_panel", "insights"),
+            ("linked_panel", "insights"), ("zone_panel", "insights"),
             ("query_panel", "results"), ("semantic_diff_panel", "list"),
             ("cause_panel", "chain"),
         ):
@@ -2727,7 +2735,8 @@ class MainWindow(QtWidgets.QMainWindow):
             active_index, self.time_controller.index,
             getattr(self, "_link_clim", False), self.current_colormap,
             self.isotherms_action.isChecked(),
-            notebook=self.evidence_dock.notebook.to_list())
+            notebook=self.evidence_dock.notebook.to_list(),
+            zones=self.zone_panel.get_zones() if self.zone_panel is not None else [])
         try:
             write_session(path, session)
         except OSError as e:
@@ -2799,6 +2808,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.evidence_dock.load_notebook(EvidenceNotebook.from_list(session.get("notebook")))
         if not self.evidence_dock.notebook.is_empty():
             self.evidence_dock.show()
+
+        # V4-M4: restore named zones (absent in older sessions -> none).
+        if self.zone_panel is not None:
+            self.zone_panel.set_zones(session.get("zones", []))
 
         time_index = session.get("time_index", 0)
         self.time_controller.seek(min(max(time_index, 0), self._current_n_frames - 1))

@@ -742,3 +742,49 @@ class TestLinkedInspection:
         d[1, 0, 0] = 12.0
         d[2, 3, 4] = 7.0
         np.testing.assert_allclose(lki.peak_over_time(d), [5.0, 12.0, 7.0])
+
+
+import zone_stats as zst  # noqa: E402
+
+
+class TestZoneStats:
+    def test_zone_serialization_and_area(self):
+        z = zst.Zone("doorway", 0.8, 1.0, 0.0, 0.3)
+        assert zst.Zone.from_dict(z.to_dict()) == z
+        assert z.area() == pytest.approx(0.2 * 0.3)
+
+    def test_zone_indices_map_both_corners(self):
+        # extent (0,1,0,1), 2x2 grid; whole-field zone -> all cells.
+        r0, r1, c0, c1 = zst.zone_indices((0.0, 1.0, 0.0, 1.0), (2, 2),
+                                          zst.Zone("z", 0.0, 1.0, 0.0, 1.0))
+        assert (r0, r1, c0, c1) == (0, 1, 0, 1)
+
+    def test_zone_bundle_hand_computed(self):
+        # 4 frames, 2x2, fps=2, threshold=50, ambient=20; uniform per frame.
+        data = np.zeros((4, 2, 2), dtype=np.float32)
+        data[0] = 10; data[1] = 100; data[2] = 100; data[3] = 10
+        zone = zst.Zone("all", 0.0, 1.0, 0.0, 1.0)
+        b = zst.zone_bundle(data, (0.0, 1.0, 0.0, 1.0), zone, fps=2,
+                            threshold=50.0, ambient=20.0)
+        assert b["n_cells"] == 4
+        assert b["mean_temperature"] == pytest.approx(55.0)   # 880/16
+        assert b["max_temperature"] == pytest.approx(100.0)
+        assert b["time_to_threshold"] == pytest.approx(0.5)   # first >50 at frame 1 / fps
+        assert b["hazard_duration"] == pytest.approx(1.0)     # 2 frames over / fps
+        assert b["peak_affected_fraction"] == pytest.approx(1.0)
+        assert b["thermal_dose"] == pytest.approx(80.0)       # sum(clip(mean-20))/fps
+        assert b["energy_proxy"] == pytest.approx(80.0)       # dose * area(=1)
+        np.testing.assert_allclose(b["dose_curve"], [0.0, 40.0, 80.0, 80.0])
+
+    def test_time_to_threshold_none_when_never_reached(self):
+        data = np.full((3, 2, 2), 30.0, dtype=np.float32)
+        b = zst.zone_bundle(data, (0.0, 1.0, 0.0, 1.0),
+                            zst.Zone("all", 0.0, 1.0, 0.0, 1.0), 2, 50.0, 20.0)
+        assert b["time_to_threshold"] is None
+        assert b["hazard_duration"] == 0.0
+
+    def test_smoke_accumulation_is_time_integral_of_mean(self):
+        soot = np.full((4, 2, 2), 2.0, dtype=np.float32)
+        acc = zst.smoke_accumulation(soot, (0.0, 1.0, 0.0, 1.0),
+                                     zst.Zone("all", 0.0, 1.0, 0.0, 1.0), fps=2)
+        assert acc == pytest.approx(4.0)  # mean 2 per frame * 4 frames / fps
