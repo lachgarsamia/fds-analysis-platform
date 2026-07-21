@@ -35,6 +35,7 @@ SAFE_ACTIONS = (
     "report_outline",
     "compare_intervals",
     "figure_caption",
+    "search_scenarios",
 )
 
 _CAUSAL_WORDS = ("why", "cause", "caused", "because", "reason for", "explain why",
@@ -47,7 +48,20 @@ _INTENT_KEYWORDS = {
     "compare_intervals": ("compare interval", "compare the interval", "before and after",
                           "compare intervals", "interval comparison"),
     "figure_caption": ("caption", "figure caption", "describe the view"),
+    "search_scenarios": ("scenarios where", "find scenarios", "show scenarios",
+                         "which scenarios", "scenarios with", "list scenarios"),
 }
+
+# Free-text scenario search maps a phrase to one computed response + a
+# comparator + a number; it filters the existing scenarios, never simulates.
+_SEARCH_RESPONSE = {
+    "layer_min_height_m": ("layer", "smoke", "smoke layer"),
+    "max_temp_c": ("temperature", "temp", "hot", "°c", "degrees", "celsius"),
+    "peak_hrr_kw": ("hrr", "heat release"),
+    "total_energy_kj": ("energy",),
+}
+_LESS = ("below", "less", "under", "smaller", "lower", "<")
+_MORE = ("above", "exceed", "over", "greater", "more", "higher", ">")
 
 
 def interpret_request(text: str) -> str:
@@ -150,6 +164,43 @@ def compare_intervals(stats_a: dict, stats_b: dict, label_a: str, label_b: str,
         f"mean {stats_b.get('mean', 0):.1f}{u}, peak {stats_b.get('peak', 0):.1f}{u}.",
         f"  {label_b}'s mean is {abs(d_mean):.1f}{u} {direction} than {label_a}'s.",
     ]
+    return _with_disclaimer("\n".join(lines))
+
+
+def _find_number(text: str):
+    import re
+    m = re.search(r"-?\d+(?:\.\d+)?", text)
+    return float(m.group()) if m else None
+
+
+def search_scenarios(table: list, text: str) -> str:
+    """Deterministic experiment search over the study table: parse
+    "<response> <comparator> <number>" and list the matching existing
+    scenarios with their computed value. Never invents or simulates."""
+    import study_analytics as sa
+    t = (text or "").lower()
+    response = next((k for k, words in _SEARCH_RESPONSE.items()
+                     if any(w in t for w in words)), None)
+    value = _find_number(t)
+    op = "lt" if any(w in t for w in _LESS) else "gt" if any(w in t for w in _MORE) else None
+    if response is None or value is None or op is None:
+        return _with_disclaimer(
+            "I could not read a search. Try e.g. \"scenarios where smoke layer "
+            "below 2 m\" or \"scenarios where temperature exceeds 400\".")
+    label, unit = sa.RESPONSE_LABEL[response], sa.RESPONSE_UNIT[response]
+    matches = []
+    for row in table:
+        v = row["responses"].get(response)
+        if v is None or (isinstance(v, float) and v != v):   # skip NaN/None
+            continue
+        if (op == "lt" and v < value) or (op == "gt" and v > value):
+            matches.append((row["folder"], v))
+    comparator = "below" if op == "lt" else "above"
+    head = (f"Scenarios where {label} is {comparator} {value:g} {unit} "
+            f"({len(matches)} of {len(table)}):")
+    if not matches:
+        return _with_disclaimer(head + "\n  (none)")
+    lines = [head] + [f"  · {folder}: {v:.1f} {unit}" for folder, v in matches]
     return _with_disclaimer("\n".join(lines))
 
 

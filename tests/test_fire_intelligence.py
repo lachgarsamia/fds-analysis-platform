@@ -1292,3 +1292,50 @@ class TestHazardSpaces:
         data[2, 0, 0] = 520.0                 # only the last frame crosses 500
         indicated, first = hzs.flashover_indicator(data)
         assert first == 2 and bool(indicated[2]) and not bool(indicated[0])
+
+
+import ensemble_spread as ens  # noqa: E402
+
+
+class TestEnsembleSpread:
+    def test_per_frame_metrics(self):
+        data = np.array([[[20.0, 400.0], [400.0, 20.0]]], dtype=np.float32)  # 1 frame
+        assert ens.per_frame_series(data, None, "spatial_max")[0] == 400.0
+        assert ens.per_frame_series(data, None, "spatial_mean")[0] == pytest.approx(210.0)
+        assert ens.per_frame_series(data, None, "hot_area_fraction", 100.0)[0] == pytest.approx(0.5)
+
+    def test_envelope_min_mean_max(self):
+        lo, mean, hi = ens.envelope([np.array([1.0, 2.0, 3.0]),
+                                     np.array([3.0, 2.0, 1.0]),
+                                     np.array([2.0, 2.0, 2.0])])
+        np.testing.assert_allclose(lo, [1, 2, 1])
+        np.testing.assert_allclose(mean, [2, 2, 2])
+        np.testing.assert_allclose(hi, [3, 2, 3])
+
+    def test_envelope_truncates_to_shortest(self):
+        lo, mean, hi = ens.envelope([np.array([1.0, 2.0, 3.0]), np.array([5.0, 5.0])])
+        assert len(mean) == 2
+
+
+class TestAssistantSearch:
+    def _table(self):
+        rows = [_FakeSummary(0, "a", 0, 0, 0, 0, max_temp_c=300.0, layer_min_height_m=1.5),
+                _FakeSummary(1, "b", 0, 0, 1, 0, max_temp_c=500.0, layer_min_height_m=0.1)]
+        return sam.build_table(rows)
+
+    def test_search_greater_than(self):
+        out = asst.search_scenarios(self._table(), "scenarios where temperature exceeds 400")
+        assert "b:" in out and "a:" not in out.split("\n", 1)[1]  # only b > 400
+        assert asst.DISCLAIMER in out
+
+    def test_search_less_than(self):
+        out = asst.search_scenarios(self._table(), "scenarios where smoke layer below 1.0 m")
+        assert "b:" in out and "1 of 2" in out
+
+    def test_search_unparseable_is_helpful_not_a_claim(self):
+        out = asst.search_scenarios(self._table(), "scenarios where something happens")
+        assert "could not read a search" in out and asst.DISCLAIMER in out
+
+    def test_interpret_routes_search_and_still_refuses_causal(self):
+        assert asst.interpret_request("show scenarios where smoke below 2 m") == "search_scenarios"
+        assert asst.interpret_request("why are some scenarios hotter") == "refuse"

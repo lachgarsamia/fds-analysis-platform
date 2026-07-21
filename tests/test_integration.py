@@ -3031,3 +3031,57 @@ class TestWorkspaceAndCommunication:
         nv._on_item(top, 0)                                # activating publishes to the bus
         assert window.selection_bus.current.time_s == ev.primary_time()
         window.close()
+
+
+class TestPhase5Communication:
+    """V5-M5: ensemble spread, assistant search, publication bundle."""
+
+    def test_ensemble_envelope_and_bus_sync(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        import numpy as np
+        panel = window.ensemble_panel
+        panel.ensure_loaded()
+        lo, mean, hi = panel._metric_data("spatial_max")["env"]
+        assert len(mean) > 0 and (lo <= mean).all() and (mean <= hi).all()
+        window.selection_bus.update(origin=None, scenario=5)
+        assert panel.scenario_combo.currentData() == 5
+        window.close()
+
+    def test_assistant_search_routes_and_refuses_causal(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        window._on_assistant_query("show scenarios where temperature exceeds 400")
+        assert "Scenarios where" in window.assistant_panel.output.toPlainText()
+        window._on_assistant_query("why is it hotter")
+        assert "cannot infer why" in window.assistant_panel.output.toPlainText()
+        window.close()
+
+    def test_publication_bundle_writes_figures_and_manifest(self, qapp, tmp_path):
+        from figure_export import save_figure
+        from report_builder import build_publication_manifest, write_report
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window.height_panel.ensure_loaded()
+        figs = []
+        for attr, canv, name, cap in window._BUNDLE_FIGURES:
+            p = getattr(window, attr, None)
+            c = getattr(p, canv, None) if p else None
+            if c is not None and getattr(p, "_loaded", False):
+                out = tmp_path / f"{name}.png"
+                save_figure(c.fig, str(out), "Journal — single column")
+                figs.append((f"{name}.png", cap))
+        assert len(figs) >= 1
+        man = tmp_path / "manifest.html"
+        write_report(str(man), build_publication_manifest(figs, [], {"Scenarios": "24"}))
+        assert "Publication bundle" in man.read_text() and figs[0][0] in man.read_text()
+        window.close()

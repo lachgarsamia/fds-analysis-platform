@@ -85,6 +85,10 @@ from hazard_panel import HazardPanel
 from dashboard_panel import DashboardPanel
 from spacetime_panel import SpaceTimePanel
 from narrative_panel import NarrativePanel
+from ensemble_panel import EnsemblePanel
+from figure_export import save_figure
+from report_builder import build_publication_manifest
+import study_analytics as study_analytics_mod
 from sessions_panel import SessionsPanel
 import session_store
 from evidence_notebook_panel import EvidenceNotebookDock
@@ -482,6 +486,66 @@ class MainWindow(QtWidgets.QMainWindow):
         export_figure_action.triggered.connect(self._export_publication_figure)
         export_menu.addAction(export_figure_action)
 
+        bundle_action = QtWidgets.QAction("Prepare Publication Bundle…", self)
+        bundle_action.setToolTip(
+            "Export journal-styled figures from the loaded analysis panels plus a "
+            "manifest of captions, metadata, and the Evidence Notebook's findings")
+        bundle_action.triggered.connect(self._prepare_publication_bundle)
+        export_menu.addAction(bundle_action)
+
+    # Panels whose primary plot is worth including in a publication bundle
+    # (attr, canvas attr, figure name, caption).
+    _BUNDLE_FIGURES = [
+        ("height_panel", "plot_canvas", "height_profile", "Vertical temperature profile and layer/plume/ceiling over time."),
+        ("zone_panel", "plot_canvas", "zone_stats", "Named-zone temperature and thermal-dose over time."),
+        ("linked_panel", "plots_canvas", "linked_inspection", "Linked temperature, HRR, smoke layer, and speed at one moment."),
+        ("hazard_panel", "timeline_canvas", "hazard_timeline", "Hazard-class fractions over time (temperature-only partial screen)."),
+        ("study_panel", "parallel_canvas", "study_parallel", "Parameter-vs-response parallel coordinates across the factorial."),
+        ("sensitivity_panel", "surface_canvas", "sensitivity_surface", "Estimated response surface (interpolated from existing scenarios)."),
+        ("ensemble_panel", "canvas", "ensemble_spread", "Parametric ensemble spread across the existing scenarios."),
+    ]
+
+    def _prepare_publication_bundle(self) -> None:
+        """One-click publication bundle (V5-M5): journal-styled figures from
+        the loaded analysis panels + a manifest of captions, metadata, and the
+        Evidence Notebook's findings."""
+        if not self.sim_data.manifest:
+            QtWidgets.QMessageBox.information(self, "Publication bundle",
+                                              "No experiment data available (demo mode).")
+            return
+        directory = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Choose an output folder for the publication bundle")
+        if not directory:
+            return
+        figures = []
+        for attr, canvas_attr, name, caption in self._BUNDLE_FIGURES:
+            panel = getattr(self, attr, None)
+            canvas = getattr(panel, canvas_attr, None) if panel is not None else None
+            if canvas is None or not getattr(panel, "_loaded", False):
+                continue
+            path = os.path.join(directory, name + ".png")
+            try:
+                save_figure(canvas.fig, path, "Journal — single column")
+                figures.append((name + ".png", caption))
+            except OSError:
+                continue
+        sel = self.selection_bus.current if getattr(self, "selection_bus", None) else None
+        metadata = {
+            "Data run": session_store.data_fingerprint(self.sim_data.manifest),
+            "Scenarios": str(len(self.sim_data.manifest)),
+            "Prepared": session_store.now_iso(),
+            "Selected scenario": (str(sel.scenario) if sel and sel.scenario is not None else ""),
+        }
+        manifest = build_publication_manifest(
+            figures, self.evidence_dock.notebook.to_list(), metadata)
+        try:
+            write_report(os.path.join(directory, "manifest.html"), manifest)
+        except OSError as e:
+            QtWidgets.QMessageBox.warning(self, "Publication bundle", f"Could not write: {e}")
+            return
+        self.statusBar().showMessage(
+            f"Publication bundle: {len(figures)} figure(s) + manifest in {directory}", 5000)
+
     def _build_experiment_browser(self):
         """M2.5: docked sortable/filterable index of all real scenarios.
 
@@ -768,6 +832,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.narrative_panel = NarrativePanel(
                 self.controller.store, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
+            # Ensemble spread (V5-M5): min/mean/max envelopes across scenarios.
+            self.ensemble_panel = EnsemblePanel(
+                self.controller.store, self.sim_data.manifest,
+                self.sim_data.timesteps_per_second)
             # Named analysis sessions (V4-M6): save/browse/reload/export the
             # whole investigation. Pure UI; main_window collects/applies state.
             self.sessions_panel = SessionsPanel()
@@ -815,6 +883,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.dashboard_panel = None
             self.spacetime_panel = None
             self.narrative_panel = None
+            self.ensemble_panel = None
             self.sessions_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
@@ -859,6 +928,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 dashboard_content=self.dashboard_panel,
                 spacetime_content=self.spacetime_panel,
                 narrative_content=self.narrative_panel,
+                ensemble_content=self.ensemble_panel,
                 experiments_content=self.experiments_panel,
                 quantities_content=self.quantities_panel,
                 assistant_content=self.assistant_panel,
@@ -924,7 +994,7 @@ class MainWindow(QtWidgets.QMainWindow):
                      "factor_effects_panel", "tenability_panel", "timeseries_panel",
                      "energy_panel", "forecasting_panel", "quantities_panel",
                      "advanced_compare_panel", "study_panel", "hazard_panel",
-                     "spacetime_panel", "narrative_panel"):
+                     "spacetime_panel", "narrative_panel", "ensemble_panel"):
             panel = getattr(self, attr, None)
             if panel is not None:
                 bind_to_bus(panel, self.selection_bus, fps)
@@ -1072,6 +1142,16 @@ class MainWindow(QtWidgets.QMainWindow):
         action = assistant_mod.interpret_request(text)
         if action == "refuse":
             self.assistant_panel.show_result(assistant_mod.REFUSAL, savable=False)
+        elif action == "search_scenarios":
+            # Assistant++ (V5-M5): experiment search over the study table.
+            summaries = getattr(self, "_scenario_summaries", None)
+            if not summaries:
+                self.assistant_panel.show_result(
+                    "Scenario search needs the factorial's computed summaries.",
+                    savable=False)
+                return
+            table = study_analytics_mod.build_table(summaries)
+            self.assistant_panel.show_result(assistant_mod.search_scenarios(table, text))
         else:
             self.assistant_panel.show_result(self._run_assistant(action))
 
