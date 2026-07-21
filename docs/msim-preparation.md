@@ -84,3 +84,21 @@ the corresponding `&SLCF` (see §3) — no registry change is then needed.
 fields ship immediately — `TEMPERATURE RISE` (T − ambient) and
 `DYNAMIC PRESSURE` (½ρ|v|²) — implemented in `src/derived_quantities.py`
 and previewable in the Quantities panel. These need no re-run.
+
+## 8. Prepared code hooks (V5 Phase 7 — V6 preparation)
+
+The V5 Phase 7 pass added the *interface seams* so each gated capability drops in
+without re-deriving anything (full plan: `ROADMAP-V6.md`). No gated feature is
+implemented; each seam raises a clear, honest error until its data exists.
+
+| Gated capability | Data prerequisite | Prepared seam in code |
+|---|---|---|
+| 3D streamlines / quiver / volume | U/W-VELOCITY (§3) | `registry` U/W-VELOCITY (gated); `quantity_provider.get_vector()` stub (`GatedQuantityError`) |
+| Multi-plane XY/XZ/YZ cross-sections | slices on more planes | `spacetime_panel` plane-selector comment; `SliceKey(direction, offset)` already addresses planes |
+| Full FED / CO / smoke toxicity | CO output (`CO_YIELD` in `&REAC`, §3) | `registry` CO (gated); `tenability` `fed_gas_dose` comment; `hazard_spaces.BASIS` states the partial screen |
+| Validation (sim vs experiment) | experimental sensor data | `validation.py` stub interface (`ValidationGate`) |
+
+`QuantityProvider.get()` now raises `GatedQuantityError(gate_reason)` for any
+gated quantity, so a mistaken request fails loudly instead of silently reading
+absent data. When M-SIM lands, the gated flags flip and these seams become plain
+reads — no rearchitecting.

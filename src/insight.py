@@ -43,6 +43,18 @@ class Insight:
         t = self.primary_time()
         return None if t is None else int(round(t * max(1, fps)))
 
+    def to_selection(self, scenario=None):
+        """This Insight as a Selection (V5-M1): an instant time_s maps to
+        `time_s`, an interval to `interval`; location/region/quantity carry
+        across. `scenario` is supplied by the caller (Insights don't hold
+        one). Imported lazily so this module stays Qt-free to import."""
+        from selection import Selection
+        time_s = self.time_s if isinstance(self.time_s, (int, float)) else None
+        interval = tuple(self.time_s) if isinstance(self.time_s, tuple) else None
+        return Selection(scenario=scenario, quantity=self.quantity or "TEMPERATURE",
+                         point=self.location, region=self.region,
+                         time_s=time_s, interval=interval)
+
 
 # ------------------------------------------------------------------ widget
 from PyQt5 import QtCore, QtWidgets  # noqa: E402

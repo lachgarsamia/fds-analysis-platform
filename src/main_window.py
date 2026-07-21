@@ -76,6 +76,20 @@ from quantities_panel import QuantitiesPanel
 from assistant_panel import AssistantPanel
 import assistant as assistant_mod
 import experiment as experiment_mod
+from selection import Selection, SelectionBus
+from quantity_provider import QuantityProvider
+from analysis_panel_base import bind_to_bus
+from study_panel import StudyPanel
+from sensitivity_panel import SensitivityPanel
+from hazard_panel import HazardPanel
+from dashboard_panel import DashboardPanel
+from spacetime_panel import SpaceTimePanel
+from narrative_panel import NarrativePanel
+from ensemble_panel import EnsemblePanel
+from graph_panel import GraphPanel
+from figure_export import save_figure
+from report_builder import build_publication_manifest
+import study_analytics as study_analytics_mod
 from sessions_panel import SessionsPanel
 import session_store
 from evidence_notebook_panel import EvidenceNotebookDock
@@ -473,6 +487,66 @@ class MainWindow(QtWidgets.QMainWindow):
         export_figure_action.triggered.connect(self._export_publication_figure)
         export_menu.addAction(export_figure_action)
 
+        bundle_action = QtWidgets.QAction("Prepare Publication Bundle…", self)
+        bundle_action.setToolTip(
+            "Export journal-styled figures from the loaded analysis panels plus a "
+            "manifest of captions, metadata, and the Evidence Notebook's findings")
+        bundle_action.triggered.connect(self._prepare_publication_bundle)
+        export_menu.addAction(bundle_action)
+
+    # Panels whose primary plot is worth including in a publication bundle
+    # (attr, canvas attr, figure name, caption).
+    _BUNDLE_FIGURES = [
+        ("height_panel", "plot_canvas", "height_profile", "Vertical temperature profile and layer/plume/ceiling over time."),
+        ("zone_panel", "plot_canvas", "zone_stats", "Named-zone temperature and thermal-dose over time."),
+        ("linked_panel", "plots_canvas", "linked_inspection", "Linked temperature, HRR, smoke layer, and speed at one moment."),
+        ("hazard_panel", "timeline_canvas", "hazard_timeline", "Hazard-class fractions over time (temperature-only partial screen)."),
+        ("study_panel", "parallel_canvas", "study_parallel", "Parameter-vs-response parallel coordinates across the factorial."),
+        ("sensitivity_panel", "surface_canvas", "sensitivity_surface", "Estimated response surface (interpolated from existing scenarios)."),
+        ("ensemble_panel", "canvas", "ensemble_spread", "Parametric ensemble spread across the existing scenarios."),
+    ]
+
+    def _prepare_publication_bundle(self) -> None:
+        """One-click publication bundle (V5-M5): journal-styled figures from
+        the loaded analysis panels + a manifest of captions, metadata, and the
+        Evidence Notebook's findings."""
+        if not self.sim_data.manifest:
+            QtWidgets.QMessageBox.information(self, "Publication bundle",
+                                              "No experiment data available (demo mode).")
+            return
+        directory = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Choose an output folder for the publication bundle")
+        if not directory:
+            return
+        figures = []
+        for attr, canvas_attr, name, caption in self._BUNDLE_FIGURES:
+            panel = getattr(self, attr, None)
+            canvas = getattr(panel, canvas_attr, None) if panel is not None else None
+            if canvas is None or not getattr(panel, "_loaded", False):
+                continue
+            path = os.path.join(directory, name + ".png")
+            try:
+                save_figure(canvas.fig, path, "Journal — single column")
+                figures.append((name + ".png", caption))
+            except OSError:
+                continue
+        sel = self.selection_bus.current if getattr(self, "selection_bus", None) else None
+        metadata = {
+            "Data run": session_store.data_fingerprint(self.sim_data.manifest),
+            "Scenarios": str(len(self.sim_data.manifest)),
+            "Prepared": session_store.now_iso(),
+            "Selected scenario": (str(sel.scenario) if sel and sel.scenario is not None else ""),
+        }
+        manifest = build_publication_manifest(
+            figures, self.evidence_dock.notebook.to_list(), metadata)
+        try:
+            write_report(os.path.join(directory, "manifest.html"), manifest)
+        except OSError as e:
+            QtWidgets.QMessageBox.warning(self, "Publication bundle", f"Could not write: {e}")
+            return
+        self.statusBar().showMessage(
+            f"Publication bundle: {len(figures)} figure(s) + manifest in {directory}", 5000)
+
     def _build_experiment_browser(self):
         """M2.5: docked sortable/filterable index of all real scenarios.
 
@@ -744,6 +818,30 @@ class MainWindow(QtWidgets.QMainWindow):
             # Safe Assistant (V4-M12): bounded, deterministic organization of
             # computed evidence; main_window supplies context and runs it.
             self.assistant_panel = AssistantPanel()
+            # Research workspace (V5-M4): hazard spaces + mission-control
+            # dashboard. Per-scenario, so any study (not just the factorial).
+            self.hazard_panel = HazardPanel(
+                self.controller.store, self.sim_data.manifest,
+                self.sim_data.timesteps_per_second)
+            self.dashboard_panel = DashboardPanel(
+                self.controller.store, self.sim_data.manifest,
+                self.sim_data.timesteps_per_second)
+            # Space-time cube (V5-M4/P4) + Fire Narrative++ (V5-M5).
+            self.spacetime_panel = SpaceTimePanel(
+                self.controller.store, self.sim_data.manifest,
+                self.sim_data.timesteps_per_second)
+            self.narrative_panel = NarrativePanel(
+                self.controller.store, self.sim_data.manifest,
+                self.sim_data.timesteps_per_second)
+            # Ensemble spread (V5-M5): min/mean/max envelopes across scenarios.
+            self.ensemble_panel = EnsemblePanel(
+                self.controller.store, self.sim_data.manifest,
+                self.sim_data.timesteps_per_second)
+            # Research Knowledge Graph (V5 Phase 6): laboratory memory over
+            # every existing artifact. `app=self` lets it gather live artifacts.
+            self.graph_panel = GraphPanel(
+                self.controller.store, self.sim_data.manifest,
+                self.sim_data.timesteps_per_second, app=self)
             # Named analysis sessions (V4-M6): save/browse/reload/export the
             # whole investigation. Pure UI; main_window collects/applies state.
             self.sessions_panel = SessionsPanel()
@@ -753,10 +851,24 @@ class MainWindow(QtWidgets.QMainWindow):
                 FactorEffectsPanel(self.controller.store, self.sim_data.manifest,
                                    self._quantity_options(), self.sim_data.timesteps_per_second)
                 if self.is_factorial else None)
+            # Study-level analytics (V5-M2): the factorial as a designed
+            # experiment. Needs the factor axes + computed summaries.
+            self.study_panel = (
+                StudyPanel(getattr(self, "_scenario_summaries", None) or [],
+                           self.sim_data.manifest)
+                if self.is_factorial else None)
+            # Sensitivity explorer (V5-M3): interpolate responses across the
+            # existing factorial ("what-if"); estimates only, never a new run.
+            self.sensitivity_panel = (
+                SensitivityPanel(getattr(self, "_scenario_summaries", None) or [],
+                                 self.sim_data.manifest)
+                if self.is_factorial else None)
         else:
             self.timeseries_panel = None
             self.energy_panel = None
             self.factor_effects_panel = None
+            self.study_panel = None
+            self.sensitivity_panel = None
             self.tenability_panel = None
             self.fire_mri_panel = None
             self.semantic_diff_panel = None
@@ -773,6 +885,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.experiments_panel = None
             self.quantities_panel = None
             self.assistant_panel = None
+            self.hazard_panel = None
+            self.dashboard_panel = None
+            self.spacetime_panel = None
+            self.narrative_panel = None
+            self.ensemble_panel = None
+            self.graph_panel = None
             self.sessions_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
@@ -811,6 +929,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 interval_content=self.time_window_panel,
                 measurement_content=self.measurement_panel,
                 advanced_compare_content=self.advanced_compare_panel,
+                study_content=self.study_panel,
+                sensitivity_content=self.sensitivity_panel,
+                hazard_content=self.hazard_panel,
+                dashboard_content=self.dashboard_panel,
+                spacetime_content=self.spacetime_panel,
+                narrative_content=self.narrative_panel,
+                ensemble_content=self.ensemble_panel,
+                graph_content=self.graph_panel,
                 experiments_content=self.experiments_panel,
                 quantities_content=self.quantities_panel,
                 assistant_content=self.assistant_panel,
@@ -853,9 +979,104 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._build_evidence_notebook()
         self._build_sessions()
+        self._build_selection()
 
         self._active_page_key = None
         self._navigate_to("live")
+
+    def _build_selection(self) -> None:
+        """Shared Selection Model (V5-M1): create the SelectionBus (Layer 2)
+        and the QuantityProvider (Layer 1), then bind every analysis panel's
+        scenario/frame controls to the bus so a change in one syncs the rest.
+        The Live Viewer is wired last and minimally (it reacts to a selected
+        time by seeking, and publishes its own seeks) to protect playback and
+        the cinematic pipeline. Deeper per-panel point/region sync rides along
+        as panels are individually touched (M2-M6)."""
+        self.selection_bus = SelectionBus()
+        self.quantity_provider = QuantityProvider(self.controller.store)
+        self._seek_from_bus = False
+        fps = self.time_controller.timesteps_per_second
+        for attr in ("height_panel", "zone_panel", "linked_panel", "time_window_panel",
+                     "measurement_panel", "fire_mri_panel", "semantic_diff_panel",
+                     "query_panel", "state_space_panel", "attention_panel", "cause_panel",
+                     "factor_effects_panel", "tenability_panel", "timeseries_panel",
+                     "energy_panel", "forecasting_panel", "quantities_panel",
+                     "advanced_compare_panel", "study_panel", "hazard_panel",
+                     "spacetime_panel", "narrative_panel", "ensemble_panel"):
+            panel = getattr(self, attr, None)
+            if panel is not None:
+                bind_to_bus(panel, self.selection_bus, fps)
+        # V5-M3: the Sensitivity panel drives the bus by publishing the nearest
+        # existing run for the current slider setting, and reacts to a scenario
+        # selection by snapping its sliders -- it has its own set_bus.
+        if self.sensitivity_panel is not None:
+            self.sensitivity_panel.set_bus(self.selection_bus)
+        # V5-M4: the dashboard reads the whole selection (scenario + time) and
+        # its workspace preset raises the most relevant analysis tab.
+        if self.dashboard_panel is not None:
+            self.dashboard_panel.set_bus(self.selection_bus)
+            self.dashboard_panel.workspace_requested.connect(self._on_workspace_preset)
+        # V5-M4: the space-time panel publishes/reacts to the selected point.
+        if self.spacetime_panel is not None:
+            self.spacetime_panel.set_bus(self.selection_bus)
+        # V5-M5: a narrative step publishes its Insight's selection (seek + sync).
+        if self.narrative_panel is not None:
+            self.narrative_panel.event_activated.connect(self._on_insight_activated)
+        # V5 Phase 6: the knowledge graph publishes a node's Selection and
+        # rebuilds its selected-scenario events when the selection changes.
+        if self.graph_panel is not None:
+            self.graph_panel.set_bus(self.selection_bus)
+        self.selection_bus.changed.connect(self._on_bus_changed)
+
+    # Adaptive Workspace presets (V5-M4/P4): each focuses the app on a task by
+    # raising its primary analysis tab and publishing the quantity that task
+    # cares about, so every quantity-aware panel follows (via the M1 binder).
+    _WORKSPACE = {
+        "Overview": ("dashboard_panel", None),
+        "Temperature study": ("hazard_panel", "TEMPERATURE"),
+        "Ventilation study": ("sensitivity_panel", "VELOCITY"),
+        "Smoke study": ("height_panel", "TEMPERATURE"),
+        "Study analytics": ("study_panel", None),
+    }
+
+    def _on_workspace_preset(self, preset: str) -> None:
+        panel_attr, quantity = self._WORKSPACE.get(preset, (None, None))
+        if quantity is not None and getattr(self, "selection_bus", None) is not None:
+            self.selection_bus.update(origin=None, quantity=quantity)
+        panel = getattr(self, panel_attr, None) if panel_attr else None
+        if panel is not None:
+            self._navigate_to("analysis")
+            self.pages["analysis"].show_tab(panel)
+
+    def _on_bus_changed(self, selection, origin) -> None:
+        """React to the shared selection in the Live Viewer: seek playback to
+        the selected time. Skips our own seek echo (origin is self)."""
+        if origin is self or selection.time_s is None or self._current_n_frames <= 0:
+            return
+        fps = self.time_controller.timesteps_per_second
+        fi = min(max(int(round(selection.time_s * fps)), 0), self._current_n_frames - 1)
+        self._seek_from_bus = True
+        try:
+            self._on_seek_requested(fi)
+        finally:
+            self._seek_from_bus = False
+
+    def _publish_insight_selection(self, insight) -> None:
+        """Route an activated Insight through the bus (V5-M1): publish the
+        fields it carries (time/point/region/quantity), preserving the current
+        scenario, so every panel and the Live Viewer follow together."""
+        fields = {}
+        t = insight.primary_time()
+        if t is not None:
+            fields["time_s"] = t
+        if getattr(insight, "location", None):
+            fields["point"] = insight.location
+        if getattr(insight, "region", None):
+            fields["region"] = insight.region
+        if getattr(insight, "quantity", None):
+            fields["quantity"] = insight.quantity
+        if fields:
+            self.selection_bus.update(origin=None, **fields)
 
     def _build_sessions(self) -> None:
         """Named analysis sessions (V4-M6): wire the Sessions panel's
@@ -933,6 +1154,16 @@ class MainWindow(QtWidgets.QMainWindow):
         action = assistant_mod.interpret_request(text)
         if action == "refuse":
             self.assistant_panel.show_result(assistant_mod.REFUSAL, savable=False)
+        elif action == "search_scenarios":
+            # Assistant++ (V5-M5): experiment search over the study table.
+            summaries = getattr(self, "_scenario_summaries", None)
+            if not summaries:
+                self.assistant_panel.show_result(
+                    "Scenario search needs the factorial's computed summaries.",
+                    savable=False)
+                return
+            table = study_analytics_mod.build_table(summaries)
+            self.assistant_panel.show_result(assistant_mod.search_scenarios(table, text))
         else:
             self.assistant_panel.show_result(self._run_assistant(action))
 
@@ -1067,8 +1298,13 @@ class MainWindow(QtWidgets.QMainWindow):
         return self.inspector
 
     def _on_insight_activated(self, insight) -> None:
-        """Shared V3 navigation: jump playback to an Insight's time (the
-        one interaction every Insight-producing feature reuses)."""
+        """Shared navigation, now via the SelectionBus (V5-M1): publishing the
+        Insight's selection seeks playback (through _on_bus_changed) and syncs
+        every subscribed panel. Falls back to a direct seek if the bus is not
+        yet built (defensive)."""
+        if getattr(self, "selection_bus", None) is not None:
+            self._publish_insight_selection(insight)
+            return
         fi = insight.frame_index(self.time_controller.timesteps_per_second)
         if fi is not None and self._current_n_frames > 0:
             self._on_seek_requested(min(max(fi, 0), self._current_n_frames - 1))
@@ -1861,6 +2097,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_seek_requested(self, index: int):
         self.time_controller.seek(index)
+        # V5-M1: publish a user/insight seek so analysis panels follow the
+        # Live Viewer. Guarded so a seek that itself came from the bus does
+        # not echo back (origin=self is ignored by _on_bus_changed).
+        if getattr(self, "selection_bus", None) is not None and not self._seek_from_bus:
+            fps = self.time_controller.timesteps_per_second
+            self.selection_bus.update(origin=self, time_s=index / fps)
 
     def _on_sim_error(self, message: str):
         QtWidgets.QMessageBox.critical(self, "Simulation error", message)
@@ -2903,7 +3145,9 @@ class MainWindow(QtWidgets.QMainWindow):
             filters=(self.experiment_browser.get_filter_state()
                      if self.experiment_browser is not None else {}),
             measurements=(self.measurement_panel.get_measurements()
-                          if self.measurement_panel is not None else []))
+                          if self.measurement_panel is not None else []),
+            selection=(self.selection_bus.current.to_dict()
+                       if getattr(self, "selection_bus", None) is not None else {}))
 
     # --------------------------------------------------- named sessions (M6)
     def _refresh_sessions(self) -> None:
@@ -2972,6 +3216,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.experiment_browser.set_filter_state(session.get("filters", {}))
         if self.measurement_panel is not None:
             self.measurement_panel.set_measurements(session.get("measurements", []))
+        # V5-M1: restore the shared selection (absent in older sessions -> empty).
+        if getattr(self, "selection_bus", None) is not None:
+            self.selection_bus.set(Selection.from_dict(session.get("selection", {})))
 
     def _save_session(self):
         if not self.sim_data.manifest:

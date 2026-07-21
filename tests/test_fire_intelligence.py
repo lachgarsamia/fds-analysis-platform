@@ -1146,3 +1146,241 @@ class TestSafeAssistant:
 
     def test_refusal_asserts_no_physics(self):
         assert "cannot infer why" in asst.REFUSAL and "cause" in asst.REFUSAL
+
+
+import study_analytics as sam  # noqa: E402
+
+
+class _FakeSummary:
+    def __init__(self, ci, folder, candles, door, vod, voc, **resp):
+        self.case_index = ci; self.folder = folder
+        self.candles = candles; self.door = door; self.vod = vod; self.voc = voc
+        for k in sam.RESPONSE_KEYS:
+            setattr(self, k, resp.get(k))
+
+
+class TestStudyAnalytics:
+    def _summaries(self):
+        # peak T depends only on `vod` (0 -> 100, 1 -> 300): a clean influence signal.
+        rows = []
+        for i, (c, d, vod, voc) in enumerate(
+                [(0, 0, 0, 0), (0, 0, 1, 0), (0, 1, 0, 0), (0, 1, 1, 0)]):
+            rows.append(_FakeSummary(i, f"c{c}_d{d}_vod{vod}_voc{voc}", c, d, vod, voc,
+                                     max_temp_c=100.0 + 200.0 * vod, peak_hrr_kw=0.08))
+        return rows
+
+    def test_build_table(self):
+        t = sam.build_table(self._summaries())
+        assert len(t) == 4 and t[0]["params"]["vod"] == 0.0
+        assert t[1]["responses"]["max_temp_c"] == 300.0
+
+    def test_factor_influence_isolates_the_driver(self):
+        t = sam.build_table(self._summaries())
+        infl = sam.factor_influence(t, "max_temp_c")
+        assert infl["vod"] == pytest.approx(200.0)   # 300 - 100 across vod levels
+        assert infl["door"] == 0.0 and infl["candles"] == 0.0
+        ranking = sam.influence_ranking(t, "max_temp_c")
+        assert ranking[0][0] == "vod" and ranking[0][2] == pytest.approx(1.0)
+
+    def test_study_statistics(self):
+        st = sam.study_statistics(sam.build_table(self._summaries()))["max_temp_c"]
+        assert st["min"] == 100.0 and st["max"] == 300.0 and st["mean"] == 200.0 and st["n"] == 4
+
+    def test_correlation_diag_is_one(self):
+        c = sam.correlation_matrix(sam.build_table(self._summaries()))
+        assert np.allclose(np.diag(c), 1.0)
+
+    def test_outlier_scores_nonnegative(self):
+        scores = sam.outlier_scores(sam.build_table(self._summaries()))
+        assert len(scores) == 4 and np.all(scores >= 0)
+
+    def test_normalized_axes_in_unit_range(self):
+        t = sam.build_table(self._summaries())
+        norm = sam.normalized_axes(t, ["vod", "max_temp_c"], {"vod": "param", "max_temp_c": "response"})
+        finite = norm[~np.isnan(norm)]
+        assert finite.min() == pytest.approx(0.0) and finite.max() == pytest.approx(1.0)
+
+
+import sensitivity as sen  # noqa: E402
+
+
+class TestSensitivity:
+    def _table(self):
+        # peak T = 100 + 200*vod (vod in {0,1,2}); others irrelevant.
+        rows = []
+        ci = 0
+        for c in (0, 1):
+            for d in (0, 1):
+                for vod in (0, 1, 2):
+                    for voc in (0, 1):
+                        rows.append(_FakeSummary(ci, f"c{c}_d{d}_vod{vod}_voc{voc}",
+                                                 c, d, vod, voc,
+                                                 max_temp_c=100.0 + 200.0 * vod))
+                        ci += 1
+        return sam.build_table(rows)
+
+    def test_exact_at_grid_point(self):
+        t = self._table()
+        s = {"candles": 0, "door": 0, "vod": 2, "voc": 0}
+        assert sen.predict(t, "max_temp_c", s) == pytest.approx(500.0)  # 100+200*2
+
+    def test_multilinear_midpoint(self):
+        t = self._table()
+        s = {"candles": 0, "door": 0, "vod": 0.5, "voc": 0}
+        assert sen.predict(t, "max_temp_c", s) == pytest.approx(200.0)  # between 100 and 300
+
+    def test_predict_all_covers_every_response(self):
+        t = self._table()
+        preds = sen.predict_all(t, {"candles": 0, "door": 0, "vod": 1, "voc": 0})
+        assert set(preds) == set(sam.RESPONSE_KEYS)
+        assert preds["max_temp_c"] == pytest.approx(300.0)
+
+    def test_tornado_ranks_the_driver(self):
+        t = self._table()
+        s = {"candles": 0, "door": 0, "vod": 1, "voc": 0}
+        tor = sen.tornado(t, "max_temp_c", s)
+        assert tor[0][0] == "vod"                      # vod has the largest swing
+        assert tor[0][3] == pytest.approx(400.0)       # 100 (vod=0) -> 500 (vod=2)
+        assert all(row[3] == 0.0 for row in tor if row[0] != "vod")
+
+    def test_nearest_scenario_exact_and_between(self):
+        t = self._table()
+        ci, dist = sen.nearest_scenario(t, {"candles": 0, "door": 0, "vod": 2, "voc": 0})
+        assert dist == pytest.approx(0.0) and ci is not None
+        _ci, d2 = sen.nearest_scenario(t, {"candles": 0, "door": 0, "vod": 1.5, "voc": 0})
+        assert d2 > 0.0
+
+    def test_response_surface_shape(self):
+        t = self._table()
+        xs, ys, z = sen.response_surface(t, "max_temp_c", "vod", "door",
+                                         {"candles": 0, "door": 0, "vod": 0, "voc": 0}, n=5)
+        assert xs.shape == (5,) and ys.shape == (5,) and z.shape == (5, 5)
+
+
+import hazard_spaces as hzs  # noqa: E402
+
+
+class TestHazardSpaces:
+    THR = (60.0, 100.0, 300.0)
+
+    def test_classify_instant_bands(self):
+        frame = np.array([[20.0, 80.0], [150.0, 400.0]])
+        np.testing.assert_array_equal(hzs.classify_instant(frame, self.THR),
+                                      [[0, 1], [2, 3]])
+
+    def test_exposure_escalates_to_untenable(self):
+        # a cell held at 70 C (Warning) long enough is escalated to Untenable.
+        data = np.full((10, 1, 1), 70.0, dtype=np.float32)
+        cls = hzs.classify_series(data, self.THR, fps=1, exposure_limit_s=5.0)
+        assert cls[0, 0, 0] == 1              # early: instantaneous Warning
+        assert cls[-1, 0, 0] == 3             # late: escalated by exposure
+
+    def test_class_fractions_sum_to_one(self):
+        data = np.array([[[20.0, 80.0], [150.0, 400.0]]], dtype=np.float32)
+        fr = hzs.class_fractions(hzs.classify_series(data, self.THR, 1, 1e9))
+        assert fr.shape == (1, 4)
+        assert fr.sum(axis=1)[0] == pytest.approx(1.0)
+
+    def test_worst_class_and_critical_fraction(self):
+        data = np.array([[[20.0, 80.0], [150.0, 400.0]]], dtype=np.float32)
+        cls = hzs.classify_series(data, self.THR, 1, 1e9)
+        assert hzs.worst_class(cls)[0] == 3
+        assert hzs.critical_fraction(cls)[0] == pytest.approx(0.5)  # 2 of 4 cells >= Critical
+
+    def test_flashover_indicator(self):
+        data = np.zeros((3, 2, 2), dtype=np.float32)
+        data[2, 0, 0] = 520.0                 # only the last frame crosses 500
+        indicated, first = hzs.flashover_indicator(data)
+        assert first == 2 and bool(indicated[2]) and not bool(indicated[0])
+
+
+import ensemble_spread as ens  # noqa: E402
+
+
+class TestEnsembleSpread:
+    def test_per_frame_metrics(self):
+        data = np.array([[[20.0, 400.0], [400.0, 20.0]]], dtype=np.float32)  # 1 frame
+        assert ens.per_frame_series(data, None, "spatial_max")[0] == 400.0
+        assert ens.per_frame_series(data, None, "spatial_mean")[0] == pytest.approx(210.0)
+        assert ens.per_frame_series(data, None, "hot_area_fraction", 100.0)[0] == pytest.approx(0.5)
+
+    def test_envelope_min_mean_max(self):
+        lo, mean, hi = ens.envelope([np.array([1.0, 2.0, 3.0]),
+                                     np.array([3.0, 2.0, 1.0]),
+                                     np.array([2.0, 2.0, 2.0])])
+        np.testing.assert_allclose(lo, [1, 2, 1])
+        np.testing.assert_allclose(mean, [2, 2, 2])
+        np.testing.assert_allclose(hi, [3, 2, 3])
+
+    def test_envelope_truncates_to_shortest(self):
+        lo, mean, hi = ens.envelope([np.array([1.0, 2.0, 3.0]), np.array([5.0, 5.0])])
+        assert len(mean) == 2
+
+
+class TestAssistantSearch:
+    def _table(self):
+        rows = [_FakeSummary(0, "a", 0, 0, 0, 0, max_temp_c=300.0, layer_min_height_m=1.5),
+                _FakeSummary(1, "b", 0, 0, 1, 0, max_temp_c=500.0, layer_min_height_m=0.1)]
+        return sam.build_table(rows)
+
+    def test_search_greater_than(self):
+        out = asst.search_scenarios(self._table(), "scenarios where temperature exceeds 400")
+        assert "b:" in out and "a:" not in out.split("\n", 1)[1]  # only b > 400
+        assert asst.DISCLAIMER in out
+
+    def test_search_less_than(self):
+        out = asst.search_scenarios(self._table(), "scenarios where smoke layer below 1.0 m")
+        assert "b:" in out and "1 of 2" in out
+
+    def test_search_unparseable_is_helpful_not_a_claim(self):
+        out = asst.search_scenarios(self._table(), "scenarios where something happens")
+        assert "could not read a search" in out and asst.DISCLAIMER in out
+
+    def test_interpret_routes_search_and_still_refuses_causal(self):
+        assert asst.interpret_request("show scenarios where smoke below 2 m") == "search_scenarios"
+        assert asst.interpret_request("why are some scenarios hotter") == "refuse"
+
+
+import graph_model as gmod  # noqa: E402
+
+
+class _FakeExp:
+    def __init__(self, name, scenarios, tags=()):
+        self.name = name; self.scenarios = scenarios; self.tags = list(tags)
+
+
+class TestGraphModel:
+    def _scenarios(self):
+        return [_FakeSummary(0, "c0_d0_vod0_voc0", 0, 0, 0, 0),
+                _FakeSummary(1, "c0_d0_vod2_voc0", 0, 0, 2, 0),
+                _FakeSummary(2, "c1_d1_vod2_voc1", 1, 1, 2, 1)]
+
+    def test_scenarios_and_factor_tags(self):
+        g = gmod.build_graph(self._scenarios())
+        assert len(g.nodes_of("scenario")) == 3
+        # each scenario links to its four factor-level tags
+        assert "tag:vod2" in g.nodes and "tag:vod0" in g.nodes
+        vod2 = g.neighbors("tag:vod2")
+        assert set(vod2) == {"scenario:1", "scenario:2"}   # the two vod=2 runs
+
+    def test_experiment_links_member_scenarios(self):
+        g = gmod.build_graph(self._scenarios(),
+                             experiments=[_FakeExp("study", ["c0_d0_vod0_voc0", "c1_d1_vod2_voc1"],
+                                                   tags=["ventilation"])])
+        n = g.neighbors("experiment:study")
+        assert "scenario:0" in n and "scenario:2" in n and "tag:ventilation" in n
+
+    def test_events_link_to_their_scenario(self):
+        evs = {2: [Insight("Ignition: x", quantity="TEMPERATURE", time_s=0.5)]}
+        g = gmod.build_graph(self._scenarios(), events_by_scenario=evs)
+        ev_nodes = g.nodes_of("event")
+        assert len(ev_nodes) == 1
+        assert "scenario:2" in g.neighbors(ev_nodes[0].id)
+
+    def test_node_to_selection(self):
+        g = gmod.build_graph(self._scenarios())
+        assert g.nodes["scenario:1"].to_selection().scenario == 1
+        assert g.nodes["tag:vod2"].to_selection() is None      # organizational node
+        ins = gmod.Node("i", "insight", "x", time_s=8.0, point=(0.9, 0.1))
+        sel = ins.to_selection()
+        assert sel.time_s == 8.0 and sel.point == (0.9, 0.1)

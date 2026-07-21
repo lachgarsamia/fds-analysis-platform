@@ -229,6 +229,25 @@ def build_notebook_report(notebook: list, figures: list = None, provenance: str 
     return _document(title, body)
 
 
+def build_publication_manifest(figures: list, notebook: list, metadata: dict) -> str:
+    """Manifest for a publication bundle (V5-M5): the exported journal-styled
+    figures with their captions, the metadata, and the Evidence Notebook's
+    findings. `figures` is [(filename, caption), ...]. Assembled from computed
+    values; prose is templated."""
+    meta_rows = "".join(f"<tr><td>{_esc(k)}</td><td>{_esc(v)}</td></tr>"
+                        for k, v in (metadata or {}).items() if v)
+    fig_items = "".join(
+        f"<li><code>{_esc(fn)}</code> — {_esc(cap)}</li>" for fn, cap in (figures or []))
+    body = (
+        "<h1>Publication bundle</h1>"
+        + (f"<table><tbody>{meta_rows}</tbody></table>" if meta_rows else "")
+        + f"<h2>Figures ({len(figures or [])})</h2><ul>{fig_items}</ul>"
+        + f"<h2>Findings</h2>{_notebook_block(notebook)}"
+        + "<p class='provenance'>Figures use journal export presets; numbers are "
+          "computed from simulation output, captions are templated.</p>")
+    return _document("Publication bundle", body)
+
+
 def build_experiment_report(exp: dict, status: dict = None) -> str:
     """Self-contained HTML summary of an experiment (V4-M9): description,
     tags, baseline, shared parameters, and the scenario list with its

@@ -2822,3 +2822,315 @@ class TestSafeAssistantPanel:
         cap = window._assistant_figure_caption()
         assert "peak" in cap and "°C" in cap  # a real computed value, descriptive only
         window.close()
+
+
+class TestSharedSelectionModel:
+    """V5-M1: the shared selection bus wired across panels + Live Viewer."""
+
+    def test_bus_and_provider_present(self, qapp):
+        window = MainWindow(load_simulation_data())
+        assert window.selection_bus is not None
+        assert window.quantity_provider is not None
+        window.close()
+
+    def test_cross_panel_scenario_and_time_sync(self, qapp):
+        import numpy as np
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window.height_panel.ensure_loaded()
+        window.linked_panel.ensure_loaded()
+        # changing one panel's scenario publishes it; the other panel follows
+        window.height_panel.scenario_combo.setCurrentIndex(3)
+        assert window.selection_bus.current.scenario == window.height_panel.scenario_combo.currentData()
+        assert window.linked_panel.scenario_combo.currentData() == window.selection_bus.current.scenario
+        # a published time syncs a panel's frame slider
+        window.selection_bus.update(origin=None, time_s=10.0)
+        fps = window.time_controller.timesteps_per_second
+        assert window.height_panel.frame_slider.value() == int(round(10.0 * fps))
+        window.close()
+
+    def test_insight_activation_routes_through_bus(self, qapp):
+        from insight import Insight
+        window = MainWindow(load_simulation_data())
+        window._on_insight_activated(Insight(
+            "peak", category="query", quantity="TEMPERATURE", time_s=8.0, basis="m"))
+        assert window.selection_bus.current.time_s == 8.0
+        window.close()
+
+    def test_selection_survives_session_roundtrip(self, qapp):
+        from selection import Selection
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window.selection_bus.set(Selection(scenario=2, quantity="VELOCITY", point=(0.9, 0.1)))
+        sd = window._collect_session_dict("t", "")
+        window.selection_bus.set(Selection())
+        window._apply_analysis_session(sd)
+        s = window.selection_bus.current
+        assert s.scenario == 2 and s.quantity == "VELOCITY" and s.point == (0.9, 0.1)
+        window.close()
+
+
+class TestStudyPanel:
+    """V5-M2: study-level analytics + selection sync."""
+
+    def test_panel_builds_and_syncs_scenario(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            assert getattr(window, "study_panel", None) is None
+            window.close()
+            return
+        panel = window.study_panel
+        assert len(panel._table) == len(sim_data.manifest)
+        # study scenario pick publishes to the bus; a linked panel follows
+        window.height_panel.ensure_loaded()
+        panel.scenario_combo.setCurrentIndex(5)
+        assert window.selection_bus.current.scenario == panel.scenario_combo.currentData()
+        assert window.height_panel.scenario_combo.currentData() == panel.scenario_combo.currentData()
+        # reverse: a bus scenario change highlights the study selection
+        window.selection_bus.update(origin=None, scenario=9)
+        assert panel.scenario_combo.currentData() == 9
+        window.close()
+
+
+class TestSensitivityPanel:
+    """V5-M3: sensitivity explorer + bus hand-off."""
+
+    def test_panel_and_bidirectional_bus(self, qapp):
+        import study_analytics as sa
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            assert getattr(window, "sensitivity_panel", None) is None
+            window.close()
+            return
+        panel = window.sensitivity_panel
+        assert len(panel._table) == len(sim_data.manifest)
+        # moving a slider publishes the nearest existing run; a panel follows
+        window.height_panel.ensure_loaded()
+        panel._sliders["vod"].setValue(panel._sliders["vod"].maximum())
+        assert window.selection_bus.current.scenario is not None
+        assert window.height_panel.scenario_combo.currentData() == window.selection_bus.current.scenario
+        # selecting a scenario elsewhere snaps the sliders to its factor levels
+        target = panel._table[7]
+        window.selection_bus.update(origin=None, scenario=target["case_index"])
+        for p in sa.PARAMS:
+            assert panel._setting(p) == pytest.approx(float(target["params"][p]))
+        window.close()
+
+    def test_estimate_note_present(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sensitivity_panel is None:
+            window.close()
+            return
+        assert "Estimated from Existing Scenarios" in window.sensitivity_panel.note.text()
+        window.close()
+
+
+class TestResearchWorkspace:
+    """V5-M4: hazard spaces + mission-control dashboard + workspace hook."""
+
+    def test_hazard_panel_syncs_and_classifies(self, qapp):
+        import hazard_spaces as hz
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "hazard_panel", None) is None
+            window.close()
+            return
+        panel = window.hazard_panel
+        panel.ensure_loaded()
+        assert panel._series["classes"].shape[0] == panel._data.shape[0]
+        # bus scenario/time changes drive the panel (bound like every other)
+        window.selection_bus.update(origin=None, scenario=2, time_s=10.0)
+        assert panel.scenario_combo.currentData() == 2
+        assert panel.frame_slider.value() == int(round(10.0 * window.time_controller.timesteps_per_second))
+        window.close()
+
+    def test_dashboard_reads_selection_live(self, qapp):
+        from selection import Selection
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        d = window.dashboard_panel
+        window.selection_bus.set(Selection(scenario=3, time_s=8.0))
+        assert d._cards["Time"].text() == "8.0 s"
+        assert d._cards["Max hazard"].text() in ("Safe", "Warning", "Critical", "Untenable")
+        assert "level" in d._cards["Door"].text()
+        # live update on time change
+        window.selection_bus.update(origin=None, time_s=50.0)
+        assert d._cards["Time"].text() == "50.0 s"
+        window.close()
+
+    def test_workspace_preset_raises_tab(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.dashboard_panel is None:
+            window.close()
+            return
+        got = []
+        window.dashboard_panel.workspace_requested.connect(got.append)
+        window.dashboard_panel.preset_combo.setCurrentText("Ventilation study")
+        window.dashboard_panel._on_preset(0)
+        assert got and got[0] == "Ventilation study"  # emits the preset name (MainWindow resolves)
+        window.close()
+
+
+class TestWorkspaceAndCommunication:
+    """V5 Phase 4 completion (adaptive workspace, space-time) + Phase 5 start."""
+
+    def test_workspace_preset_focuses_quantity_and_tab(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.dashboard_panel is None:
+            window.close()
+            return
+        window.height_panel.ensure_loaded()
+        window.dashboard_panel.preset_combo.setCurrentText("Ventilation study")
+        window.dashboard_panel._on_preset(0)
+        assert window.selection_bus.current.quantity == "VELOCITY"   # quantity focus
+        assert window._active_page_key == "analysis"                  # tab raised
+        # quantity is now a shared field: a quantity-aware panel followed
+        if window.height_panel._quantity_options:
+            assert window.height_panel._key.quantity == "VELOCITY"
+        window.close()
+
+    def test_spacetime_point_syncs_both_ways(self, qapp):
+        from timeseries import phys_to_index
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        st = window.spacetime_panel
+        st.ensure_loaded()
+        window.selection_bus.update(origin=None, point=(0.9, 0.1))
+        expected = phys_to_index(st._extent, st._data.shape[1:], 0.9, 0.1)
+        assert (st._row, st._col) == expected
+        window.close()
+
+    def test_narrative_chain_and_click_seeks(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        nv = window.narrative_panel
+        nv.ensure_loaded()
+        assert nv.tree.topLevelItemCount() >= 1
+        top = nv.tree.topLevelItem(0)
+        assert top.childCount() >= 1                       # evidence children
+        assert any("basis:" in top.child(i).text(0) for i in range(top.childCount()))
+        ev = top.data(0, QtCore.Qt.UserRole)
+        nv._on_item(top, 0)                                # activating publishes to the bus
+        assert window.selection_bus.current.time_s == ev.primary_time()
+        window.close()
+
+
+class TestPhase5Communication:
+    """V5-M5: ensemble spread, assistant search, publication bundle."""
+
+    def test_ensemble_envelope_and_bus_sync(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        import numpy as np
+        panel = window.ensemble_panel
+        panel.ensure_loaded()
+        lo, mean, hi = panel._metric_data("spatial_max")["env"]
+        assert len(mean) > 0 and (lo <= mean).all() and (mean <= hi).all()
+        window.selection_bus.update(origin=None, scenario=5)
+        assert panel.scenario_combo.currentData() == 5
+        window.close()
+
+    def test_assistant_search_routes_and_refuses_causal(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        window._on_assistant_query("show scenarios where temperature exceeds 400")
+        assert "Scenarios where" in window.assistant_panel.output.toPlainText()
+        window._on_assistant_query("why is it hotter")
+        assert "cannot infer why" in window.assistant_panel.output.toPlainText()
+        window.close()
+
+    def test_publication_bundle_writes_figures_and_manifest(self, qapp, tmp_path):
+        from figure_export import save_figure
+        from report_builder import build_publication_manifest, write_report
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window.height_panel.ensure_loaded()
+        figs = []
+        for attr, canv, name, cap in window._BUNDLE_FIGURES:
+            p = getattr(window, attr, None)
+            c = getattr(p, canv, None) if p else None
+            if c is not None and getattr(p, "_loaded", False):
+                out = tmp_path / f"{name}.png"
+                save_figure(c.fig, str(out), "Journal — single column")
+                figs.append((f"{name}.png", cap))
+        assert len(figs) >= 1
+        man = tmp_path / "manifest.html"
+        write_report(str(man), build_publication_manifest(figs, [], {"Scenarios": "24"}))
+        assert "Publication bundle" in man.read_text() and figs[0][0] in man.read_text()
+        window.close()
+
+
+class TestKnowledgeGraph:
+    """V5 Phase 6: the Research Knowledge Graph."""
+
+    def test_graph_builds_and_nodes_publish_selection(self, qapp):
+        from insight import Insight
+        import zone_stats as zst
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "graph_panel", None) is None
+            window.close()
+            return
+        window.evidence_dock.add_insight(Insight(
+            "Peak 469 C.", category="query", quantity="TEMPERATURE",
+            time_s=8.0, location=(0.9, 0.1), basis="max"))
+        window.zone_panel.ensure_loaded()
+        window.zone_panel._zones.append(zst.Zone("doorway", 0.8, 1.0, 0.0, 0.3))
+        g = window.graph_panel
+        g._current_scenario = 3
+        g._loaded = True
+        g._rebuild()
+        assert len(g._graph.nodes_of("scenario")) == len(sim_data.manifest)
+        assert g._graph.nodes_of("insight") and g._graph.nodes_of("zone")
+        # a scenario node publishes its scenario; an insight node its time/point
+        g._select_node("scenario:3")
+        assert window.selection_bus.current.scenario == 3
+        g._select_node("insight:0")
+        assert window.selection_bus.current.time_s == 8.0
+        window.close()
+
+    def test_tag_filter_and_neighbors(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        g = window.graph_panel
+        g._loaded = True
+        g._rebuild()
+        # a factor tag connects to exactly the scenarios carrying that level
+        neigh = g._graph.neighbors("tag:vod2")
+        assert all(g._graph.nodes[n].type == "scenario" for n in neigh) and len(neigh) >= 1
+        # filtering by that tag narrows the visible set
+        g.tag_combo.setCurrentIndex(g.tag_combo.findData("vod2"))
+        visible = g._visible_ids()
+        assert "tag:vod2" in visible and len(visible) == len(neigh) + 1
+        window.close()
