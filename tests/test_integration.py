@@ -2897,3 +2897,37 @@ class TestStudyPanel:
         window.selection_bus.update(origin=None, scenario=9)
         assert panel.scenario_combo.currentData() == 9
         window.close()
+
+
+class TestSensitivityPanel:
+    """V5-M3: sensitivity explorer + bus hand-off."""
+
+    def test_panel_and_bidirectional_bus(self, qapp):
+        import study_analytics as sa
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            assert getattr(window, "sensitivity_panel", None) is None
+            window.close()
+            return
+        panel = window.sensitivity_panel
+        assert len(panel._table) == len(sim_data.manifest)
+        # moving a slider publishes the nearest existing run; a panel follows
+        window.height_panel.ensure_loaded()
+        panel._sliders["vod"].setValue(panel._sliders["vod"].maximum())
+        assert window.selection_bus.current.scenario is not None
+        assert window.height_panel.scenario_combo.currentData() == window.selection_bus.current.scenario
+        # selecting a scenario elsewhere snaps the sliders to its factor levels
+        target = panel._table[7]
+        window.selection_bus.update(origin=None, scenario=target["case_index"])
+        for p in sa.PARAMS:
+            assert panel._setting(p) == pytest.approx(float(target["params"][p]))
+        window.close()
+
+    def test_estimate_note_present(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sensitivity_panel is None:
+            window.close()
+            return
+        assert "Estimated from Existing Scenarios" in window.sensitivity_panel.note.text()
+        window.close()

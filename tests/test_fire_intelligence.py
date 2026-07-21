@@ -1199,3 +1199,59 @@ class TestStudyAnalytics:
         norm = sam.normalized_axes(t, ["vod", "max_temp_c"], {"vod": "param", "max_temp_c": "response"})
         finite = norm[~np.isnan(norm)]
         assert finite.min() == pytest.approx(0.0) and finite.max() == pytest.approx(1.0)
+
+
+import sensitivity as sen  # noqa: E402
+
+
+class TestSensitivity:
+    def _table(self):
+        # peak T = 100 + 200*vod (vod in {0,1,2}); others irrelevant.
+        rows = []
+        ci = 0
+        for c in (0, 1):
+            for d in (0, 1):
+                for vod in (0, 1, 2):
+                    for voc in (0, 1):
+                        rows.append(_FakeSummary(ci, f"c{c}_d{d}_vod{vod}_voc{voc}",
+                                                 c, d, vod, voc,
+                                                 max_temp_c=100.0 + 200.0 * vod))
+                        ci += 1
+        return sam.build_table(rows)
+
+    def test_exact_at_grid_point(self):
+        t = self._table()
+        s = {"candles": 0, "door": 0, "vod": 2, "voc": 0}
+        assert sen.predict(t, "max_temp_c", s) == pytest.approx(500.0)  # 100+200*2
+
+    def test_multilinear_midpoint(self):
+        t = self._table()
+        s = {"candles": 0, "door": 0, "vod": 0.5, "voc": 0}
+        assert sen.predict(t, "max_temp_c", s) == pytest.approx(200.0)  # between 100 and 300
+
+    def test_predict_all_covers_every_response(self):
+        t = self._table()
+        preds = sen.predict_all(t, {"candles": 0, "door": 0, "vod": 1, "voc": 0})
+        assert set(preds) == set(sam.RESPONSE_KEYS)
+        assert preds["max_temp_c"] == pytest.approx(300.0)
+
+    def test_tornado_ranks_the_driver(self):
+        t = self._table()
+        s = {"candles": 0, "door": 0, "vod": 1, "voc": 0}
+        tor = sen.tornado(t, "max_temp_c", s)
+        assert tor[0][0] == "vod"                      # vod has the largest swing
+        assert tor[0][3] == pytest.approx(400.0)       # 100 (vod=0) -> 500 (vod=2)
+        assert all(row[3] == 0.0 for row in tor if row[0] != "vod")
+
+    def test_nearest_scenario_exact_and_between(self):
+        t = self._table()
+        ci, dist = sen.nearest_scenario(t, {"candles": 0, "door": 0, "vod": 2, "voc": 0})
+        assert dist == pytest.approx(0.0) and ci is not None
+        _ci, d2 = sen.nearest_scenario(t, {"candles": 0, "door": 0, "vod": 1.5, "voc": 0})
+        assert d2 > 0.0
+
+    def test_response_surface_shape(self):
+        t = self._table()
+        xs, ys, z = sen.response_surface(t, "max_temp_c", "vod", "door",
+                                         {"candles": 0, "door": 0, "vod": 0, "voc": 0}, n=5)
+        assert xs.shape == (5,) and ys.shape == (5,) and z.shape == (5, 5)

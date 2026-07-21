@@ -80,6 +80,7 @@ from selection import Selection, SelectionBus
 from quantity_provider import QuantityProvider
 from analysis_panel_base import bind_to_bus
 from study_panel import StudyPanel
+from sensitivity_panel import SensitivityPanel
 from sessions_panel import SessionsPanel
 import session_store
 from evidence_notebook_panel import EvidenceNotebookDock
@@ -763,11 +764,18 @@ class MainWindow(QtWidgets.QMainWindow):
                 StudyPanel(getattr(self, "_scenario_summaries", None) or [],
                            self.sim_data.manifest)
                 if self.is_factorial else None)
+            # Sensitivity explorer (V5-M3): interpolate responses across the
+            # existing factorial ("what-if"); estimates only, never a new run.
+            self.sensitivity_panel = (
+                SensitivityPanel(getattr(self, "_scenario_summaries", None) or [],
+                                 self.sim_data.manifest)
+                if self.is_factorial else None)
         else:
             self.timeseries_panel = None
             self.energy_panel = None
             self.factor_effects_panel = None
             self.study_panel = None
+            self.sensitivity_panel = None
             self.tenability_panel = None
             self.fire_mri_panel = None
             self.semantic_diff_panel = None
@@ -823,6 +831,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 measurement_content=self.measurement_panel,
                 advanced_compare_content=self.advanced_compare_panel,
                 study_content=self.study_panel,
+                sensitivity_content=self.sensitivity_panel,
                 experiments_content=self.experiments_panel,
                 quantities_content=self.quantities_panel,
                 assistant_content=self.assistant_panel,
@@ -891,6 +900,11 @@ class MainWindow(QtWidgets.QMainWindow):
             panel = getattr(self, attr, None)
             if panel is not None:
                 bind_to_bus(panel, self.selection_bus, fps)
+        # V5-M3: the Sensitivity panel drives the bus by publishing the nearest
+        # existing run for the current slider setting, and reacts to a scenario
+        # selection by snapping its sliders -- it has its own set_bus.
+        if self.sensitivity_panel is not None:
+            self.sensitivity_panel.set_bus(self.selection_bus)
         self.selection_bus.changed.connect(self._on_bus_changed)
 
     def _on_bus_changed(self, selection, origin) -> None:
