@@ -61,13 +61,18 @@ def bind_to_bus(panel, bus, fps: int) -> None:
     def _on_selection(sel, origin):
         if origin is panel:
             return
+        # RC polish (playback): a hidden analysis tab must not re-render on
+        # every playback tick. Only the visible panel follows time live;
+        # scenario/quantity (rarer, from explicit picks) still sync so a
+        # hidden panel is correct the moment it is shown.
+        time_live = panel.isVisible()
         guard["syncing"] = True
         try:
             if combo is not None and sel.scenario is not None:
                 idx = combo.findData(sel.scenario)
                 if idx >= 0 and idx != combo.currentIndex():
                     combo.setCurrentIndex(idx)
-            if slider is not None and sel.time_s is not None:
+            if time_live and slider is not None and sel.time_s is not None:
                 fi = min(max(int(round(sel.time_s * fps)), 0), slider.maximum())
                 if fi != slider.value():
                     slider.setValue(fi)

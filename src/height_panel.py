@@ -209,8 +209,16 @@ class HeightPanel(QtWidgets.QWidget):
             prof_ax.legend(fontsize=6, loc="upper right")
         xlabel = f"{self._series['label']} ({unit})"
         prof_ax.set_xlabel(xlabel, fontsize=8)
-        prof_ax.set_ylabel("height z (m)", fontsize=8)
-        prof_ax.set_title("Vertical profile at the chosen x", fontsize=9, fontweight="bold")
+        prof_ax.set_ylabel("height above floor  z (m)", fontsize=8)
+        # RC polish: a self-explanatory title (what / where / when) so the plot
+        # reads on its own -- hot gas stratifies near the ceiling (top), cooler
+        # air stays near the floor (bottom).
+        px = (self._extent[0] + self._x_col / max(frame.shape[1] - 1, 1)
+              * (self._extent[1] - self._extent[0])) if self._extent else self._x_col
+        prof_ax.set_title(f"{self._series['label']} vs height  ·  x = {px:.2f} m, "
+                          f"t = {idx / self._fps:.1f} s", fontsize=9, fontweight="bold")
+        if len(zs):
+            prof_ax.set_ylim(zs.min(), zs.max())
         prof_ax.tick_params(labelsize=7)
 
         time_ax = fig.add_subplot(212)
@@ -221,6 +229,7 @@ class HeightPanel(QtWidgets.QWidget):
             time_ax.plot(times, self._series["plume"], color="#E8622C", label="plume height (m)")
         time_ax.set_xlabel("time (s)", fontsize=8)
         time_ax.set_ylabel("height (m)", fontsize=8)
+        time_ax.set_title("Layer, plume & ceiling over time", fontsize=8)
         time_ax.tick_params(labelsize=7)
         # ceiling-jet temperature on a twin axis (linked multi-quantity view)
         jet_ax = time_ax.twinx()
@@ -232,7 +241,7 @@ class HeightPanel(QtWidgets.QWidget):
         lines = [l for l in (time_ax.get_lines() + jet_ax.get_lines())
                  if not l.get_label().startswith("_")]
         time_ax.legend(lines, [l.get_label() for l in lines], fontsize=6, loc="upper left")
-        fig.subplots_adjust(top=0.92, bottom=0.10, left=0.12, right=0.88, hspace=0.65)
+        fig.subplots_adjust(top=0.92, bottom=0.10, left=0.12, right=0.88, hspace=0.85)
         self.plot_canvas.draw_idle()
 
     def _build_insights(self) -> None:

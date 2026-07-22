@@ -26,6 +26,7 @@ class AnalysisPage(Page):
 
     def __init__(self, content: QtWidgets.QWidget = None,
                  on_shown: Optional[Callable[[], None]] = None,
+                 playback_bar: QtWidgets.QWidget = None,
                  forecasting_content: QtWidgets.QWidget = None,
                  timeseries_content: QtWidgets.QWidget = None,
                  energy_content: QtWidgets.QWidget = None,
@@ -64,6 +65,11 @@ class AnalysisPage(Page):
         header = QtWidgets.QLabel("Analysis")
         header.setProperty("role", "title")
         layout.addWidget(header)
+
+        # RC polish: a shared playback transport so the temporal analysis panels
+        # play/pause/step in lockstep with the Live Viewer (same clock).
+        if playback_bar is not None:
+            layout.addWidget(playback_bar)
 
         # V2 roadmap M1.1: the page grew from a two-way splitter to a tab
         # per analysis surface (PCA/clustering, time-series workspace,

@@ -34,7 +34,9 @@ RESPONSE_FIELDS = [
     ("total_energy_kj", "Energy", "kJ"),
     ("growth_alpha_kw_s2", "Growth α", "kW/s²"),
     ("layer_min_height_m", "Layer min", "m"),
-    ("time_to_100c_s", "t→100°C", "s"),
+    ("time_to_100c_s", "t→100°C (arrival)", "s"),
+    ("time_to_300c_s", "t→300°C (arrival)", "s"),
+    ("time_to_600c_s", "t→600°C (arrival)", "s"),
     ("time_to_untenable_s", "t untenable", "s"),
 ]
 RESPONSE_KEYS = [f[0] for f in RESPONSE_FIELDS]

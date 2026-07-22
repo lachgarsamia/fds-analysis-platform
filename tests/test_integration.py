@@ -2843,10 +2843,17 @@ class TestSharedSelectionModel:
         window.height_panel.ensure_loaded()
         window.linked_panel.ensure_loaded()
         # changing one panel's scenario publishes it; the other panel follows
+        # (scenario sync is not visibility-gated).
         window.height_panel.scenario_combo.setCurrentIndex(3)
         assert window.selection_bus.current.scenario == window.height_panel.scenario_combo.currentData()
         assert window.linked_panel.scenario_combo.currentData() == window.selection_bus.current.scenario
-        # a published time syncs a panel's frame slider
+        # RC polish: time sync is visibility-gated (only the shown analysis tab
+        # animates live). Show the height panel, then a published time syncs its
+        # frame slider.
+        window.show()
+        window._navigate_to("analysis")
+        window.pages["analysis"].show_tab(window.height_panel)
+        QtWidgets.QApplication.processEvents()
         window.selection_bus.update(origin=None, time_s=10.0)
         fps = window.time_controller.timesteps_per_second
         assert window.height_panel.frame_slider.value() == int(round(10.0 * fps))
@@ -2947,9 +2954,15 @@ class TestResearchWorkspace:
         panel = window.hazard_panel
         panel.ensure_loaded()
         assert panel._series["classes"].shape[0] == panel._data.shape[0]
-        # bus scenario/time changes drive the panel (bound like every other)
-        window.selection_bus.update(origin=None, scenario=2, time_s=10.0)
+        # scenario sync is not visibility-gated
+        window.selection_bus.update(origin=None, scenario=2)
         assert panel.scenario_combo.currentData() == 2
+        # RC polish: time sync only drives the visible analysis tab. Show it.
+        window.show()
+        window._navigate_to("analysis")
+        window.pages["analysis"].show_tab(panel)
+        QtWidgets.QApplication.processEvents()
+        window.selection_bus.update(origin=None, time_s=10.0)
         assert panel.frame_slider.value() == int(round(10.0 * window.time_controller.timesteps_per_second))
         window.close()
 
@@ -3176,4 +3189,57 @@ class TestReleaseCandidatePolish:
             return
         # both controls exist and the quantity combo is populated
         assert window.quantity_combo.count() >= 1
+        window.close()
+
+
+class TestAnalysisPlayback:
+    """RC polish: analysis pages feel alive (playback synced to the Live Viewer)."""
+
+    def test_transport_bar_and_shared_clock(self, qapp):
+        window = MainWindow(load_simulation_data())
+        assert hasattr(window, "analysis_timeline") and hasattr(window, "analysis_speed")
+        # the analysis transport drives the same TimeController as the Live Viewer
+        window._on_seek_requested(5)
+        assert window.time_controller.index == 5
+        window._analysis_stop()
+        assert window.time_controller.index == 0
+
+    def test_playback_time_broadcasts_to_bus(self, qapp):
+        window = MainWindow(load_simulation_data())
+        fps = window.time_controller.timesteps_per_second
+        window._on_seek_requested(40)
+        assert window.selection_bus.current.time_s == pytest.approx(40 / fps)
+
+    def test_visible_panel_follows_hidden_freezes_and_catches_up(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        window._navigate_to("analysis")
+        ap = window.pages["analysis"]
+        ap.show_tab(window.height_panel)
+        window.height_panel.ensure_loaded()
+        QtWidgets.QApplication.processEvents()
+        window._on_seek_requested(80)
+        assert window.height_panel.frame_slider.value() == 80        # visible follows
+        ap.show_tab(window.hazard_panel)
+        window.hazard_panel.ensure_loaded()
+        QtWidgets.QApplication.processEvents()
+        frozen = window.height_panel.frame_slider.value()
+        window._on_seek_requested(160)
+        assert window.height_panel.frame_slider.value() == frozen    # hidden freezes
+        ap.show_tab(window.height_panel)
+        QtWidgets.QApplication.processEvents()
+        assert window.height_panel.frame_slider.value() == 160       # resend catches up
+        window.close()
+
+    def test_factor_influence_covers_arrival_times(self, qapp):
+        import study_analytics as sa
+        assert "time_to_300c_s" in sa.RESPONSE_KEYS and "time_to_600c_s" in sa.RESPONSE_KEYS
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if window.study_panel is not None:
+            assert window.study_panel.response_combo.count() == len(sa.RESPONSE_KEYS)
         window.close()

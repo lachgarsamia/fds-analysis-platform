@@ -928,6 +928,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "dataset": DatasetPage(dataset_content),
             "analysis": AnalysisPage(
                 analysis_content, on_shown=self._on_analysis_page_shown,
+                playback_bar=self._build_analysis_playback_bar(),
                 forecasting_content=ForecastingPanel(
                     self.prediction_store, self.controller.store, self.sim_data.manifest),
                 timeseries_content=self.timeseries_panel,
@@ -1044,6 +1045,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.graph_panel is not None:
             self.graph_panel.set_bus(self.selection_bus)
         self.selection_bus.changed.connect(self._on_bus_changed)
+        # RC polish: switching analysis tabs re-syncs the newly-shown panel to
+        # the current selection/time.
+        analysis_tabs = getattr(self.pages.get("analysis"), "tabs", None)
+        if analysis_tabs is not None:
+            analysis_tabs.currentChanged.connect(lambda _i: self.selection_bus.resend())
 
     # Adaptive Workspace presets (V5-M4/P4): each focuses the app on a task by
     # raising its primary analysis tab and publishing the quantity that task
@@ -1256,6 +1262,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.page_stack.setCurrentWidget(page)
         self.nav_rail.set_active(key)
         page.on_enter()
+        # RC polish: a panel that becomes visible catches up to the current
+        # selection/time (hidden panels skip live updates for performance).
+        if getattr(self, "selection_bus", None) is not None:
+            self.selection_bus.resend()
 
     def _reset_grid_after_compare(self) -> None:
         """Bugfix: leaving Compare (which sets up a 1x2 scenario-A /
@@ -1867,6 +1877,8 @@ class MainWindow(QtWidgets.QMainWindow):
         cell.set_quantity_silently(self.current_quantity_key)
         self._current_n_frames = self._init_cell_view(cell)
         self.timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
+        if getattr(self, "analysis_timeline", None) is not None:
+            self.analysis_timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
         self.timeline.set_index(0)
         self._update_event_markers()
 
@@ -2028,9 +2040,17 @@ class MainWindow(QtWidgets.QMainWindow):
                 else:
                     cell.view.show_frame(frame, **extra)
         self.timeline.set_index(index)
+        if getattr(self, "analysis_timeline", None) is not None:
+            self.analysis_timeline.set_index(index)
         current_time = index / self.time_controller.timesteps_per_second
         self.statusBar().showMessage(f"t = {current_time:.1f} s", 2000)
         self._update_inspector(index, active_frame)
+        # RC polish: broadcast the playback time so every bus-bound analysis
+        # panel evolves in lockstep with the Live Viewer (both seeks and
+        # playback ticks pass through here). Guarded against the echo of a
+        # seek that itself originated from the bus.
+        if getattr(self, "selection_bus", None) is not None and not self._seek_from_bus:
+            self.selection_bus.update(origin=self, time_s=current_time)
 
     def _scenario_label(self, case_index: int) -> str:
         for entry in (self.sim_data.manifest or []):
@@ -2112,17 +2132,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_playing_changed(self, playing: bool):
         self.timeline.set_playing(playing)
+        if getattr(self, "analysis_timeline", None) is not None:
+            self.analysis_timeline.set_playing(playing)
         self.start_button.setEnabled(not playing)
         self.stop_button.setEnabled(playing)
 
     def _on_seek_requested(self, index: int):
+        # The time is broadcast to the bus from _on_time_changed (the single
+        # per-frame hook), so seeks and playback ticks are handled uniformly.
         self.time_controller.seek(index)
-        # V5-M1: publish a user/insight seek so analysis panels follow the
-        # Live Viewer. Guarded so a seek that itself came from the bus does
-        # not echo back (origin=self is ignored by _on_bus_changed).
-        if getattr(self, "selection_bus", None) is not None and not self._seek_from_bus:
-            fps = self.time_controller.timesteps_per_second
-            self.selection_bus.update(origin=self, time_s=index / fps)
 
     def _on_sim_error(self, message: str):
         QtWidgets.QMessageBox.critical(self, "Simulation error", message)
@@ -2259,6 +2277,8 @@ class MainWindow(QtWidgets.QMainWindow):
         caller decides whether to resume playback."""
         self._current_n_frames = self.controller.store.get(case_idx, self.current_quantity_key).shape[0]
         self.timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
+        if getattr(self, "analysis_timeline", None) is not None:
+            self.analysis_timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
         self._update_event_markers()
         active = self.view_grid.active_cell()
         if active.cell_type == "slice":
@@ -2527,6 +2547,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._current_n_frames = self.controller.store.get(cell.case_index, cell.quantity_key).shape[0]
         self.timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
+        if getattr(self, "analysis_timeline", None) is not None:
+            self.analysis_timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
         self._update_event_markers()
 
     def _apply_manifest_case_to_controller(self, case_index: int):
@@ -3556,6 +3578,48 @@ class MainWindow(QtWidgets.QMainWindow):
             self._stop_simulation()
         else:
             self._start_simulation()
+
+    # --- Analysis-page playback transport (RC polish) --------------------
+    def _build_analysis_playback_bar(self) -> QtWidgets.QWidget:
+        """A compact transport for the Analysis page, driving the *same*
+        TimeController as the Live Viewer -- so the temporal analysis panels
+        play/pause/step/loop in lockstep. Reuses TimelineWidget + the existing
+        seek/play/loop/speed handlers; no new playback engine."""
+        bar = QtWidgets.QWidget()
+        row = QtWidgets.QHBoxLayout(bar)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+
+        def _tool(text, tip, slot):
+            btn = QtWidgets.QToolButton()
+            btn.setText(text)
+            btn.setToolTip(tip)
+            btn.setAccessibleName(tip)
+            btn.clicked.connect(slot)
+            return btn
+
+        row.addWidget(_tool("⏮", "Step back one frame",
+                            lambda: self._on_seek_requested(max(0, self.time_controller.index - 1))))
+        self.analysis_timeline = TimelineWidget()
+        self.analysis_timeline.play_pause_clicked.connect(self._toggle_play_pause)
+        self.analysis_timeline.seek_requested.connect(self._on_seek_requested)
+        self.analysis_timeline.loop_toggled.connect(self.time_controller.set_loop)
+        row.addWidget(self.analysis_timeline, 1)
+        row.addWidget(_tool("⏭", "Step forward one frame",
+                            lambda: self._on_seek_requested(
+                                min(self._current_n_frames - 1, self.time_controller.index + 1))))
+        row.addWidget(_tool("⏹", "Stop and return to the start", self._analysis_stop))
+        self.analysis_speed = ToggleGroup(
+            [("1x", 1), ("2x", 2), ("3x", 3)], default_index=0,
+            accessible_name="Analysis playback speed")
+        self.analysis_speed.value_changed.connect(self.time_controller.set_speed)
+        row.addWidget(self.analysis_speed)
+        return bar
+
+    def _analysis_stop(self) -> None:
+        if self.time_controller.is_playing():
+            self._toggle_play_pause()
+        self._on_seek_requested(0)
 
     def mouseDoubleClickEvent(self, event):
         # Kept as an explicit opt-in gesture, but no longer forced at startup.

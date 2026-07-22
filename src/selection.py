@@ -194,3 +194,9 @@ class SelectionBus(QObject):
     def update(self, origin=None, **fields) -> bool:
         """Partial update: replace some fields of the current selection."""
         return self.set(self._current.with_(**fields), origin)
+
+    def resend(self) -> None:
+        """Re-emit the current selection unconditionally (RC polish): lets a
+        panel that was hidden (and therefore skipped live updates) catch up to
+        the current state the moment it becomes visible."""
+        self.changed.emit(self._current, None)
