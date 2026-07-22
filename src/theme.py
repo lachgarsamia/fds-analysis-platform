@@ -72,6 +72,15 @@ class Palette:
     success: str
     danger: str
     warning: str
+    # Matplotlib "chrome" (RC polish): plot backgrounds, axes text/ticks/spines,
+    # and gridlines follow the theme so every plot adapts light<->dark. The
+    # scientific field colormaps are NOT themed (data must read identically).
+    # Defaults are the light values; DARK/THEATRE override them.
+    plot_bg: str = "#FFFFFF"
+    plot_axes: str = "#FFFFFF"
+    plot_fg: str = "#14171F"
+    plot_grid: str = "#E2E5EA"
+    plot_muted: str = "#5B6472"
 
 
 # WCAG AA target: body text vs bg_base and vs surface should be >= 4.5:1.
@@ -126,6 +135,11 @@ DARK = Palette(
     success="#3DD68C",
     danger="#F1594F",
     warning="#F5A623",
+    plot_bg="#14171B",
+    plot_axes="#14171B",
+    plot_fg="#EDEEF2",
+    plot_grid="#23272E",
+    plot_muted="#9CA3AF",
 )
 
 
@@ -156,6 +170,11 @@ THEATRE = Palette(
     success="#3DD68C",
     danger="#F1594F",
     warning="#F5A623",
+    plot_bg="#101318",
+    plot_axes="#101318",
+    plot_fg="#EDEEF2",
+    plot_grid="#1C2027",
+    plot_muted="#9CA3AF",
 )
 
 

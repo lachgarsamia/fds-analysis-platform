@@ -10,11 +10,63 @@ Small reusable widgets used by the main window.
   keyboard-navigable widget instead of N buttons wired by hand.
 """
 
+import weakref
 from typing import List, Sequence, Tuple
 
 from PyQt5 import QtCore, QtGui, QtWidgets
+import matplotlib as mpl
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+
+
+# --- Plot theming (RC polish) --------------------------------------------
+# One source of truth for matplotlib "chrome" (backgrounds, axes text/ticks/
+# spines, gridlines) so every plot adapts to the app's light/dark theme. The
+# scientific field colormaps are never touched here -- only the surrounding
+# chrome -- so a heatmap reads identically in both themes. New axes inherit
+# these via rcParams; existing canvases are re-styled on a theme switch.
+_PLOT_THEME = {"bg": "#FFFFFF", "axes": "#FFFFFF", "fg": "#14171F", "grid": "#E2E5EA"}
+_CANVASES = []   # weakrefs to live MplCanvas instances
+
+
+def _style_ax(ax) -> None:
+    ax.set_facecolor(_PLOT_THEME["axes"])
+    for spine in ax.spines.values():
+        spine.set_color(_PLOT_THEME["fg"])
+    ax.tick_params(colors=_PLOT_THEME["fg"], which="both")
+    ax.xaxis.label.set_color(_PLOT_THEME["fg"])
+    ax.yaxis.label.set_color(_PLOT_THEME["fg"])
+    if ax.get_title():
+        ax.title.set_color(_PLOT_THEME["fg"])
+
+
+def set_plot_theme(palette) -> None:
+    """Point every plot at the palette's chrome colors. Updates rcParams (so
+    axes created afterwards inherit them) and re-styles + redraws existing
+    canvases. Field colormaps are unaffected."""
+    _PLOT_THEME.update(bg=palette.plot_bg, axes=palette.plot_axes,
+                       fg=palette.plot_fg, grid=palette.plot_grid)
+    mpl.rcParams.update({
+        "figure.facecolor": palette.plot_bg,
+        "axes.facecolor": palette.plot_axes,
+        "axes.edgecolor": palette.plot_fg,
+        "axes.labelcolor": palette.plot_fg,
+        "axes.titlecolor": palette.plot_fg,
+        "xtick.color": palette.plot_fg,
+        "ytick.color": palette.plot_fg,
+        "text.color": palette.plot_fg,
+        "grid.color": palette.plot_grid,
+        "legend.edgecolor": palette.plot_grid,
+    })
+    for ref in list(_CANVASES):
+        canvas = ref()
+        if canvas is None:
+            continue
+        canvas.fig.set_facecolor(palette.plot_bg)
+        for ax in canvas.fig.axes:
+            _style_ax(ax)
+        canvas._background = None   # blit cache is stale after a theme change
+        canvas.draw_idle()
 
 
 class MplCanvas(FigureCanvas):
@@ -50,7 +102,8 @@ class MplCanvas(FigureCanvas):
     DEFAULT_DPI = 150
 
     def __init__(self, parent=None, dpi: int = DEFAULT_DPI):
-        self.fig = Figure(dpi=dpi, facecolor=self.PLOT_BG)
+        self.fig = Figure(dpi=dpi, facecolor=_PLOT_THEME["bg"])
+        _CANVASES.append(weakref.ref(self))
         super().__init__(self.fig)
         self.setParent(parent)
         self.setSizePolicy(

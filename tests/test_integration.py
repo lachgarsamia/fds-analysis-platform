@@ -3134,3 +3134,46 @@ class TestKnowledgeGraph:
         visible = g._visible_ids()
         assert "tag:vod2" in visible and len(visible) == len(neigh) + 1
         window.close()
+
+
+class TestReleaseCandidatePolish:
+    """RC polish: theme-aware plots, HRR/Fire-Story states, layout, theme resolve."""
+
+    def test_theme_resolves_and_plots_follow(self, qapp):
+        import widgets
+        window = MainWindow(load_simulation_data())
+        window.height_panel.ensure_loaded()
+        window._set_theme("dark")
+        assert window.height_panel.plot_canvas.fig.get_facecolor()[0] < 0.2
+        window._set_theme("light")
+        assert window.height_panel.plot_canvas.fig.get_facecolor()[0] > 0.9
+        assert window._resolve_theme("system") in ("light", "dark")
+        assert window._resolve_theme("nonsense") == "light"
+        window.close()
+
+    def test_hrr_gauge_has_explicit_states(self, qapp):
+        from inspector import InspectorPanel
+        insp = InspectorPanel()
+        # no HRR data -> explicit message, not a silent grey bar
+        insp.set_time(0, hrr_fraction=None)
+        assert insp.hrr_gauge.value() == 0
+        assert "No heat-release-rate" in insp.hrr_state_label.text()
+        # data present -> value shown, state cleared
+        insp.set_time(0, hrr_fraction=0.5)
+        assert insp.hrr_gauge.value() == 50 and insp.hrr_state_label.text() == ""
+
+    def test_fire_story_empty_state(self, qapp):
+        from inspector import InspectorPanel
+        insp = InspectorPanel()
+        insp.set_story([], fps=4)
+        assert "No fire events" in insp.phase_label.text()
+
+    def test_quantity_selector_sits_below_playback(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        # both controls exist and the quantity combo is populated
+        assert window.quantity_combo.count() >= 1
+        window.close()

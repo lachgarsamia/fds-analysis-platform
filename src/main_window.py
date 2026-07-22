@@ -156,6 +156,22 @@ MIN_HEIGHT = 600
 # can be garbage-collected out from under Qt and crash the app.
 _OPEN_STUDY_WINDOWS = []
 
+
+def _detect_system_theme() -> str:
+    """The OS appearance as 'light' or 'dark' (RC polish, "Follow System").
+    macOS reports Dark via AppleInterfaceStyle; elsewhere we default to light."""
+    import subprocess
+    import sys
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(["defaults", "read", "-g", "AppleInterfaceStyle"],
+                                 capture_output=True, text=True, timeout=1)
+            return "dark" if "dark" in out.stdout.lower() else "light"
+        except Exception:
+            return "light"
+    return "light"
+
+
 # Inspector "Slice" field (scientific-visualization completion pass):
 # SliceKey.direction is 0-indexed per slice_key.py's own convention
 # (direction=1 is documented there as "normal to y").
@@ -371,7 +387,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         theme_menu = view_menu.addMenu("Theme")
         self.theme_action_group = QtWidgets.QActionGroup(self)
-        for key, label in (("light", "Light"), ("dark", "Dark"), ("theatre", "Theatre (demo)")):
+        for key, label in (("light", "Light"), ("dark", "Dark"),
+                           ("system", "Follow System"), ("theatre", "Theatre (demo)")):
             action = QtWidgets.QAction(label, self, checkable=True)
             action.setChecked(key == self.current_theme_name)
             action.triggered.connect(lambda _checked, k=key: self._set_theme(k))
@@ -1487,7 +1504,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.quantity_combo.setEnabled(multiple_available)
         self.quantity_combo.currentIndexChanged.connect(self._on_quantity_changed)
         quantity_section.add_row(self.quantity_combo)
-        outer.addWidget(quantity_section)
+        # RC polish (§3): the quantity selector sits directly below the Playback
+        # section so changing what's shown is immediately accessible, instead of
+        # being buried below the scenario controls.
+        outer.insertWidget(outer.indexOf(playback_section) + 1, quantity_section)
 
         # --- Display controls -------------------------------------------------
         # Range/default/label come from QUANTITY_DISPLAY for the starting
@@ -3404,10 +3424,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self.view_grid.active_view().set_interpolation(interpolation)
 
     def _apply_theme(self):
-        palette = THEMES[self.current_theme_name]
+        palette = THEMES[self._resolve_theme(self.current_theme_name)]
         self.setStyleSheet(build_qss(palette, self.ui_scale))
         self.schematic.apply_palette(palette)
         self._refresh_toggle_icons(palette)
+        # RC polish: every matplotlib plot follows the theme's chrome colors.
+        from widgets import set_plot_theme
+        set_plot_theme(palette)
+
+    @staticmethod
+    def _resolve_theme(name: str) -> str:
+        """Map the chosen theme to a concrete palette key. 'system' follows the
+        OS appearance (macOS); anything unknown falls back to light."""
+        if name == "system":
+            return _detect_system_theme()
+        return name if name in THEMES else "light"
         self.view_grid.apply_accent(palette.accent)
         # Card shadows are Python-side (QGraphicsDropShadowEffect, not QSS --
         # see theme.apply_card_shadow), so a theme switch has to reapply

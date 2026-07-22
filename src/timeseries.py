@@ -235,8 +235,13 @@ class TimeSeriesPanel(QtWidgets.QWidget):
         fig.clear()
         self._marker_artists = []
         self._locator_ax = fig.add_subplot(111)
+        # RC polish (visualization policy): the composite uses the selected
+        # quantity's registry colormap, so the same quantity looks identical here
+        # and in the Live Viewer / Analysis, instead of an ad-hoc gist_heat.
+        from registry import get_quantity
         self._locator_image = self._locator_ax.imshow(
-            composite, cmap="gist_heat", aspect="auto", extent=extent)
+            composite, cmap=get_quantity(self.current_key).cmap,
+            aspect="auto", extent=extent)
         self._locator_ax.set_title("Time-max composite — click to probe", fontsize=8)
         self._locator_ax.set_xlabel("x (m)", fontsize=8)
         self._locator_ax.set_ylabel("z (m)", fontsize=8)

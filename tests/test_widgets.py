@@ -20,10 +20,17 @@ class TestMplCanvasRenderingQuality:
         canvas = MplCanvas(dpi=72)
         assert canvas.fig.dpi == 72
 
-    def test_plot_background_is_explicit_white(self, qapp):
-        canvas = MplCanvas()
-        assert canvas.fig.get_facecolor() == (1.0, 1.0, 1.0, 1.0)
-        assert MplCanvas.PLOT_BG == "#FFFFFF"
+    def test_plot_background_follows_theme(self, qapp):
+        # RC polish: plot chrome is theme-aware. Light -> white figure; dark ->
+        # a dark figure. The scientific field colormaps are unaffected (not
+        # tested here -- they are passed explicitly per imshow).
+        import widgets
+        from theme import LIGHT, DARK
+        widgets.set_plot_theme(LIGHT)
+        assert MplCanvas().fig.get_facecolor() == (1.0, 1.0, 1.0, 1.0)
+        widgets.set_plot_theme(DARK)
+        assert MplCanvas().fig.get_facecolor()[0] < 0.2   # dark background
+        widgets.set_plot_theme(LIGHT)                      # restore for other tests
 
 
 class TestCollapsibleSectionCard:

@@ -200,8 +200,15 @@ class InspectorPanel(QtWidgets.QWidget):
         layout.addWidget(hrr_caption)
         self.hrr_gauge = QtWidgets.QProgressBar()
         self.hrr_gauge.setRange(0, 100)
-        self.hrr_gauge.setTextVisible(False)
+        self.hrr_gauge.setTextVisible(True)
+        self.hrr_gauge.setFormat("%p% of peak")
         layout.addWidget(self.hrr_gauge)
+        # RC polish: an explicit HRR state so the gauge is never a silent grey
+        # bar -- it either reads a value or says why it can't.
+        self.hrr_state_label = QtWidgets.QLabel("")
+        self.hrr_state_label.setWordWrap(True)
+        self.hrr_state_label.setProperty("role", "caption")
+        layout.addWidget(self.hrr_state_label)
 
         self.narration_label = QtWidgets.QLabel("")
         self.narration_label.setWordWrap(True)
@@ -284,7 +291,10 @@ class InspectorPanel(QtWidgets.QWidget):
         self._events = list(events or [])
         self._events_fps = max(1, fps)
         self.story_list.set_insights(self._events)
-        self.phase_label.setText("")
+        # RC polish: an explicit empty-state instead of a blank grey list.
+        self.phase_label.setText(
+            "" if self._events else "No fire events detected for this view "
+            "(temperature-based; other quantities have no story).")
 
     def set_story_index(self, index: int) -> None:
         """Update the live "current phase" line to the most recent event at
@@ -320,6 +330,13 @@ class InspectorPanel(QtWidgets.QWidget):
         self.sparkline.set_index(index)
         if hrr_fraction is not None:
             self.hrr_gauge.setValue(int(round(max(0.0, min(1.0, hrr_fraction)) * 100)))
+            self.hrr_gauge.setFormat("%p% of peak")
+            self.hrr_state_label.setText("")
+        else:
+            self.hrr_gauge.setValue(0)
+            self.hrr_gauge.setFormat("no data")
+            self.hrr_state_label.setText(
+                "No heat-release-rate output for this scenario (no _hrr.csv).")
 
         t_now = index / self._fps if self._fps else 0.0
         self.frame_label.setText(f"Frame {index + 1} / {max(self._n_frames, 1)}   ·   t = {t_now:.1f} s")
