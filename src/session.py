@@ -41,7 +41,8 @@ def build_session_dict(layout_name: str, cells: list, active_index: int, time_in
                         name: str = "", intent: str = "", metadata: dict | None = None,
                         time_window: dict | None = None, filters: dict | None = None,
                         measurements: list | None = None,
-                        selection: dict | None = None) -> dict:
+                        selection: dict | None = None,
+                        calculated_fields: list | None = None) -> dict:
     return {
         "version": SESSION_VERSION,
         "layout": layout_name,
@@ -61,6 +62,7 @@ def build_session_dict(layout_name: str, cells: list, active_index: int, time_in
         "filters": filters or {},           # experiment-browser filter state
         "measurements": measurements or [], # V4-M7 on-canvas measurements
         "selection": selection or {},       # V5-M1 shared selection (scenario/time/point/...)
+        "calculated_fields": calculated_fields or [],  # V6-M1 Field Calculator definitions
     }
 
 

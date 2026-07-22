@@ -3243,3 +3243,87 @@ class TestAnalysisPlayback:
         if window.study_panel is not None:
             assert window.study_panel.response_combo.count() == len(sa.RESPONSE_KEYS)
         window.close()
+
+
+class TestFieldCalculator:
+    """V6-M1: safe scientific expression engine integrated as quantities."""
+
+    def teardown_method(self):
+        import field_calculator as fc
+        fc.clear()
+
+    def test_create_field_registers_and_provider_computes(self, qapp):
+        import numpy as np
+        from slice_key import SliceKey
+        from registry import QUANTITY_REGISTRY, get_quantity
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            assert getattr(window, "calculator_panel", None) is None
+            window.close()
+            return
+        p = window.calculator_panel
+        p.name_edit.setText("Temperature Rise")
+        p.expr_edit.setText("Temperature - 20")
+        assert p.save_button.isEnabled()          # valid expression
+        p._save()
+        assert "Temperature Rise" in QUANTITY_REGISTRY
+        q = get_quantity("Temperature Rise")
+        assert q.calculated and q.kind == "derived" and q.expression == "Temperature - 20"
+        raw = np.asarray(window.controller.store.get(0, SliceKey("TEMPERATURE")))
+        calc = np.asarray(window.quantity_provider.get(0, SliceKey("Temperature Rise")))
+        assert np.allclose(calc, raw - 20)        # plots/exports can load it via the provider
+        window.close()
+
+    def test_unsafe_expression_disables_save(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.calculator_panel is None:
+            window.close()
+            return
+        p = window.calculator_panel
+        p.expr_edit.setText("__import__('os')")
+        assert not p.save_button.isEnabled() and "✗" in p.status.text()
+        window.close()
+
+    def test_gradient_and_rate_fields_compute(self, qapp):
+        import numpy as np
+        from slice_key import SliceKey
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        p = window.calculator_panel
+        p.name_edit.setText("Grad"); p.expr_edit.setText("gradient(Temperature)"); p._save()
+        p.name_edit.setText("Rate"); p.expr_edit.setText("rate(Temperature)"); p._save()
+        raw = np.asarray(window.controller.store.get(0, SliceKey("TEMPERATURE")))
+        assert np.asarray(window.quantity_provider.get(0, SliceKey("Grad"))).shape == raw.shape
+        assert np.asarray(window.quantity_provider.get(0, SliceKey("Rate"))).shape == raw.shape
+        window.close()
+
+    def test_calculated_fields_survive_session_roundtrip(self, qapp):
+        import field_calculator as fc
+        from registry import QUANTITY_REGISTRY
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        p = window.calculator_panel
+        p.name_edit.setText("Exposure"); p.expr_edit.setText("Temperature * 2"); p._save()
+        sd = window._collect_session_dict("t", "")
+        assert len(sd["calculated_fields"]) == 1
+        fc.clear()
+        assert "Exposure" not in QUANTITY_REGISTRY
+        window._apply_analysis_session(sd)
+        assert "Exposure" in QUANTITY_REGISTRY and len(fc.all_fields()) == 1
+        window.close()
+
+    def test_existing_quantities_unchanged(self, qapp):
+        # V5 quantity discovery must be unaffected by the calculator
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if not sim_data.is_demo:
+            tool_qs = [k.quantity for _l, k in window._quantity_options()]
+            assert "TEMPERATURE" in tool_qs and "Temperature Rise" not in tool_qs
+        window.close()

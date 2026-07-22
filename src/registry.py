@@ -47,6 +47,8 @@ class QuantityInfo:
     interpretation: str = ""    # one-line "what this means" for the Quantities panel
     gated: bool = False         # True -> data not available yet (see gate_reason)
     gate_reason: str = ""       # why it is gated (shown in the UI, non-breaking)
+    expression: str = ""        # V6-M1: the Field Calculator expression (calculated fields)
+    calculated: bool = False    # V6-M1: True for a user-defined calculated field
 
 
 QUANTITY_REGISTRY = {

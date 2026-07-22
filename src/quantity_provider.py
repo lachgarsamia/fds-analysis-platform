@@ -35,8 +35,9 @@ class GatedQuantityError(RuntimeError):
 
 
 class QuantityProvider:
-    def __init__(self, store):
+    def __init__(self, store, fps: int = 1):
         self._store = store
+        self._fps = max(1, fps)   # V6-M1: rate() needs the time step
 
     def _source_key(self, key: SliceKey) -> SliceKey:
         """For a derived quantity, the SliceKey of the raw field it reads."""
@@ -52,6 +53,15 @@ class QuantityProvider:
             # M-SIM re-run. When that lands, they become plain slice reads and
             # this guard falls through -- no other change needed.
             raise GatedQuantityError(q.gate_reason)
+        if getattr(q, "calculated", False):
+            # V6-M1: a Field-Calculator field. Evaluate its expression, resolving
+            # each dependency through this same provider (so a calculated field
+            # can build on raw, derived, or other calculated fields), on the same
+            # slice plane. Never executes raw code -- see field_calculator.
+            import field_calculator as fc
+            resolve = lambda dep_key: self.get(scenario, SliceKey(
+                dep_key, key.direction, key.offset))
+            return fc.evaluate(q.expression, resolve, self._fps)
         if q.kind == "derived":
             source = self._store.get(scenario, self._source_key(key))
             return derive(key.quantity, source)   # elementwise; applies to the whole (t,z,x) array
@@ -67,7 +77,14 @@ class QuantityProvider:
 
     def get_extent(self, scenario: int, key: SliceKey = None):
         key = key or SliceKey("TEMPERATURE")
-        if get_quantity(key.quantity).kind == "derived":
+        q = get_quantity(key.quantity)
+        if getattr(q, "calculated", False):
+            # a calculated field shares its first dependency's grid/extent.
+            import field_calculator as fc
+            field = fc.get_field(key.quantity)
+            dep = field.dependencies[0] if field and field.dependencies else "TEMPERATURE"
+            return self.get_extent(scenario, SliceKey(dep, key.direction, key.offset))
+        if q.kind == "derived":
             key = self._source_key(key)
         return self._store.get_extent(scenario, key)
 

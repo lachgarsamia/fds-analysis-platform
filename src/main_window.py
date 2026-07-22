@@ -87,6 +87,8 @@ from spacetime_panel import SpaceTimePanel
 from narrative_panel import NarrativePanel
 from ensemble_panel import EnsemblePanel
 from graph_panel import GraphPanel
+from calculator_panel import CalculatorPanel
+import field_calculator as field_calculator_mod
 from figure_export import save_figure
 from report_builder import build_publication_manifest
 import study_analytics as study_analytics_mod
@@ -758,6 +760,15 @@ class MainWindow(QtWidgets.QMainWindow):
         # manifest for scenario identity), lazy-loaded via the Analysis
         # page's on_enter -- never touches the store at construction.
         if self.sim_data.manifest:
+            # QuantityProvider (V5-M1 Layer 1) — created here so the Field
+            # Calculator panel (V6-M1) can share it; _build_selection reuses it.
+            self.quantity_provider = QuantityProvider(
+                self.controller.store, fps=self.sim_data.timesteps_per_second)
+            # V6-M1: restore any calculated fields before the panels read the
+            # registry (a fresh window starts with none).
+            field_calculator_mod.clear()
+            self.calculator_panel = CalculatorPanel(
+                self.quantity_provider, self.sim_data.manifest)
             self.timeseries_panel = TimeSeriesPanel(
                 self.controller.store, self.sim_data.manifest,
                 self._quantity_options(), self.sim_data.timesteps_per_second)
@@ -881,6 +892,8 @@ class MainWindow(QtWidgets.QMainWindow):
                                  self.sim_data.manifest)
                 if self.is_factorial else None)
         else:
+            self.quantity_provider = None
+            self.calculator_panel = None
             self.timeseries_panel = None
             self.energy_panel = None
             self.factor_effects_panel = None
@@ -955,6 +968,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 narrative_content=self.narrative_panel,
                 ensemble_content=self.ensemble_panel,
                 graph_content=self.graph_panel,
+                calculator_content=self.calculator_panel,
                 experiments_content=self.experiments_panel,
                 quantities_content=self.quantities_panel,
                 assistant_content=self.assistant_panel,
@@ -1011,7 +1025,9 @@ class MainWindow(QtWidgets.QMainWindow):
         the cinematic pipeline. Deeper per-panel point/region sync rides along
         as panels are individually touched (M2-M6)."""
         self.selection_bus = SelectionBus()
-        self.quantity_provider = QuantityProvider(self.controller.store)
+        if getattr(self, "quantity_provider", None) is None:
+            self.quantity_provider = QuantityProvider(
+                self.controller.store, fps=self.time_controller.timesteps_per_second)
         self._seek_from_bus = False
         fps = self.time_controller.timesteps_per_second
         for attr in ("height_panel", "zone_panel", "linked_panel", "time_window_panel",
@@ -3189,7 +3205,8 @@ class MainWindow(QtWidgets.QMainWindow):
             measurements=(self.measurement_panel.get_measurements()
                           if self.measurement_panel is not None else []),
             selection=(self.selection_bus.current.to_dict()
-                       if getattr(self, "selection_bus", None) is not None else {}))
+                       if getattr(self, "selection_bus", None) is not None else {}),
+            calculated_fields=[f.to_dict() for f in field_calculator_mod.all_fields()])
 
     # --------------------------------------------------- named sessions (M6)
     def _refresh_sessions(self) -> None:
@@ -3258,6 +3275,16 @@ class MainWindow(QtWidgets.QMainWindow):
             self.experiment_browser.set_filter_state(session.get("filters", {}))
         if self.measurement_panel is not None:
             self.measurement_panel.set_measurements(session.get("measurements", []))
+        # V6-M1: restore the Field Calculator definitions (absent -> none). Clear
+        # first so a load replaces rather than accumulates.
+        field_calculator_mod.clear()
+        for d in session.get("calculated_fields", []) or []:
+            try:
+                field_calculator_mod.register(field_calculator_mod.CalculatedField.from_dict(d))
+            except Exception:  # noqa: BLE001 - a bad definition must not block the load
+                continue
+        if self.calculator_panel is not None:
+            self.calculator_panel._refresh_list()
         # V5-M1: restore the shared selection (absent in older sessions -> empty).
         if getattr(self, "selection_bus", None) is not None:
             self.selection_bus.set(Selection.from_dict(session.get("selection", {})))
