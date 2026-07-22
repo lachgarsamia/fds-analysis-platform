@@ -89,6 +89,7 @@ from ensemble_panel import EnsemblePanel
 from graph_panel import GraphPanel
 from calculator_panel import CalculatorPanel
 import field_calculator as field_calculator_mod
+from device_panel import DevicePanel
 from figure_export import save_figure
 from report_builder import build_publication_manifest
 import study_analytics as study_analytics_mod
@@ -769,6 +770,11 @@ class MainWindow(QtWidgets.QMainWindow):
             field_calculator_mod.clear()
             self.calculator_panel = CalculatorPanel(
                 self.quantity_provider, self.sim_data.manifest)
+            # Virtual Device Network (V6-M2): thermocouples/detectors/
+            # sprinklers placed at a point, computed once and cached.
+            self.device_panel = DevicePanel(
+                self.quantity_provider, self.sim_data.manifest,
+                self.sim_data.timesteps_per_second)
             self.timeseries_panel = TimeSeriesPanel(
                 self.controller.store, self.sim_data.manifest,
                 self._quantity_options(), self.sim_data.timesteps_per_second)
@@ -894,6 +900,7 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.quantity_provider = None
             self.calculator_panel = None
+            self.device_panel = None
             self.timeseries_panel = None
             self.energy_panel = None
             self.factor_effects_panel = None
@@ -969,6 +976,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 ensemble_content=self.ensemble_panel,
                 graph_content=self.graph_panel,
                 calculator_content=self.calculator_panel,
+                devices_content=self.device_panel,
                 experiments_content=self.experiments_panel,
                 quantities_content=self.quantities_panel,
                 assistant_content=self.assistant_panel,
@@ -1036,7 +1044,7 @@ class MainWindow(QtWidgets.QMainWindow):
                      "factor_effects_panel", "tenability_panel", "timeseries_panel",
                      "energy_panel", "forecasting_panel", "quantities_panel",
                      "advanced_compare_panel", "study_panel", "hazard_panel",
-                     "spacetime_panel", "narrative_panel", "ensemble_panel"):
+                     "spacetime_panel", "narrative_panel", "ensemble_panel", "device_panel"):
             panel = getattr(self, attr, None)
             if panel is not None:
                 bind_to_bus(panel, self.selection_bus, fps)
@@ -1065,6 +1073,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # and invalidate the provider's computed-field memo.
         if self.calculator_panel is not None:
             self.calculator_panel.fields_changed.connect(self._refresh_quantity_list)
+        # V6-M2: a placed/edited/deleted device refreshes the Live Viewer's
+        # markers; clicking a device's result (an Insight) seeks/highlights
+        # through the same shared navigation every other V3 feature uses.
+        if self.device_panel is not None:
+            self.device_panel.devices_changed.connect(self._refresh_device_markers)
+            self.device_panel.device_activated.connect(self._on_insight_activated)
         self.selection_bus.changed.connect(self._on_bus_changed)
         # RC polish: switching analysis tabs re-syncs the newly-shown panel to
         # the current selection/time.
@@ -2123,6 +2137,34 @@ class MainWindow(QtWidgets.QMainWindow):
             return EnsembleView.compute_composite(arrays, idx, cell.ensemble_stat)
         return None
 
+    def _device_markers_for(self, case_index: int, index: int) -> list:
+        """(x, z, color) for every V6-M2 device placed on `case_index`, at
+        already-cached frame `index` -- Device.state_at() is a plain index
+        into results computed once at placement/edit, never a recompute."""
+        panel = getattr(self, "device_panel", None)
+        if panel is None:
+            return []
+        markers = []
+        for d in panel._devices:
+            if d.scenario != case_index or d.results is None:
+                continue
+            if d.type == "thermocouple":
+                color = "#3DA5FF"
+            else:
+                color = "#FF5252" if d.state_at(index).get("active") else "#3DA5FF"
+            markers.append((d.position[0], d.position[1], color))
+        return markers
+
+    def _refresh_device_markers(self) -> None:
+        """Re-draw every visible slice cell's device markers at the current
+        time -- called when a device is placed/edited/deleted, so the Live
+        Viewer reflects it immediately without waiting for the next tick."""
+        index = self.time_controller.index
+        for cell in self.view_grid.visible_cells():
+            if cell.cell_type == "slice":
+                cell.view.set_device_markers(self._device_markers_for(cell.case_index, index))
+                cell.view.redraw_markers_now()
+
     def _on_time_changed(self, index: int):
         """TimeController's tick/seek signal (M1.4.1): pull the frame for
         *every visible grid cell* at `index` and redraw each (M2.2.3 --
@@ -2149,6 +2191,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 # Cinematic mode's smoke layer (Tier 2, FireLab roadmap
                 # Phase 2.1f) wants VELOCITY data every tick regardless of
                 # whether the separate contour-overlay checkbox is on.
+                if cell.cell_type == "slice":
+                    # markers must be set *before* show_frame's blit paints
+                    # this tick's animated artists (V6-M2) -- otherwise the
+                    # new marker state wouldn't appear until the next tick.
+                    cell.view.set_device_markers(self._device_markers_for(cell.case_index, index))
                 if cell.view.velocity_overlay_enabled or cinematic:
                     velocity_frame = self._velocity_overlay_frame_for_cell(cell, index)
                     cell.view.show_frame(frame, velocity_frame=velocity_frame, **extra)
@@ -3313,7 +3360,9 @@ class MainWindow(QtWidgets.QMainWindow):
                           if self.measurement_panel is not None else []),
             selection=(self.selection_bus.current.to_dict()
                        if getattr(self, "selection_bus", None) is not None else {}),
-            calculated_fields=[f.to_dict() for f in field_calculator_mod.all_fields()])
+            calculated_fields=[f.to_dict() for f in field_calculator_mod.all_fields()],
+            devices=(self.device_panel.get_devices()
+                     if self.device_panel is not None else []))
 
     # --------------------------------------------------- named sessions (M6)
     def _refresh_sessions(self) -> None:
@@ -3393,6 +3442,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.calculator_panel is not None:
             self.calculator_panel._refresh_list()
         self._refresh_quantity_list()   # V6-M1.5: reflect restored fields in the Live combo
+        # V6-M2: restore devices with their cached results verbatim (no recompute).
+        if self.device_panel is not None:
+            self.device_panel.set_devices(session.get("devices", []))
+            self._refresh_device_markers()
         # V5-M1: restore the shared selection (absent in older sessions -> empty).
         if getattr(self, "selection_bus", None) is not None:
             self.selection_bus.set(Selection.from_dict(session.get("selection", {})))

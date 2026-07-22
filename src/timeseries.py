@@ -77,9 +77,19 @@ def line_profile(data: np.ndarray, index: int, row0: float, col0: float,
 
 
 def write_series_csv(path: str, x_label: str, x_values: np.ndarray,
-                      series: list) -> None:
-    """series: [(column_label, values), ...] -- all same length as x_values."""
+                      series: list, metadata: dict | None = None) -> None:
+    """series: [(column_label, values), ...] -- all same length as x_values.
+
+    `metadata` (V6-M2, virtual devices): optional provenance lines written
+    as `# key,value` comments before the table -- device type, coordinates,
+    parameters -- so an export is traceable on its own. Absent for every
+    pre-existing caller (default None), so their files are byte-for-byte
+    unchanged."""
     with open(path, "w", newline="") as f:
+        if metadata:
+            writer = csv.writer(f)
+            for key, value in metadata.items():
+                writer.writerow([f"# {key}", value])
         writer = csv.writer(f)
         writer.writerow([x_label] + [label for label, _values in series])
         for i, x in enumerate(x_values):

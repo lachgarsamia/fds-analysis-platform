@@ -3401,3 +3401,89 @@ class TestCalculatedFieldsInLiveViewer:
         via_store = window.controller.store.get(cell.case_index, SliceKey("TEMPERATURE"))
         assert via_field is via_store          # same cached object, no provider wrapping
         window.close()
+
+
+class TestVirtualDeviceNetwork:
+    """V6-M2: placing a device instruments the simulation like an
+    experiment, without touching the parser/store/cache/TimeController/
+    cinematic pipeline."""
+
+    def test_placing_a_thermocouple_computes_once_and_lists(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        p = window.device_panel
+        p.ensure_loaded()
+        p.type_combo.setCurrentIndex(p.type_combo.findData("thermocouple"))
+        p._place(1.0, 1.0)
+        assert len(p._devices) == 1
+        dev = p._devices[0]
+        assert dev.results is not None and dev.name == "TC-01"
+        assert p.list.count() == 1
+        window.close()
+
+    def test_device_marker_appears_and_tracks_activation_state(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        p = window.device_panel
+        p.ensure_loaded()
+        p.type_combo.setCurrentIndex(p.type_combo.findData("heat_detector"))
+        p._place(1.0, 1.0)
+        dev = p._devices[0]
+        # markers reach the Live Viewer without a recompute -- state_at() only indexes results
+        markers = window._device_markers_for(dev.scenario, 0)
+        assert len(markers) == 1
+        assert markers[0][:2] == (dev.position[0], dev.position[1])
+        if dev.results.get("activated"):
+            frame_act = dev.results["activation_frame"]
+            before = window._device_markers_for(dev.scenario, max(0, frame_act - 1))[0][2]
+            after = window._device_markers_for(dev.scenario, frame_act)[0][2]
+            assert before != after   # idle -> active color flips at the cached activation frame
+        window.close()
+
+    def test_jump_to_device_seeks_playback(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        p = window.device_panel
+        p.ensure_loaded()
+        p.type_combo.setCurrentIndex(p.type_combo.findData("heat_detector"))
+        p._place(1.0, 1.0)
+        dev = p._devices[0]
+        if not dev.results.get("activated"):
+            window.close()
+            return
+        p.list.setCurrentRow(0)
+        p._jump_to()
+        QtWidgets.QApplication.processEvents()
+        expected = dev.results["activation_frame"]
+        assert window.time_controller.index == expected
+        window.close()
+
+    def test_session_round_trip_preserves_devices_and_results(self, qapp, tmp_path):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        p = window.device_panel
+        p.ensure_loaded()
+        p.type_combo.setCurrentIndex(p.type_combo.findData("sprinkler"))
+        p._place(1.0, 1.0)
+        before = window._collect_session_dict()
+        assert len(before["devices"]) == 1
+        window._apply_analysis_session(before)
+        after = window.device_panel.get_devices()
+        assert after == before["devices"]      # identical, not recomputed
+        window.close()

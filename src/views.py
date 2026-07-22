@@ -123,6 +123,11 @@ class SliceView:
         self.velocity_quiver = None
         self._arrow_rows = None
         self._arrow_cols = None
+        # Virtual device markers (V6-M2): same blit-tracked-artist treatment
+        # as embers/arrows -- a fixed-position, per-frame-recolored scatter,
+        # never recreated. No color-mapping (literal facecolors only), so
+        # (unlike the heatmap) it needs no cmap/clim bookkeeping.
+        self.device_scatter = None
 
     def widget(self) -> QtWidgets.QWidget:
         return self.canvas
@@ -148,6 +153,11 @@ class SliceView:
         # colormap on every redraw -- set_facecolor() below would get
         # silently overwritten back to empty on the very next blit.
         self.ember_scatter = self.ax.scatter([], [], s=[], zorder=5)
+        # Virtual device markers (V6-M2): scientific style -- a small fixed
+        # diamond per placed device, above embers/quiver. No c=... at
+        # construction for the same scalar-mappable reason as ember_scatter.
+        self.device_scatter = self.ax.scatter([], [], s=70, marker="D", zorder=7,
+                                              edgecolors="#14171F", linewidths=1.0)
         self.ax.set_xticks([])
         self.ax.set_yticks([])
         self.canvas.fig.subplots_adjust(top=0.97, bottom=0.03, left=0.02, right=0.95)
@@ -216,10 +226,31 @@ class SliceView:
             self.canvas.blit_update(self._animated_artists())
 
     def _animated_artists(self) -> list:
-        artists = [self.heatmap, self.ember_scatter]
+        artists = [self.heatmap, self.ember_scatter, self.device_scatter]
         if self.velocity_quiver is not None:
             artists.append(self.velocity_quiver)
         return artists
+
+    def set_device_markers(self, markers: list) -> None:
+        """markers: [(x, z, color), ...] physical positions (V6-M2 Virtual
+        Device Network) -- MainWindow recomputes this cheaply every tick
+        from each device's already-cached results (state_at()), never a
+        recompute here. No-op (markers cleared) when this cell has no
+        physical extent to place a point on."""
+        if not markers or self._extent is None:
+            self.device_scatter.set_offsets(np.empty((0, 2)))
+            self.device_scatter.set_facecolor([])
+            return
+        offsets = [(x, z) for x, z, _color in markers]
+        colors = [color for _x, _z, color in markers]
+        self.device_scatter.set_offsets(offsets)
+        self.device_scatter.set_facecolor(colors)
+
+    def redraw_markers_now(self) -> None:
+        """Blit the current device markers immediately (V6-M2) -- for the
+        placed/edited/deleted case, outside a TimeController tick, where
+        nothing else is about to call show_frame() and trigger the blit."""
+        self.canvas.blit_update(self._animated_artists())
 
     def set_cmap(self, name: str) -> None:
         self.heatmap.set_cmap(mpl.colormaps[name])
