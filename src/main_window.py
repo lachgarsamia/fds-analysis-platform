@@ -1060,6 +1060,11 @@ class MainWindow(QtWidgets.QMainWindow):
         # rebuilds its selected-scenario events when the selection changes.
         if self.graph_panel is not None:
             self.graph_panel.set_bus(self.selection_bus)
+        # V6-M1.5: when a calculated field is created/deleted, refresh the Live
+        # Viewer quantity combo so it appears/disappears as a visual quantity,
+        # and invalidate the provider's computed-field memo.
+        if self.calculator_panel is not None:
+            self.calculator_panel.fields_changed.connect(self._refresh_quantity_list)
         self.selection_bus.changed.connect(self._on_bus_changed)
         # RC polish: switching analysis tabs re-syncs the newly-shown panel to
         # the current selection/time.
@@ -1518,14 +1523,18 @@ class MainWindow(QtWidgets.QMainWindow):
         # --- Quantity selector (M2.1) ----------------------------------------
         quantity_section = CollapsibleSection("Data shown")
         self.quantity_infos = self._discover_quantities()
+        # V6-M1.5: the Live combo shows native quantities + computed
+        # (derived/calculated) fields; quantity_infos stays native so the
+        # analysis panels and _quantity_options are unchanged.
+        self._combo_quantity_list = list(self.quantity_infos) + self._computed_quantity_infos()
         self.quantity_combo = QtWidgets.QComboBox()
         self.quantity_combo.setAccessibleName("Quantity shown in the heatmap")
-        multiple_available = len(self.quantity_infos) > 1
-        tooltip = "Choose what the color map shows: temperature, or air speed."
+        multiple_available = len(self._combo_quantity_list) > 1
+        tooltip = "Choose what the color map shows (including calculated fields)."
         if not multiple_available:
             tooltip += " (Only temperature is available in demo-data mode.)"
         self.quantity_combo.setToolTip(tooltip)
-        for info in self.quantity_infos:
+        for info in self._combo_quantity_list:
             self.quantity_combo.addItem(self._quantity_label(info))
         self.quantity_combo.setEnabled(multiple_available)
         self.quantity_combo.currentIndexChanged.connect(self._on_quantity_changed)
@@ -1539,7 +1548,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Range/default/label come from QUANTITY_DISPLAY for the starting
         # quantity (current_quantity_key, set in __init__); switching
         # quantity later re-applies these via _apply_quantity_display_defaults.
-        initial_display = QUANTITY_DISPLAY[self.current_quantity_key.quantity]
+        initial_display = self._display_for(self.current_quantity_key.quantity)
         temp_section = CollapsibleSection("Display scale (max)")
         temp_row = QtWidgets.QHBoxLayout()
         self.temp_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -1581,8 +1590,92 @@ class MainWindow(QtWidgets.QMainWindow):
     def _quantity_options(self) -> list:
         """[(label, SliceKey), ...] for a grid cell's per-cell quantity
         combo -- same entries/labels as the control panel's own quantity
-        combo (self.quantity_infos, computed in _build_control_panel)."""
+        combo (self.quantity_infos, computed in _build_control_panel).
+
+        Native quantities only -- calculated/derived fields are computed via the
+        QuantityProvider and the analysis panels still read the store directly,
+        so this list (which drives their combos) stays native (V6-M1.5)."""
         return [(self._quantity_label(info), info.key) for info in self.quantity_infos]
+
+    # --- V6-M1.5: computed quantities as first-class visual quantities ----
+    @staticmethod
+    def _is_computed(quantity: str) -> bool:
+        """A calculated (Field Calculator) or legacy derived quantity -- these go
+        through the QuantityProvider, not the store."""
+        from registry import get_quantity
+        q = get_quantity(quantity)
+        return getattr(q, "calculated", False) or q.kind == "derived"
+
+    def _field(self, store, case_index: int, quantity_key):
+        """Field data for (case, quantity): computed quantities via the provider
+        (the compute layer, memoized); native quantities via the given store
+        (override/cache aware). One routing point -- no second pipeline."""
+        if self._is_computed(quantity_key.quantity):
+            return self.quantity_provider.get(case_index, quantity_key)
+        return store.get(case_index, quantity_key)
+
+    def _display_for(self, quantity: str) -> dict:
+        """Display config (label/unit/cmap/scale) for a quantity. Native ones
+        come from QUANTITY_DISPLAY unchanged; computed ones are built from their
+        registry entry (which carries the same fields). Behaviour-preserving for
+        native quantities."""
+        if quantity in QUANTITY_DISPLAY:
+            return QUANTITY_DISPLAY[quantity]
+        from registry import get_quantity
+        q = get_quantity(quantity)
+        return {"label": q.label, "unit": q.unit, "cmap": q.cmap, "vmin": q.vmin,
+                "slider_min": q.slider_min, "slider_max": q.slider_max,
+                "slider_default": q.slider_default}
+
+    def _computed_quantity_infos(self) -> list:
+        """SliceInfo entries for calculated/derived quantities whose inputs are
+        available, so they appear in the Live Viewer combo alongside native
+        quantities (V6-M1.5)."""
+        # Demo mode has no store/provider to compute against.
+        if not self.sim_data.manifest:
+            return []
+        from registry import QUANTITY_REGISTRY, get_quantity
+        import field_calculator as fc
+        from derived_quantities import source_quantity
+        native = {i.key.quantity for i in self.quantity_infos}
+        out = []
+        for name, q in QUANTITY_REGISTRY.items():
+            if q.gated:
+                continue
+            if getattr(q, "calculated", False):
+                field = fc.get_field(name)
+                deps = field.dependencies if field else ()
+            elif q.kind == "derived":
+                src = source_quantity(name)
+                deps = (src,) if src else ()
+            else:
+                continue
+            resolvable = deps and all(
+                d in native or self._is_computed(d) for d in deps)
+            if resolvable:
+                out.append(SliceInfo(SliceKey(name), q.label, q.unit))
+        return out
+
+    def _refresh_quantity_list(self) -> None:
+        """Rebuild the Live Viewer quantity combo to include current computed
+        fields, preserving the selection (V6-M1.5). The provider's memo is
+        invalidated so redefined fields recompute."""
+        if not hasattr(self, "quantity_combo"):
+            return
+        if getattr(self, "quantity_provider", None) is not None:
+            self.quantity_provider.invalidate()
+        current = (self._combo_quantity_list[self.quantity_combo.currentIndex()].key.quantity
+                   if self._combo_quantity_list else None)
+        self._combo_quantity_list = list(self.quantity_infos) + self._computed_quantity_infos()
+        self.quantity_combo.blockSignals(True)
+        self.quantity_combo.clear()
+        for info in self._combo_quantity_list:
+            self.quantity_combo.addItem(self._quantity_label(info))
+        idx = next((i for i, info in enumerate(self._combo_quantity_list)
+                    if info.key.quantity == current), 0)
+        self.quantity_combo.setCurrentIndex(idx)
+        self.quantity_combo.setEnabled(len(self._combo_quantity_list) > 1)
+        self.quantity_combo.blockSignals(False)
 
     def _build_plot_panel(self) -> QtWidgets.QWidget:
         panel = QtWidgets.QWidget()
@@ -1717,7 +1810,8 @@ class MainWindow(QtWidgets.QMainWindow):
         QUANTITY_DISPLAY label."""
         if info.key.quantity == SOOT_QUANTITY:
             return info.label
-        return QUANTITY_DISPLAY.get(info.key.quantity, {}).get('label', info.key.quantity.title())
+        # Computed fields aren't in QUANTITY_DISPLAY -- use their own label.
+        return QUANTITY_DISPLAY.get(info.key.quantity, {}).get('label', info.label)
 
     def _apply_quantity_display_defaults(self, quantity: str):
         """Re-applies the colormap/clim/label defaults for `quantity`
@@ -1725,7 +1819,7 @@ class MainWindow(QtWidgets.QMainWindow):
         the temp_slider.setValue() below -- via _on_temp_changed, which
         reads self.current_quantity_key -- already computes the correct
         vmin/unit for the new quantity."""
-        display = QUANTITY_DISPLAY.get(quantity, QUANTITY_DISPLAY[DEFAULT_SLICE_KEY.quantity])
+        display = self._display_for(quantity)
         self.current_colormap = display['cmap']
         self.settings.setValue("colormap", display['cmap'])
         for action, (_, cmap) in zip(self.colormap_action_group.actions(), COLORMAPS):
@@ -1757,7 +1851,12 @@ class MainWindow(QtWidgets.QMainWindow):
         documented simplification, not an oversight, for the case a future
         dataset has per-scenario geometry."""
         try:
-            extent = self.controller.store.get_extent(case_index, quantity_key)
+            # V6-M1.5: computed quantities share their source's extent (via the
+            # provider); native quantities read the store directly.
+            if self._is_computed(quantity_key.quantity):
+                extent = self.quantity_provider.get_extent(case_index, quantity_key)
+            else:
+                extent = self.controller.store.get_extent(case_index, quantity_key)
         except Exception as e:  # noqa: BLE001 - geometry is a nice-to-have, never fatal
             logger.warning("could not fetch extent for case=%s key=%s: %s", case_index, quantity_key, e)
             return None
@@ -1862,8 +1961,8 @@ class MainWindow(QtWidgets.QMainWindow):
         quantity's own QUANTITY_DISPLAY entry, so growing the grid doesn't
         silently copy the active cell's possibly-customized clim onto a
         brand-new cell showing a different scenario."""
-        data = self.controller.store.get(cell.case_index, cell.quantity_key)
-        display = QUANTITY_DISPLAY[cell.quantity_key.quantity]
+        data = self._field(self.controller.store, cell.case_index, cell.quantity_key)
+        display = self._display_for(cell.quantity_key.quantity)
         is_active = cell is self.view_grid.active_cell()
         cmap = self.current_colormap if is_active else display['cmap']
         vmax = self.temp_slider.value() if is_active else display['slider_default']
@@ -2009,7 +2108,7 @@ class MainWindow(QtWidgets.QMainWindow):
         scenarios selected yet (nothing to show)."""
         if cell.cell_type == "slice":
             store = self._store_for_cell(cell)
-            return store.get(cell.case_index, cell.quantity_key)[index]
+            return self._field(store, cell.case_index, cell.quantity_key)[index]
         if cell.cell_type == "difference":
             store_b = cell.store_override_b if cell.store_override_b is not None else self.controller.store
             data_a = self.controller.store.get(cell.case_index_a, cell.quantity_key)
@@ -2101,7 +2200,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         quantity = cell.quantity_key.quantity
-        display = QUANTITY_DISPLAY.get(quantity, {})
+        display = self._display_for(quantity)
         if cell.cell_type == "slice":
             key = ("slice", cell.case_index, cell.quantity_key)
             scenario_label = self._scenario_label(cell.case_index)
@@ -2112,9 +2211,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if key != self._inspector_series_key:
             self._inspector_series_key = key
             if cell.cell_type == "slice":
-                ref_data = self._store_for_cell(cell).get(cell.case_index, cell.quantity_key)
+                ref_data = self._field(self._store_for_cell(cell), cell.case_index, cell.quantity_key)
             else:
-                ref_data = self.controller.store.get(cell.case_index_a, cell.quantity_key)
+                ref_data = self._field(self.controller.store, cell.case_index_a, cell.quantity_key)
             self.inspector.set_static_info(
                 scenario_label, display.get('label', quantity.title()),
                 f"{ref_data.shape[1]} × {ref_data.shape[2]}",
@@ -2291,7 +2390,8 @@ class MainWindow(QtWidgets.QMainWindow):
         scenario at case_idx, and redraw the currently displayed frame
         index against it. Only redraws (doesn't touch play state) -- the
         caller decides whether to resume playback."""
-        self._current_n_frames = self.controller.store.get(case_idx, self.current_quantity_key).shape[0]
+        self._current_n_frames = self._field(
+            self.controller.store, case_idx, self.current_quantity_key).shape[0]
         self.timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
         if getattr(self, "analysis_timeline", None) is not None:
             self.analysis_timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
@@ -2307,7 +2407,7 @@ class MainWindow(QtWidgets.QMainWindow):
         _on_scenario_param_changed's cache-hit/cache-miss handling, but for
         the quantity axis instead of a candles/door/vod/voc toggle -- same
         busy-cursor/prefetch machinery, now keyed by SliceKey too."""
-        info = self.quantity_infos[combo_index]
+        info = self._combo_quantity_list[combo_index]
         if info.key == self.current_quantity_key:
             return
         self.current_quantity_key = info.key
@@ -2315,6 +2415,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_quantity_display_defaults(info.key.quantity)
 
         case_idx = self.controller.current_case_index()
+        # V6-M1.5: a computed field is not in the store's cache and has no
+        # prefetch -- its source is already cached and the expression is cheap,
+        # so render it directly, bypassing the store prefetch/busy machinery.
+        if self._is_computed(info.key.quantity):
+            self._sync_current_scenario(case_idx)
+            return
         if self.controller.is_cached(case_idx, self.current_quantity_key):
             self._pending_load_case = None
             self._pending_load_key = None
@@ -2551,7 +2657,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for action, (_, cmap) in zip(self.colormap_action_group.actions(), COLORMAPS):
             action.setChecked(cmap == cmap_name)
 
-        display = QUANTITY_DISPLAY[cell.quantity_key.quantity]
+        display = self._display_for(cell.quantity_key.quantity)
         _vmin, vmax = cell.view.heatmap.get_clim()
         self.temp_slider.blockSignals(True)
         self.temp_slider.setRange(display['slider_min'], display['slider_max'])
@@ -2561,7 +2667,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.temp_slider.setToolTip(f"Adjust the maximum {display['label'].lower()} shown on the color scale")
         self.temp_label.setText(f"{int(vmax)} {display['unit']}")
 
-        self._current_n_frames = self.controller.store.get(cell.case_index, cell.quantity_key).shape[0]
+        self._current_n_frames = self._field(self.controller.store, cell.case_index, cell.quantity_key).shape[0]
         self.timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
         if getattr(self, "analysis_timeline", None) is not None:
             self.analysis_timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
@@ -2723,7 +2829,7 @@ class MainWindow(QtWidgets.QMainWindow):
         summaries = self._scenario_summaries
         fps = self.sim_data.timesteps_per_second
         key = DEFAULT_SLICE_KEY
-        display = QUANTITY_DISPLAY[key.quantity]
+        display = self._display_for(key.quantity)
         try:
             if len(case_indices) == 1:
                 html_text, default_name = self._build_scenario_report(case_indices[0], summaries, fps, key, display)
@@ -2824,7 +2930,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _redraw_cell_now(self, cell):
         """Assumes cell.case_index/quantity_key are already cached."""
         store = self._store_for_cell(cell)
-        display = QUANTITY_DISPLAY[cell.quantity_key.quantity]
+        display = self._display_for(cell.quantity_key.quantity)
         data = store.get(cell.case_index, cell.quantity_key)
         cell.view.set_cmap(display['cmap'])
         cell.view.set_clim(display['vmin'], display['slider_default'])
@@ -2926,7 +3032,7 @@ class MainWindow(QtWidgets.QMainWindow):
         data_b = store_b.get(cell.case_index_b, key)
         vmin, vmax = cell.view.symmetric_clim(
             data_a, data_b, cache_key=(cell.case_index_a, cell.case_index_b, key))
-        display = QUANTITY_DISPLAY[key.quantity]
+        display = self._display_for(key.quantity)
         colorbar_label = f"Δ{display['label']} ({display['unit']})"
         index = min(self.time_controller.index, data_a.shape[0] - 1, data_b.shape[0] - 1)
         frame = DifferenceView.compute_diff(data_a, data_b, index)
@@ -2952,7 +3058,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         key = cell.quantity_key
         arrays = [self.controller.store.get(ci, key) for ci in cell.ensemble_case_indices]
-        display = QUANTITY_DISPLAY[key.quantity]
+        display = self._display_for(key.quantity)
         stat = cell.ensemble_stat
         cmap = EnsembleView.cmap_for(stat, display['cmap'])
         colorbar_label = EnsembleView.label_for(stat, display['label'], display['unit'])
@@ -2991,7 +3097,7 @@ class MainWindow(QtWidgets.QMainWindow):
         key = cell.quantity_key
         data_a = self.controller.store.get(cell.case_index_a, key)
         data_b = self.controller.store.get(cell.case_index_b, key)
-        display = QUANTITY_DISPLAY[key.quantity]
+        display = self._display_for(key.quantity)
         dialog = DifferenceOverTimeDialog(
             data_a, data_b, self.time_controller.timesteps_per_second,
             self._scenario_label(cell.case_index_a), self._scenario_label(cell.case_index_b),
@@ -3065,7 +3171,8 @@ class MainWindow(QtWidgets.QMainWindow):
             path = os.path.splitext(path)[0] + ".gif"
 
         case_idx = self.controller.current_case_index()
-        data = self.controller.store.get(case_idx, self.current_quantity_key)
+        # V6-M1.5: export a computed field via the provider, native via the store.
+        data = self._field(self.controller.store, case_idx, self.current_quantity_key)
         n_frames = data.shape[0]
 
         range_dialog = ExportRangeDialog(self, n_frames, self.time_controller.timesteps_per_second)
@@ -3075,7 +3182,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         start, end, fps = range_dialog.values()
 
-        export_vmin = QUANTITY_DISPLAY[self.current_quantity_key.quantity]['vmin']
+        export_vmin = self._display_for(self.current_quantity_key.quantity)['vmin']
         self._exporter = AnimationExporter(
             data, path, fps, self.current_colormap, export_vmin, self.temp_slider.value(),
             self.current_interpolation, start, end,
@@ -3285,6 +3392,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 continue
         if self.calculator_panel is not None:
             self.calculator_panel._refresh_list()
+        self._refresh_quantity_list()   # V6-M1.5: reflect restored fields in the Live combo
         # V5-M1: restore the shared selection (absent in older sessions -> empty).
         if getattr(self, "selection_bus", None) is not None:
             self.selection_bus.set(Selection.from_dict(session.get("selection", {})))
@@ -3412,7 +3520,7 @@ class MainWindow(QtWidgets.QMainWindow):
         data = self.controller.store.get(cell.case_index, cell.quantity_key)
         index = min(self.time_controller.index, data.shape[0] - 1)
         frame = np.asarray(data[index])
-        display = QUANTITY_DISPLAY[cell.quantity_key.quantity]
+        display = self._display_for(cell.quantity_key.quantity)
         vmin, vmax = cell.view.heatmap.get_clim()
         extent = self._extent_for(cell.case_index, cell.quantity_key)
         entry = next((e for e in (self.sim_data.manifest or []) if e.case_index == cell.case_index), None)

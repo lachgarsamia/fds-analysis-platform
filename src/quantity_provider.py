@@ -23,6 +23,8 @@ off-limits). Qt-free.
 
 from __future__ import annotations
 
+from collections import OrderedDict
+
 from registry import get_quantity
 from slice_key import SliceKey
 from derived_quantities import derive, source_quantity
@@ -35,14 +37,40 @@ class GatedQuantityError(RuntimeError):
 
 
 class QuantityProvider:
+    # V6-M1.5: computed (derived/calculated) results are memoized so playback
+    # does not re-evaluate an expression every frame. Native quantities are NOT
+    # memoized here -- the store already caches them. Bounded LRU, matching the
+    # store's cache philosophy; invalidate() is called when definitions change.
+    _MEMO_MAX = 8
+
     def __init__(self, store, fps: int = 1):
         self._store = store
         self._fps = max(1, fps)   # V6-M1: rate() needs the time step
+        self._memo: OrderedDict = OrderedDict()
+
+    def invalidate(self) -> None:
+        """Drop memoized computed fields (e.g. when a calculated field is
+        created, edited, or removed)."""
+        self._memo.clear()
 
     def _source_key(self, key: SliceKey) -> SliceKey:
         """For a derived quantity, the SliceKey of the raw field it reads."""
         src = source_quantity(key.quantity)
         return SliceKey(src, key.direction, key.offset) if src else key
+
+    def _compute(self, scenario: int, key: SliceKey, q):
+        if getattr(q, "calculated", False):
+            # V6-M1: a Field-Calculator field. Evaluate its expression, resolving
+            # each dependency through this same provider (so a calculated field
+            # can build on raw, derived, or other calculated fields), on the same
+            # slice plane. Never executes raw code -- see field_calculator.
+            import field_calculator as fc
+            resolve = lambda dep_key: self.get(scenario, SliceKey(
+                dep_key, key.direction, key.offset))
+            return fc.evaluate(q.expression, resolve, self._fps)
+        # a legacy single-source derived quantity (temperature rise, dyn. pressure)
+        source = self._store.get(scenario, self._source_key(key))
+        return derive(key.quantity, source)   # elementwise over the whole (t,z,x) array
 
     def get(self, scenario: int, key: SliceKey = None):
         key = key or SliceKey("TEMPERATURE")
@@ -53,18 +81,18 @@ class QuantityProvider:
             # M-SIM re-run. When that lands, they become plain slice reads and
             # this guard falls through -- no other change needed.
             raise GatedQuantityError(q.gate_reason)
-        if getattr(q, "calculated", False):
-            # V6-M1: a Field-Calculator field. Evaluate its expression, resolving
-            # each dependency through this same provider (so a calculated field
-            # can build on raw, derived, or other calculated fields), on the same
-            # slice plane. Never executes raw code -- see field_calculator.
-            import field_calculator as fc
-            resolve = lambda dep_key: self.get(scenario, SliceKey(
-                dep_key, key.direction, key.offset))
-            return fc.evaluate(q.expression, resolve, self._fps)
-        if q.kind == "derived":
-            source = self._store.get(scenario, self._source_key(key))
-            return derive(key.quantity, source)   # elementwise; applies to the whole (t,z,x) array
+        if getattr(q, "calculated", False) or q.kind == "derived":
+            ck = (scenario, key.quantity, key.direction, key.offset)
+            cached = self._memo.get(ck)
+            if cached is not None:
+                self._memo.move_to_end(ck)
+                return cached
+            result = self._compute(scenario, key, q)
+            self._memo[ck] = result
+            self._memo.move_to_end(ck)
+            while len(self._memo) > self._MEMO_MAX:
+                self._memo.popitem(last=False)
+            return result
         return self._store.get(scenario, key)
 
     def get_vector(self, scenario: int, direction: int = None, offset: int = None):

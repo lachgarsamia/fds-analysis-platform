@@ -3327,3 +3327,77 @@ class TestFieldCalculator:
             tool_qs = [k.quantity for _l, k in window._quantity_options()]
             assert "TEMPERATURE" in tool_qs and "Temperature Rise" not in tool_qs
         window.close()
+
+
+class TestCalculatedFieldsInLiveViewer:
+    """V6-M1.5: calculated/derived fields are first-class visual quantities."""
+
+    def teardown_method(self):
+        import field_calculator as fc
+        fc.clear()
+
+    def test_derived_quantities_appear_in_live_combo(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        labels = [window.quantity_combo.itemText(i) for i in range(window.quantity_combo.count())]
+        # existing derived quantities are now selectable in the Live Viewer
+        assert "Temperature rise (ΔT)" in labels and "Dynamic pressure" in labels
+        # analysis panels stay native-only (unchanged)
+        assert "Temperature rise (ΔT)" not in [k.quantity for _l, k in window._quantity_options()]
+        window.close()
+
+    def test_calculated_field_selectable_and_renders(self, qapp):
+        import numpy as np
+        from slice_key import SliceKey
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        p = window.calculator_panel
+        p.name_edit.setText("TR"); p.expr_edit.setText("Temperature - 20"); p._save()
+        labels = [window.quantity_combo.itemText(i) for i in range(window.quantity_combo.count())]
+        assert "TR" in labels                      # appears in the Live combo
+        window.quantity_combo.setCurrentIndex(labels.index("TR"))
+        QtWidgets.QApplication.processEvents()
+        assert window.current_quantity_key.quantity == "TR"
+        cell = window.view_grid.active_cell()
+        raw = np.asarray(window.controller.store.get(cell.case_index, SliceKey("TEMPERATURE")))
+        # renders and evolves over time
+        assert np.allclose(window._frame_for_cell(cell, 0), raw[0] - 20)
+        assert np.allclose(window._frame_for_cell(cell, 80), raw[80] - 20)
+        window.close()
+
+    def test_computed_fields_are_memoized(self, qapp):
+        from slice_key import SliceKey
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        # a derived quantity computed twice returns the cached array (no recompute)
+        a = window.quantity_provider.get(0, SliceKey("TEMPERATURE RISE"))
+        b = window.quantity_provider.get(0, SliceKey("TEMPERATURE RISE"))
+        assert a is b
+        window.quantity_provider.invalidate()
+        assert window.quantity_provider.get(0, SliceKey("TEMPERATURE RISE")) is not a
+        window.close()
+
+    def test_native_quantity_still_reads_store(self, qapp):
+        import numpy as np
+        from slice_key import SliceKey
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        cell = window.view_grid.active_cell()
+        # native quantities are unchanged: _field routes them to the store
+        via_field = window._field(window.controller.store, cell.case_index, SliceKey("TEMPERATURE"))
+        via_store = window.controller.store.get(cell.case_index, SliceKey("TEMPERATURE"))
+        assert via_field is via_store          # same cached object, no provider wrapping
+        window.close()
