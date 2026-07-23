@@ -105,6 +105,22 @@ class TestDevicesBlock:
         d = {"name": "TC-02", "type": "thermocouple", "position": [0.0, 0.0], "results": None}
         assert "not yet computed" in _devices_block([d])
 
+    def test_non_default_plane_is_annotated(self):
+        d = {"name": "TC-03", "type": "thermocouple", "position": [0.0, 0.0],
+            "direction": 1, "offset": 15, "results": {"max_temperature_C": 50.0}}
+        assert "y=15" in _devices_block([d])
+
+    def test_default_plane_has_no_annotation(self):
+        d = {"name": "TC-04", "type": "thermocouple", "position": [0.0, 0.0],
+            "direction": 1, "offset": 0, "results": {"max_temperature_C": 50.0}}
+        assert "plane" not in _devices_block([d])
+
+    def test_missing_plane_fields_omit_annotation(self):
+        """A session saved before V6-M5 has no direction/offset -- must not crash."""
+        d = {"name": "TC-05", "type": "thermocouple", "position": [0.0, 0.0],
+            "results": {"max_temperature_C": 50.0}}
+        assert "plane" not in _devices_block([d])
+
 
 class TestVectorProbesBlock:
     def test_empty_renders_nothing(self):

@@ -35,7 +35,7 @@ from typing import Optional
 
 import numpy as np
 
-from slice_key import SliceKey
+from slice_key import SliceKey, DEFAULT_DIRECTION, DEFAULT_OFFSET
 import measure as mz
 
 KINDS = ("thermocouple", "heat_detector", "sprinkler")
@@ -45,11 +45,15 @@ KIND_LABELS = {"thermocouple": "Thermocouple", "heat_detector": "Heat detector",
 TC_THRESHOLDS = (60.0, 100.0, 300.0)   # standard thermocouple report bands, deg C
 
 
-def probe_series(provider, scenario: int, quantity: str, x: float, z: float) -> np.ndarray:
-    """The full (t,) time series of `quantity` at physical (x, z), read
-    through the QuantityProvider -- native, derived, or calculated, whatever
-    is registered -- and bilinearly interpolated at the point each frame."""
-    key = SliceKey(quantity)
+def probe_series(provider, scenario: int, quantity: str, x: float, z: float,
+                 direction: int = DEFAULT_DIRECTION, offset: int = DEFAULT_OFFSET) -> np.ndarray:
+    """The full (t,) time series of `quantity` at physical (x, z) on the
+    given plane (V6-M5: direction/offset, defaulting to the app's usual
+    plane), read through the QuantityProvider -- native, derived, or
+    calculated, whatever is registered -- and bilinearly interpolated at
+    the point each frame. An unavailable plane raises GatedQuantityError
+    (from the provider), never silently falls back to a different one."""
+    key = SliceKey(quantity, direction, offset)
     data = np.asarray(provider.get(scenario, key))
     extent = provider.get_extent(scenario, key)
     return np.array([mz.probe_value(data[k], extent, x, z) for k in range(data.shape[0])])
@@ -62,18 +66,20 @@ def _crossing_time(series: np.ndarray, fps: int, threshold: float) -> Optional[f
     return float(idx[0] / fps) if idx.size else None
 
 
-def _has_velocity(provider, scenario: int) -> bool:
+def _has_velocity(provider, scenario: int, direction: int = DEFAULT_DIRECTION,
+                  offset: int = DEFAULT_OFFSET) -> bool:
     try:
-        provider.get(scenario, SliceKey("VELOCITY"))
+        provider.get(scenario, SliceKey("VELOCITY", direction, offset))
         return True
     except Exception:
         return False
 
 
 # ------------------------------------------------------------- device math
-def compute_thermocouple(provider, scenario: int, x: float, z: float, fps: int) -> dict:
+def compute_thermocouple(provider, scenario: int, x: float, z: float, fps: int,
+                         direction: int = DEFAULT_DIRECTION, offset: int = DEFAULT_OFFSET) -> dict:
     fps = max(1, fps)
-    temp = probe_series(provider, scenario, "TEMPERATURE", x, z)
+    temp = probe_series(provider, scenario, "TEMPERATURE", x, z, direction, offset)
     n = temp.shape[0]
     time_s = np.arange(n) / fps
     rate = np.gradient(temp) * fps if n >= 2 else np.zeros_like(temp)
@@ -89,12 +95,13 @@ def compute_thermocouple(provider, scenario: int, x: float, z: float, fps: int) 
 
 def compute_heat_detector(provider, scenario: int, x: float, z: float, fps: int,
                           activation_temp: float = 74.0,
-                          rise_threshold: Optional[float] = None) -> dict:
+                          rise_threshold: Optional[float] = None,
+                          direction: int = DEFAULT_DIRECTION, offset: int = DEFAULT_OFFSET) -> dict:
     """Activates the instant TEMPERATURE crosses `activation_temp`, or (if
     `rise_threshold` is set) the instant its rate of rise crosses it in
     deg C/s -- whichever comes first."""
     fps = max(1, fps)
-    temp = probe_series(provider, scenario, "TEMPERATURE", x, z)
+    temp = probe_series(provider, scenario, "TEMPERATURE", x, z, direction, offset)
     n = temp.shape[0]
     time_s = np.arange(n) / fps
     t_temp = _crossing_time(temp, fps, activation_temp)
@@ -121,7 +128,8 @@ def compute_heat_detector(provider, scenario: int, x: float, z: float, fps: int,
 
 
 def compute_sprinkler(provider, scenario: int, x: float, z: float, fps: int,
-                      rti: float = 100.0, activation_temp: float = 68.0) -> dict:
+                      rti: float = 100.0, activation_temp: float = 68.0,
+                      direction: int = DEFAULT_DIRECTION, offset: int = DEFAULT_OFFSET) -> dict:
     """Standard RTI thermal-response model:
 
         dT_link/dt = (sqrt(|u|) / RTI) * (T_gas - T_link)
@@ -132,11 +140,12 @@ def compute_sprinkler(provider, scenario: int, x: float, z: float, fps: int,
     labels the result as such -- never invents a measured velocity."""
     fps = max(1, fps)
     rti = max(1e-6, float(rti))
-    temp = probe_series(provider, scenario, "TEMPERATURE", x, z)
+    temp = probe_series(provider, scenario, "TEMPERATURE", x, z, direction, offset)
     n = temp.shape[0]
     time_s = np.arange(n) / fps
-    reduced_model = not _has_velocity(provider, scenario)
-    u = np.ones(n) if reduced_model else np.abs(probe_series(provider, scenario, "VELOCITY", x, z))
+    reduced_model = not _has_velocity(provider, scenario, direction, offset)
+    u = (np.ones(n) if reduced_model
+        else np.abs(probe_series(provider, scenario, "VELOCITY", x, z, direction, offset)))
     dt = 1.0 / fps
     link = np.empty(n)
     link[0] = temp[0] if n else 0.0
@@ -163,15 +172,18 @@ def compute_sprinkler(provider, scenario: int, x: float, z: float, fps: int,
 
 _COMPUTE = {
     "thermocouple": lambda provider, dev, fps: compute_thermocouple(
-        provider, dev.scenario, dev.position[0], dev.position[1], fps),
+        provider, dev.scenario, dev.position[0], dev.position[1], fps,
+        direction=dev.direction, offset=dev.offset),
     "heat_detector": lambda provider, dev, fps: compute_heat_detector(
         provider, dev.scenario, dev.position[0], dev.position[1], fps,
         activation_temp=dev.parameters.get("activation_temp_C", 74.0),
-        rise_threshold=dev.parameters.get("rise_threshold_C_per_s")),
+        rise_threshold=dev.parameters.get("rise_threshold_C_per_s"),
+        direction=dev.direction, offset=dev.offset),
     "sprinkler": lambda provider, dev, fps: compute_sprinkler(
         provider, dev.scenario, dev.position[0], dev.position[1], fps,
         rti=dev.parameters.get("rti", 100.0),
-        activation_temp=dev.parameters.get("activation_temp_C", 68.0)),
+        activation_temp=dev.parameters.get("activation_temp_C", 68.0),
+        direction=dev.direction, offset=dev.offset),
 }
 
 _DEFAULT_PARAMETERS = {
@@ -194,6 +206,8 @@ class Device:
     position: tuple                  # physical (x, z), metres
     parameters: dict = field(default_factory=dict)
     results: Optional[dict] = None   # cached compute() output; None until computed
+    direction: int = DEFAULT_DIRECTION   # V6-M5: which plane this device reads
+    offset: int = DEFAULT_OFFSET
 
     def compute(self, provider, fps: int) -> None:
         """Evaluate this device's full time series once and cache it on
@@ -274,7 +288,8 @@ class Device:
         return {"id": self.id, "name": self.name, "type": self.type,
                 "scenario": int(self.scenario),
                 "position": [float(self.position[0]), float(self.position[1])],
-                "parameters": dict(self.parameters), "results": self.results}
+                "parameters": dict(self.parameters), "results": self.results,
+                "direction": int(self.direction), "offset": int(self.offset)}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Device":
@@ -284,7 +299,9 @@ class Device:
                    scenario=int(d.get("scenario", 0)),
                    position=(float(pos[0]), float(pos[1])),
                    parameters=dict(d.get("parameters", {})),
-                   results=d.get("results"))
+                   results=d.get("results"),
+                   direction=int(d.get("direction", DEFAULT_DIRECTION)),
+                   offset=int(d.get("offset", DEFAULT_OFFSET)))
 
 
 def export_csv(dev: Device, path: str) -> None:
@@ -301,6 +318,7 @@ def export_csv(dev: Device, path: str) -> None:
         "device_type": dev.type, "device_name": dev.name,
         "position_x_m": f"{dev.position[0]:.4g}", "position_z_m": f"{dev.position[1]:.4g}",
         "scenario": dev.scenario,
+        "plane_direction": dev.direction, "plane_offset": dev.offset,   # V6-M5
     }
     for k, v in dev.parameters.items():
         metadata[f"param_{k}"] = v

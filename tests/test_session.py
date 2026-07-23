@@ -26,17 +26,19 @@ class FakeCell:
 class TestCellToDict:
     def test_slice_cell(self):
         d = cell_to_dict(FakeCell("slice", case_index=3))
-        assert d == {"cell_type": "slice", "quantity": "TEMPERATURE", "case_index": 3}
+        assert d == {"cell_type": "slice", "quantity": "TEMPERATURE", "case_index": 3,
+                    "direction": 1, "offset": 0}
 
     def test_difference_cell(self):
         d = cell_to_dict(FakeCell("difference", case_index_a=2, case_index_b=5))
         assert d == {"cell_type": "difference", "quantity": "TEMPERATURE",
-                     "case_index_a": 2, "case_index_b": 5}
+                     "case_index_a": 2, "case_index_b": 5, "direction": 1, "offset": 0}
 
     def test_ensemble_cell(self):
         d = cell_to_dict(FakeCell("ensemble", ensemble_case_indices=[1, 2, 3], ensemble_stat="std"))
         assert d == {"cell_type": "ensemble", "quantity": "TEMPERATURE",
-                     "ensemble_case_indices": [1, 2, 3], "ensemble_stat": "std"}
+                     "ensemble_case_indices": [1, 2, 3], "ensemble_stat": "std",
+                     "direction": 1, "offset": 0}
 
 
 class TestBuildSessionDict:

@@ -203,9 +203,24 @@ def _devices_block(devices: list) -> str:
         else:
             headline = "did not activate"
         x, z = d.get("position", [0.0, 0.0])
+        plane = _plane_suffix(d.get("direction"), d.get("offset"))
         items.append(f"<li>{_esc(d.get('name', ''))} ({_esc(d.get('type', ''))}) at "
-                    f"({x:.2f}, {z:.2f}) m — {_esc(headline)}</li>")
+                    f"({x:.2f}, {z:.2f}) m{plane} — {_esc(headline)}</li>")
     return f"<h2>Virtual devices</h2><ul>{''.join(items)}</ul>"
+
+
+_AXIS_LETTERS = {0: "x", 1: "y", 2: "z"}
+
+
+def _plane_suffix(direction, offset) -> str:
+    """V6-M5: ' [plane: y=15]'-style suffix when a device/probe was placed
+    on a non-default plane -- absent (empty string) for the app's usual
+    plane or when a session predates plane tracking, so old reports render
+    identically."""
+    if direction is None or offset is None or (direction, offset) == (1, 0):
+        return ""
+    axis = _AXIS_LETTERS.get(direction, str(direction))
+    return f" [plane: {axis}={offset}]"
 
 
 def _vector_probes_block(probes: list) -> str:

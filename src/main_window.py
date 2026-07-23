@@ -869,9 +869,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.dashboard_panel = DashboardPanel(
                 self.controller.store, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
-            # Space-time cube (V5-M4/P4) + Fire Narrative++ (V5-M5).
+            # Space-time cube (V5-M4/P4) + Fire Narrative++ (V5-M5); V6-M5
+            # multi-plane cross-sections -- takes the provider (not the raw
+            # store) so an unavailable X/Z-normal plane raises
+            # GatedQuantityError instead of a raw disk read.
             self.spacetime_panel = SpaceTimePanel(
-                self.controller.store, self.sim_data.manifest,
+                self.quantity_provider, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
             self.narrative_panel = NarrativePanel(
                 self.controller.store, self.sim_data.manifest,
@@ -2633,8 +2636,19 @@ class MainWindow(QtWidgets.QMainWindow):
                 return entry.case_index
         return None
 
-    def _find_quantity_key(self, quantity_name: str):
-        return next((key for _label, key in self._quantity_options() if key.quantity == quantity_name), None)
+    def _find_quantity_key(self, quantity_name: str, direction: int = None, offset: int = None):
+        """The SliceKey for `quantity_name`, preferring an exact
+        (direction, offset) match (V6-M5: a quantity can now appear on more
+        than one plane, e.g. a second Y-offset) and falling back to the
+        first name-only match -- so older session files (no plane fields)
+        keep restoring exactly as before."""
+        options = self._quantity_options()
+        if direction is not None and offset is not None:
+            exact = next((key for _label, key in options if key.quantity == quantity_name
+                         and key.direction == direction and key.offset == offset), None)
+            if exact is not None:
+                return exact
+        return next((key for _label, key in options if key.quantity == quantity_name), None)
 
     def _select_scenario_in_cell(self, cell, case_index: int) -> None:
         options = self._scenario_options()
@@ -3622,7 +3636,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._set_grid_layout(session["layout"])
         cells = self.view_grid.visible_cells()
         for cell, cell_state in zip(cells, session.get("cells", [])):
-            quantity_key = self._find_quantity_key(cell_state.get("quantity"))
+            quantity_key = self._find_quantity_key(
+                cell_state.get("quantity"), cell_state.get("direction"), cell_state.get("offset"))
             cell_type = cell_state.get("cell_type", "slice")
             if cell.cell_type != cell_type:
                 cell.set_cell_type(cell_type)

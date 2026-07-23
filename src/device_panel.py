@@ -26,9 +26,11 @@ import numpy as np
 from PyQt5 import QtCore, QtWidgets
 
 from widgets import MplCanvas
-from slice_key import SliceKey
+from slice_key import SliceKey, AXIS_TO_DIRECTION
 from registry import get_quantity
 import devices as dv
+
+_PLANE_AXES = ("y", "x", "z")   # y first: the app's default/verified plane
 
 _PREFIX = {"thermocouple": "TC", "heat_detector": "HD", "sprinkler": "SP"}
 
@@ -72,6 +74,22 @@ class DevicePanel(QtWidgets.QWidget):
         for t in dv.KINDS:
             self.type_combo.addItem(dv.KIND_LABELS[t], t)
         header.addWidget(self.type_combo)
+        # V6-M5: which plane new devices read. Y is the app's verified
+        # plane (offset 0 or 15, both real); X/Z are offered because the
+        # engine supports any plane, but this dataset has no X/Z-normal
+        # slices -- placing on one cleanly shows "gated", never fabricated.
+        self.direction_combo = QtWidgets.QComboBox()
+        self.direction_combo.setAccessibleName("Device plane axis")
+        self.direction_combo.setToolTip("Which axis the plane is normal to (Y is verified; X/Z are gated "
+                                        "on this dataset -- see docs/msim-preparation.md)")
+        for axis in _PLANE_AXES:
+            self.direction_combo.addItem(axis.upper(), AXIS_TO_DIRECTION[axis])
+        header.addWidget(self.direction_combo)
+        self.offset_spin = QtWidgets.QSpinBox()
+        self.offset_spin.setAccessibleName("Device plane offset")
+        self.offset_spin.setToolTip("The plane's mesh-cell offset along its normal axis")
+        self.offset_spin.setRange(0, 999)
+        header.addWidget(self.offset_spin)
         header.addStretch(1)
         layout.addLayout(header)
 
@@ -82,6 +100,11 @@ class DevicePanel(QtWidgets.QWidget):
         self.caption.setWordWrap(True)
         self.caption.setProperty("role", "caption")
         layout.addWidget(self.caption)
+
+        self.status = QtWidgets.QLabel("")
+        self.status.setWordWrap(True)
+        self.status.setProperty("role", "caption")
+        layout.addWidget(self.status)
 
         self.canvas = MplCanvas(self)
         self.canvas.setAccessibleName("Device placement canvas")
@@ -184,8 +207,23 @@ class DevicePanel(QtWidgets.QWidget):
         case_index = self.scenario_combo.currentData()
         d = dv.Device(id=f"{device_type}-{id(object())}", name=name, type=device_type,
                       scenario=case_index, position=(float(x), float(z)),
-                      parameters=dv.default_parameters(device_type))
-        d.compute(self._provider, self._fps)
+                      parameters=dv.default_parameters(device_type),
+                      direction=self.direction_combo.currentData(), offset=self.offset_spin.value())
+        try:
+            d.compute(self._provider, self._fps)
+            self.status.setText("")
+        except Exception as e:
+            # V6-M5: an X/Z-normal (or absent-offset) plane this dataset
+            # doesn't have -- the device is still placed (it will "light up"
+            # automatically once that plane exists, no re-placement needed),
+            # results stay None ("not yet computed"), never fabricated.
+            # Caught broadly (not just GatedQuantityError): a plane can be
+            # *declared* in the .smv inventory yet still fail to actually
+            # load (a plain numpy/IO error deep in the slice reader) -- an
+            # uncaught exception here would escape this Qt slot and PyQt5
+            # aborts the process on that, so this boundary must never let
+            # one through.
+            self.status.setText(f"Gated: {e}")
         self._devices.append(d)
         self._refresh_list()
         self.list.setCurrentRow(len(self._devices) - 1)
@@ -231,7 +269,11 @@ class DevicePanel(QtWidgets.QWidget):
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
             for key, spin in spins.items():
                 d.parameters[key] = spin.value()
-            d.compute(self._provider, self._fps)
+            try:
+                d.compute(self._provider, self._fps)
+                self.status.setText("")
+            except Exception as e:
+                self.status.setText(f"Gated: {e}")
             self._refresh_list()
             self._render()
             self.devices_changed.emit()

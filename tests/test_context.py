@@ -123,7 +123,8 @@ class TestRelatedSessions:
             def __init__(self, case_index):
                 self.cell_type = "slice"
                 self.case_index = case_index
-                self.quantity_key = type("K", (), {"quantity": "TEMPERATURE"})()
+                self.quantity_key = type("K", (), {"quantity": "TEMPERATURE",
+                                                   "direction": 1, "offset": 0})()
 
         session = build_session_dict("grid_1x1", [DummyCell(3)], 0, 0, False, "fds_fire", False)
         session_store.save_session(str(tmp_path), session)

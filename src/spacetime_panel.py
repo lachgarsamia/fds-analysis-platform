@@ -1,4 +1,4 @@
-"""Space-Time Cube panel (V5-M4/P4, optional), an Analysis-page tab.
+"""Space-Time Cube panel (V5-M4/P4; V6-M5 multi-plane), an Analysis-page tab.
 
 The 2D slice stack is an (x, z, t) volume. Rather than a heavy 3D render, this
 shows the two cheap space-time cross-sections through a chosen point: the
@@ -6,9 +6,21 @@ x-vs-time map at the point's height (how the field propagates horizontally) and
 the z-vs-time map at the point's column (vertical development). Both are just
 the stored data reshaped -- no interpolation.
 
+V6-M5: a plane selector (axis + offset) chooses which SliceKey the cube reads,
+routed through QuantityProvider so an unavailable plane (this dataset has no
+X/Z-normal slices, only Y at offset 0 and 15) raises GatedQuantityError and
+shows plainly instead of crashing -- never a fabricated reshape. The x/z-time
+axis labelling is verified only for the Y-normal plane (row=z, col=x, the
+convention every other view uses); a future X/Z-normal dataset would still
+read/reshape correctly, but its two in-plane axes are generically labelled
+("axis a"/"axis b") since FDS's row/col convention for those directions has
+never been observed against real data -- values are always exactly what the
+store returns, only that label is a best-effort placeholder pending real data.
+
 SelectionBus (M1): scenario_combo is bound by main_window; clicking the locator
 publishes the point, and a point selected elsewhere moves the cross-sections.
-Reuses the store and the extent/coordinate convention.
+Reuses the provider (not the raw store) so plane gating is honest, and the
+extent/coordinate convention.
 """
 
 from __future__ import annotations
@@ -18,14 +30,16 @@ from PyQt5 import QtCore, QtWidgets
 
 from widgets import MplCanvas
 from registry import get_quantity
-from slice_key import SliceKey
+from slice_key import SliceKey, AXIS_TO_DIRECTION, DIRECTION_TO_AXIS
 from timeseries import phys_to_index
+
+_PLANE_AXES = ("y", "x", "z")   # y first: the app's default/verified plane
 
 
 class SpaceTimePanel(QtWidgets.QWidget):
-    def __init__(self, store, manifest: list, fps: int, parent=None):
+    def __init__(self, provider, manifest: list, fps: int, parent=None):
         super().__init__(parent)
-        self._store = store
+        self._provider = provider
         self._manifest = sorted(manifest, key=lambda e: e.case_index)
         self._fps = max(1, fps)
         self._loaded = False
@@ -36,6 +50,7 @@ class SpaceTimePanel(QtWidgets.QWidget):
         self._col = None
         self._bus = None
         self._loc_ax = None
+        self._gate_reason = None
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -49,6 +64,22 @@ class SpaceTimePanel(QtWidgets.QWidget):
         self.scenario_combo = QtWidgets.QComboBox()
         self.scenario_combo.setAccessibleName("Space-time scenario")
         header.addWidget(self.scenario_combo)
+        # V6-M5: multi-plane cross-sections. Y is verified (offset 0 or 15,
+        # both real on this dataset); X/Z are offered because the engine
+        # supports any plane, but cleanly show "gated" here since no X/Z
+        # slice exists yet (docs/msim-preparation.md).
+        self.plane_combo = QtWidgets.QComboBox()
+        self.plane_combo.setAccessibleName("Space-time plane axis")
+        self.plane_combo.setToolTip("Which axis the plane is normal to (Y is verified; "
+                                    "X/Z are gated on this dataset)")
+        for axis in _PLANE_AXES:
+            self.plane_combo.addItem(axis.upper(), AXIS_TO_DIRECTION[axis])
+        header.addWidget(self.plane_combo)
+        self.offset_spin = QtWidgets.QSpinBox()
+        self.offset_spin.setAccessibleName("Space-time plane offset")
+        self.offset_spin.setToolTip("The plane's mesh-cell offset along its normal axis")
+        self.offset_spin.setRange(0, 999)
+        header.addWidget(self.offset_spin)
         layout.addLayout(header)
 
         self.caption = QtWidgets.QLabel(
@@ -57,6 +88,11 @@ class SpaceTimePanel(QtWidgets.QWidget):
         self.caption.setWordWrap(True)
         self.caption.setProperty("role", "caption")
         layout.addWidget(self.caption)
+
+        self.status = QtWidgets.QLabel("")
+        self.status.setWordWrap(True)
+        self.status.setProperty("role", "caption")
+        layout.addWidget(self.status)
 
         body = QtWidgets.QSplitter()
         self.loc_canvas = MplCanvas(self)
@@ -72,15 +108,9 @@ class SpaceTimePanel(QtWidgets.QWidget):
         layout.addWidget(body, 1)
 
         self.scenario_combo.currentIndexChanged.connect(self._reload)
+        self.plane_combo.currentIndexChanged.connect(self._reload)
+        self.offset_spin.valueChanged.connect(lambda _v: self._reload())
         self.loc_canvas.mpl_connect("button_press_event", self._on_click)
-
-    # V6 hook (GATED): multi-plane linked cross-sections (XY / XZ / YZ). This
-    # panel already reshapes the single stored y-normal plane into x–time and
-    # z–time. True XY/XZ/YZ views need FDS to output slices on those additional
-    # planes (docs/msim-preparation.md). When present, add plane selectors here
-    # and read each plane's SliceKey (direction/offset) -- the store already
-    # keys slices by (quantity, direction, offset), so no new data path is
-    # needed, only the extra SLCF output.
 
     # ------------------------------------------------------------- bus (M1)
     def set_bus(self, bus) -> None:
@@ -109,18 +139,56 @@ class SpaceTimePanel(QtWidgets.QWidget):
         self.scenario_combo.blockSignals(False)
         self._reload()
 
+    @property
+    def _direction(self) -> int:
+        return self.plane_combo.currentData()
+
+    @property
+    def _offset(self) -> int:
+        return self.offset_spin.value()
+
     def _reload(self) -> None:
         if not self._loaded:
             return
         case_index = self.scenario_combo.currentData()
         if case_index is None:
             return
-        if case_index not in self._cache:
-            data = np.asarray(self._store.get(case_index, SliceKey("TEMPERATURE")))
-            extent = self._store.get_extent(case_index, SliceKey("TEMPERATURE"))
-            self._cache[case_index] = (data, extent)
-        self._data, self._extent = self._cache[case_index]
-        if self._row is None:
+        ck = (case_index, self._direction, self._offset)
+        if ck not in self._cache:
+            key = SliceKey("TEMPERATURE", self._direction, self._offset)
+            try:
+                data = np.asarray(self._provider.get(case_index, key))
+                extent = self._provider.get_extent(case_index, key)
+                self._gate_reason = None
+            except Exception as e:
+                # V6-M5: an X/Z-normal (or absent-offset) plane -- shown
+                # plainly, never a fabricated reshape. Caught broadly, not
+                # just GatedQuantityError: a plane can be *declared* in the
+                # .smv inventory (so QuantityProvider's own check lets it
+                # through) yet still fail to actually load -- e.g. this
+                # dataset lists a second Y-offset that raises a plain
+                # numpy/IO error deep in the slice reader when read for
+                # real. An uncaught exception here would escape this Qt
+                # slot, and PyQt5 aborts the process on that (not a
+                # crash in the data itself) -- so this is the boundary
+                # that must never let one through. self._data stays
+                # whatever it was (or None), so _render() can tell the two
+                # cases apart.
+                self._cache[ck] = (None, None)
+                self._gate_reason = str(e)
+                self._data, self._extent = None, None
+                self.status.setText(f"Gated: {e}")
+                self._render()
+                return
+            self._cache[ck] = (data, extent)
+        self._data, self._extent = self._cache[ck]
+        if self._data is None:
+            self._gate_reason = self._gate_reason or "This plane is not available for this scenario."
+            self.status.setText(f"Gated: {self._gate_reason}")
+            self._render()
+            return
+        self.status.setText("")
+        if self._row is None or self._row >= self._data.shape[1] or self._col >= self._data.shape[2]:
             self._row = self._data.shape[1] // 2
             self._col = self._data.shape[2] // 2
         self._render()
@@ -135,14 +203,37 @@ class SpaceTimePanel(QtWidgets.QWidget):
         self._render()
 
     # --------------------------------------------------------------- render
+    def _render_gated(self) -> None:
+        """V6-M5: clear all three canvases and show the gate reason plainly
+        instead of a stale or fabricated cross-section."""
+        for canvas in (self.loc_canvas, self.xt_canvas, self.zt_canvas):
+            fig = canvas.fig
+            fig.clear()
+            ax = fig.add_subplot(111)
+            ax.text(0.5, 0.5, "gated -- no data for this plane", ha="center", va="center",
+                   fontsize=8, wrap=True, transform=ax.transAxes)
+            ax.set_xticks([]); ax.set_yticks([])
+            canvas.draw_idle()
+
     def _render(self) -> None:
         if self._data is None:
+            self._render_gated()
             return
         q = get_quantity("TEMPERATURE")
         n_t = self._data.shape[0]
         t_end = (n_t - 1) / self._fps
         ext = self._extent or [0, self._data.shape[2], 0, self._data.shape[1]]
         x0, x1, z0, z1 = ext
+        # Axis labels: verified (row=z, col=x) only for the app's usual
+        # Y-normal plane -- see the module docstring for why other
+        # directions get a generic, clearly-unverified label instead of a
+        # possibly-wrong physical one. Values are always exactly what the
+        # store returned either way.
+        if self._direction == 1:
+            row_axis_label, col_axis_label = "z (m, floor→ceiling)", "x (m)"
+        else:
+            axis = DIRECTION_TO_AXIS.get(self._direction, "?")
+            row_axis_label = col_axis_label = f"in-plane axis (m, normal={axis}, unverified order)"
 
         # --- locator (a representative frame + the chosen point) ---
         lfig = self.loc_canvas.fig
@@ -162,11 +253,13 @@ class SpaceTimePanel(QtWidgets.QWidget):
         # --- x-time at the point's height ---
         xt = self._data[:, self._row, :]        # (n_t, n_x)
         self._heatmap(self.xt_canvas, xt, (x0, x1, t_end, 0.0), q,
-                      f"x–time at z={pz:.2f} m", "x (m)")
+                      f"axis-b–time at fixed axis-a={pz:.2f} m" if self._direction != 1
+                      else f"x–time at z={pz:.2f} m", col_axis_label)
         # --- z-time at the point's column (row 0 = ceiling) ---
         zt = self._data[:, :, self._col]        # (n_t, n_z)
         self._heatmap(self.zt_canvas, zt, (z1, z0, t_end, 0.0), q,
-                      f"z–time at x={px:.2f} m", "z (m, floor→ceiling)")
+                      f"axis-a–time at fixed axis-b={px:.2f} m" if self._direction != 1
+                      else f"z–time at x={px:.2f} m", row_axis_label)
 
     @staticmethod
     def _heatmap(canvas, arr, extent, q, title, xlabel) -> None:

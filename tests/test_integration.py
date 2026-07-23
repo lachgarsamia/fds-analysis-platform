@@ -3838,3 +3838,127 @@ class TestUnifiedWorkspace:
         html = build_session_report(session)
         assert "Virtual devices" in html and "TC-01" in html
         window.close()
+
+
+class TestMultiPlaneCrossSections:
+    """V6-M5: multi-plane linked cross-sections. The real dataset's .smv
+    *declares* TEMPERATURE/VELOCITY at a second Y-normal offset (15), but
+    actually reading it fails deep in the slice reader (a pre-existing
+    data/parser quirk, discovered while building this milestone -- the
+    .smv inventory and what's actually loadable can disagree). There are
+    no X/Z-normal slices at all. Both cases must be caught and shown as a
+    clean "gated" status -- never propagate an exception out of a Qt slot
+    (PyQt5 aborts the process on that) and never crash."""
+
+    def test_device_on_declared_but_unreadable_offset_is_gated_not_crashed(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        dp = window.device_panel
+        dp.ensure_loaded()
+        dp.type_combo.setCurrentIndex(dp.type_combo.findData("thermocouple"))
+        dp.offset_spin.setValue(15)
+        dp._place(1.0, 0.2)
+        dev = dp._devices[-1]
+        assert dev.direction == 1 and dev.offset == 15
+        assert dev.results is None                  # never fabricated
+        assert "Gated" in dp.status.text()
+        window.close()
+
+    def test_device_on_default_plane_still_works(self, qapp):
+        """Regression check: the plane selector must not disturb the
+        app's one verified, working plane (offset 0)."""
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        dp = window.device_panel
+        dp.ensure_loaded()
+        dp.type_combo.setCurrentIndex(dp.type_combo.findData("thermocouple"))
+        assert dp.offset_spin.value() == 0 and dp.direction_combo.currentData() == 1
+        dp._place(1.0, 0.2)
+        dev = dp._devices[-1]
+        assert dev.results is not None
+        assert dp.status.text() == ""
+        window.close()
+
+    def test_device_on_gated_xz_plane_shows_status_not_crash(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        dp = window.device_panel
+        dp.ensure_loaded()
+        dp.type_combo.setCurrentIndex(dp.type_combo.findData("thermocouple"))
+        dp.direction_combo.setCurrentIndex(dp.direction_combo.findData(0))   # x-normal -- absent
+        dp._place(1.0, 1.0)
+        dev = dp._devices[-1]
+        assert dev.results is None                 # never fabricated
+        assert "Gated" in dp.status.text()
+        window.close()
+
+    def test_spacetime_declared_but_unreadable_offset_is_gated_not_crashed(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        st = window.spacetime_panel
+        st.ensure_loaded()
+        assert st._data is not None            # the default plane loaded fine
+        st.offset_spin.setValue(15)
+        assert st._data is None                # gated, not fabricated
+        assert "Gated" in st.status.text()
+        assert st.xt_canvas.fig.axes            # rendered a gated placeholder, not a crash
+        window.close()
+
+    def test_spacetime_default_plane_still_works(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        st = window.spacetime_panel
+        st.ensure_loaded()
+        assert st._data is not None and st._gate_reason is None
+        assert st.status.text() == ""
+        window.close()
+
+    def test_spacetime_x_normal_plane_is_gated_not_crashed(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        st = window.spacetime_panel
+        st.ensure_loaded()
+        st.plane_combo.setCurrentIndex(st.plane_combo.findData(0))   # x-normal
+        assert st._data is None
+        assert "Gated" in st.status.text()
+        assert st.xt_canvas.fig.axes                # rendered a gated placeholder, not a crash
+        window.close()
+
+    def test_soot_plane_session_restore_disambiguates(self, qapp, tmp_path):
+        """Regression test for a pre-existing bug V6-M5's plane-aware
+        cell_to_dict incidentally fixes: two SOOT DENSITY combo entries
+        (side view vs. doorway) share the same quantity name but different
+        (direction, offset) -- session restore used to always pick the
+        first, silently losing which plane was showing."""
+        import glob
+        import os
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo or not any(
+                glob.glob(os.path.join(e.path, "*.s3d")) for e in window.sim_data.manifest):
+            window.close()
+            return
+        options = window._quantity_options()
+        soot = [(label, key) for label, key in options if key.quantity == "SOOT DENSITY"]
+        if len(soot) < 2:
+            window.close()
+            return
+        doorway_key = soot[1][1]
+        cell = window.view_grid.active_cell()
+        cell.quantity_key = doorway_key
+        session = window._collect_session_dict()
+        window._apply_session(session)
+        assert cell.quantity_key.direction == doorway_key.direction
+        assert cell.quantity_key.offset == doorway_key.offset
+        window.close()

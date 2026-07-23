@@ -26,7 +26,7 @@ from __future__ import annotations
 from collections import OrderedDict
 
 from registry import get_quantity
-from slice_key import SliceKey, DEFAULT_DIRECTION, DEFAULT_OFFSET
+from slice_key import SliceKey, DEFAULT_DIRECTION, DEFAULT_OFFSET, DIRECTION_TO_AXIS, available_slices
 from derived_quantities import derive, source_quantity
 
 
@@ -47,6 +47,7 @@ class QuantityProvider:
         self._store = store
         self._fps = max(1, fps)   # V6-M1: rate() needs the time step
         self._memo: OrderedDict = OrderedDict()
+        self._plane_cache: dict = {}   # V6-M5: scenario -> {(quantity, direction, offset)}
 
     def invalidate(self) -> None:
         """Drop memoized computed fields (e.g. when a calculated field is
@@ -58,6 +59,48 @@ class QuantityProvider:
         src = source_quantity(key.quantity)
         return SliceKey(src, key.direction, key.offset) if src else key
 
+    def _available_planes(self, scenario: int):
+        """The (quantity, direction, offset) slices this scenario's .smv
+        file actually describes -- parsed once (available_slices) and
+        cached, never touched again per frame. Returns None (unknown,
+        never gate on it) rather than an empty set when the inventory can't
+        be determined -- e.g. `self._store` is a lightweight test double
+        with no `.folders`, not a real ScenarioStore -- so this check only
+        ever *adds* protection for the real store and never breaks a
+        fake/mock one that worked fine before V6-M5."""
+        if scenario not in self._plane_cache:
+            try:
+                folder = self._store.folders[scenario]
+                infos = available_slices(folder)
+                self._plane_cache[scenario] = {
+                    (i.key.quantity, i.key.direction, i.key.offset) for i in infos}
+            except Exception:
+                self._plane_cache[scenario] = None
+        return self._plane_cache[scenario]
+
+    def _ensure_plane_available(self, scenario: int, key: SliceKey) -> None:
+        """V6-M5: raise GatedQuantityError if (quantity, direction, offset)
+        is positively confirmed absent from the .smv inventory -- checked
+        against the already-parsed list, never by attempting a read.
+        Querying geometry/data for a plane that was never extracted can
+        crash the underlying slice-file parser instead of raising cleanly
+        (the lesson from V6-M3's gated U/W-VELOCITY work); this guard is
+        what keeps multi-plane support honest instead of merely hoping a
+        bad plane never gets requested. Skipped for volumetric (`plane_pos`
+        set) reads (a separate `.s3d` path `available_slices` doesn't
+        inventory) and when the inventory itself can't be determined."""
+        if key.plane_pos is not None:
+            return
+        planes = self._available_planes(scenario)
+        if planes is None:
+            return
+        if (key.quantity, key.direction, key.offset) not in planes:
+            axis = DIRECTION_TO_AXIS.get(key.direction, str(key.direction))
+            raise GatedQuantityError(
+                f"No {key.quantity} slice at direction={axis} ({key.direction}), "
+                f"offset={key.offset} for this scenario -- only the planes present "
+                f"in the .smv file are readable (see docs/msim-preparation.md).")
+
     def _compute(self, scenario: int, key: SliceKey, q):
         if getattr(q, "calculated", False):
             # V6-M1: a Field-Calculator field. Evaluate its expression, resolving
@@ -68,8 +111,11 @@ class QuantityProvider:
             resolve = lambda dep_key: self.get(scenario, SliceKey(
                 dep_key, key.direction, key.offset))
             return fc.evaluate(q.expression, resolve, self._fps)
-        # a legacy single-source derived quantity (temperature rise, dyn. pressure)
-        source = self._store.get(scenario, self._source_key(key))
+        # a legacy single-source derived quantity (temperature rise, dyn.
+        # pressure) -- routed through self.get() (not the store directly) so
+        # its source read gets the same gating/plane checks as any other
+        # quantity (V6-M5).
+        source = self.get(scenario, self._source_key(key))
         return derive(key.quantity, source)   # elementwise over the whole (t,z,x) array
 
     def get(self, scenario: int, key: SliceKey = None):
@@ -93,6 +139,7 @@ class QuantityProvider:
             while len(self._memo) > self._MEMO_MAX:
                 self._memo.popitem(last=False)
             return result
+        self._ensure_plane_available(scenario, key)
         return self._store.get(scenario, key)
 
     def get_vector(self, scenario: int, direction: int = None, offset: int = None):
@@ -112,6 +159,8 @@ class QuantityProvider:
     def get_extent(self, scenario: int, key: SliceKey = None):
         key = key or SliceKey("TEMPERATURE")
         q = get_quantity(key.quantity)
+        if q.gated:
+            raise GatedQuantityError(q.gate_reason)
         if getattr(q, "calculated", False):
             # a calculated field shares its first dependency's grid/extent.
             import field_calculator as fc
@@ -120,6 +169,7 @@ class QuantityProvider:
             return self.get_extent(scenario, SliceKey(dep, key.direction, key.offset))
         if q.kind == "derived":
             key = self._source_key(key)
+        self._ensure_plane_available(scenario, key)
         return self._store.get_extent(scenario, key)
 
     @property

@@ -188,3 +188,71 @@ class TestDeviceLifecycle:
         text = path.read_text()
         assert "device_type" in text and "thermocouple" in text
         assert "time_s,temperature_C,device_state" in text
+
+
+class FakeMultiPlaneStore:
+    """A store with genuinely distinct data per (direction, offset) --
+    lets a test tell whether a device actually read the plane it asked
+    for, not just the app's default one."""
+
+    def __init__(self, planes: dict, extent=(0.0, 2.0, 0.0, 2.0)):
+        self._planes = planes   # {(direction, offset): temp_array}
+        self._extent = extent
+
+    def get(self, scenario, key):
+        if key.quantity != "TEMPERATURE":
+            raise KeyError(key.quantity)
+        try:
+            return self._planes[(key.direction, key.offset)]
+        except KeyError:
+            raise KeyError(f"no plane at direction={key.direction}, offset={key.offset}")
+
+    def get_extent(self, scenario, key):
+        return self._extent
+
+
+class TestMultiPlane:
+    """V6-M5: Device carries its own (direction, offset), defaulting to the
+    app's usual plane -- devices on different planes read genuinely
+    different data, and the default stays byte-identical to pre-V6-M5
+    behavior."""
+
+    def test_default_plane_unchanged(self):
+        provider = QuantityProvider(
+            FakeMultiPlaneStore({(1, 0): _uniform_field([20.0, 30.0, 40.0])}), fps=1)
+        dev = dv.Device(id="p1", name="TC-01", type="thermocouple", scenario=0, position=(1.0, 1.0))
+        assert dev.direction == 1 and dev.offset == 0   # DEFAULT_DIRECTION/DEFAULT_OFFSET
+        dev.compute(provider, fps=1)
+        assert dev.results["max_temperature_C"] == pytest.approx(40.0)
+
+    def test_device_on_a_different_offset_reads_that_planes_data(self):
+        provider = QuantityProvider(FakeMultiPlaneStore({
+            (1, 0): _uniform_field([20.0, 30.0, 40.0]),
+            (1, 15): _uniform_field([100.0, 200.0, 300.0]),
+        }), fps=1)
+        dev = dv.Device(id="p2", name="TC-02", type="thermocouple", scenario=0,
+                        position=(1.0, 1.0), offset=15)
+        dev.compute(provider, fps=1)
+        assert dev.results["max_temperature_C"] == pytest.approx(300.0)
+
+    def test_device_on_an_absent_plane_is_gated(self):
+        from quantity_provider import GatedQuantityError
+        provider = QuantityProvider(FakeMultiPlaneStore({(1, 0): _uniform_field([20.0])}), fps=1)
+        dev = dv.Device(id="p3", name="TC-03", type="thermocouple", scenario=0,
+                        position=(1.0, 1.0), direction=0)   # x-normal -- not in this fixture
+        with pytest.raises(Exception):   # the fake raises KeyError; the real provider raises GatedQuantityError
+            dev.compute(provider, fps=1)
+
+    def test_session_round_trip_preserves_plane(self):
+        dev = dv.Device(id="p4", name="TC-04", type="thermocouple", scenario=0,
+                        position=(1.0, 1.0), direction=2, offset=7)
+        restored = dv.Device.from_dict(dev.to_dict())
+        assert restored.direction == 2 and restored.offset == 7
+
+    def test_from_dict_defaults_plane_for_old_sessions(self):
+        """A session saved before V6-M5 has no direction/offset keys --
+        must restore to the app's default plane, not crash."""
+        d = {"id": "p5", "name": "TC-05", "type": "thermocouple", "scenario": 0,
+            "position": [1.0, 1.0]}
+        restored = dv.Device.from_dict(d)
+        assert restored.direction == 1 and restored.offset == 0

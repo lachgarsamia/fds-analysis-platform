@@ -19,11 +19,14 @@ _SUPPORTED_VERSIONS = (1, 2)  # v1 sessions still load (notebook simply absent)
 
 
 def cell_to_dict(cell) -> dict:
-    """One GridCell's restorable state. quantity_key is stored as its
-    `.quantity` string only -- direction/offset aren't yet user-selectable
-    (single fixed plane, see slice_key.py), so the string round-trips via
-    quantity lookup on load rather than reconstructing a SliceKey here."""
-    d = {"cell_type": cell.cell_type, "quantity": cell.quantity_key.quantity}
+    """One GridCell's restorable state. quantity_key's `.quantity` string
+    round-trips via a quantity lookup on load; `direction`/`offset` (V6-M5:
+    multi-plane cross-sections) are also stored so a cell showing a
+    non-default plane (e.g. a second Y-offset, or an X/Z-normal slice)
+    restores to that same plane rather than silently falling back to the
+    app's default -- see main_window._find_quantity_key."""
+    d = {"cell_type": cell.cell_type, "quantity": cell.quantity_key.quantity,
+        "direction": cell.quantity_key.direction, "offset": cell.quantity_key.offset}
     if cell.cell_type == "slice":
         d["case_index"] = int(cell.case_index)
     elif cell.cell_type == "difference":

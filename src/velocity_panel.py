@@ -180,6 +180,7 @@ class VelocityPanel(QtWidgets.QWidget):
     @property
     def mode(self) -> str:
         return self.mode_combo.currentData() or "quiver"
+    
 
     @property
     def color_by(self) -> str:
