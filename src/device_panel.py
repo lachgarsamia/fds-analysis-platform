@@ -312,8 +312,15 @@ class DevicePanel(QtWidgets.QWidget):
         if not r:
             return "not yet computed"
         if d.type == "thermocouple":
+            # V6-M6: show full FED when CO is available (max_fed_full is
+            # None while CO is gated -- never fabricated), else the heat-
+            # only FED, alongside the existing peak/heating-rate readout.
+            if r.get("max_fed_full") is not None:
+                fed_part = f" · FED {r['max_fed_full']:.2f}"
+            else:
+                fed_part = f" · heat-FED {r.get('max_fed_heat', 0.0):.2f}"
             return (f"peak {r['max_temperature_C']:.0f} °C · "
-                    f"{r['heating_rate_C_per_s']:.1f} °C/s")
+                    f"{r['heating_rate_C_per_s']:.1f} °C/s{fed_part}")
         if r.get("activated"):
             return f"activated at {r['activation_time_s']:.1f} s"
         return "did not activate"

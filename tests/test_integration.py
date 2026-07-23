@@ -3962,3 +3962,120 @@ class TestMultiPlaneCrossSections:
         assert cell.quantity_key.direction == doorway_key.direction
         assert cell.quantity_key.offset == doorway_key.offset
         window.close()
+
+
+class _SyntheticCOProvider:
+    """Wraps a real QuantityProvider but supplies a synthetic CO field, so
+    V6-M6's full-FED pipeline is testable even though the actual dataset has
+    no CO output yet. TEMPERATURE/extent reads go through the real provider
+    (real background/geometry); only CO is synthetic and never confused
+    with a real quantity -- production code always goes through the real,
+    registry-gated provider."""
+
+    def __init__(self, real, co_ppm=5000.0):
+        self._real = real
+        self._co_ppm = co_ppm
+
+    def get(self, scenario, key):
+        if key.quantity == "CARBON MONOXIDE VOLUME FRACTION":
+            temp = self._real.get(scenario, SliceKey("TEMPERATURE", key.direction, key.offset))
+            return np.full_like(np.asarray(temp, dtype=float), self._co_ppm)
+        return self._real.get(scenario, key)
+
+    def get_extent(self, scenario, key):
+        if key.quantity == "CARBON MONOXIDE VOLUME FRACTION":
+            return self._real.get_extent(scenario, SliceKey("TEMPERATURE", key.direction, key.offset))
+        return self._real.get_extent(scenario, key)
+
+
+class TestFullFED:
+    """V6-M6: full FED (toxic-gas + convected-heat dose). CO is registry-
+    gated on the real dataset -- these tests verify the honest gated
+    fallback against real data, and the full pipeline via a synthetic CO
+    provider (mirroring V6-M3's _SyntheticVectorProvider pattern)."""
+
+    def test_hazard_panel_falls_back_to_partial_screen_when_co_gated(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        window.hazard_panel.ensure_loaded()
+        assert not window.hazard_panel._series["has_co"]
+        import hazard_spaces as hz
+        assert hz.BASIS in window.hazard_panel.caption.text()
+        window.close()
+
+    def test_tenability_panel_falls_back_to_partial_screen_when_co_gated(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        window.tenability_panel.ensure_loaded()
+        assert not window.tenability_panel._has_co
+        window.close()
+
+    def test_spacetime_full_fed_is_gated_on_real_data(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        st = window.spacetime_panel
+        st.ensure_loaded()
+        st.quantity_combo.setCurrentIndex(st.quantity_combo.findData("full_fed"))
+        assert st._data is None
+        assert "Gated" in st.status.text()
+        window.close()
+
+    def test_hazard_panel_escalates_via_full_fed_with_synthetic_co(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        window.hazard_panel._provider = _SyntheticCOProvider(window.quantity_provider, co_ppm=20000.0)
+        window.hazard_panel.ensure_loaded()
+        assert window.hazard_panel._series["has_co"]
+        import hazard_spaces as hz
+        assert hz.FULL_FED_BASIS in window.hazard_panel.caption.text()
+        window.close()
+
+    def test_tenability_panel_shows_full_fed_with_synthetic_co(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        window.tenability_panel._provider = _SyntheticCOProvider(window.quantity_provider, co_ppm=20000.0)
+        window.tenability_panel.ensure_loaded()
+        assert window.tenability_panel._has_co
+        from tenability_panel import _FULL_FED_NOTICE
+        assert window.tenability_panel.disclaimer.text() == _FULL_FED_NOTICE
+        window.close()
+
+    def test_spacetime_full_fed_with_synthetic_co_renders(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        st = window.spacetime_panel
+        st._provider = _SyntheticCOProvider(window.quantity_provider, co_ppm=20000.0)
+        st.ensure_loaded()
+        st.quantity_combo.setCurrentIndex(st.quantity_combo.findData("full_fed"))
+        assert st._data is not None and st._gate_reason is None
+        assert st.status.text() == ""
+        assert st._data.shape == window.controller.store.get(
+            st.scenario_combo.currentData(), SliceKey("TEMPERATURE")).shape
+        window.close()
+
+    def test_device_thermocouple_shows_full_fed_with_synthetic_co(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        dp = window.device_panel
+        dp.ensure_loaded()
+        dp._provider = _SyntheticCOProvider(window.quantity_provider, co_ppm=20000.0)
+        dp.type_combo.setCurrentIndex(dp.type_combo.findData("thermocouple"))
+        dp._place(1.0, 0.2)
+        dev = dp._devices[-1]
+        assert dev.results["max_fed_full"] is not None
+        assert "FED" in dp._headline(dev)
+        window.close()

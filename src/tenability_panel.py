@@ -1,12 +1,20 @@
-"""Tenability screening panel (V2 roadmap M3.2), an Analysis-page tab.
+"""Tenability screening panel (V2 roadmap M3.2; full FED V6-M6), an
+Analysis-page tab.
 
-Shows a time-to-untenable map for one scenario at a configurable
-convected-heat threshold: each cell colored by when it first becomes
-untenable (red = early, green = late, blank = never). A prominent
-disclaimer states this is a PARTIAL, temperature-only screen -- there is
-no CO/CO2 output in this dataset, so it is not a full FED analysis.
+Shows a time-to-untenable map for one scenario. By default (no CO data) this
+is convected-heat-only, at a configurable temperature threshold -- each cell
+coloured by when it first becomes untenable (red = early, green = late,
+blank = never) -- with a prominent disclaimer that this is a PARTIAL screen.
 
-Static/playback-independent (a single time-to-untenable field per
+V6-M6: on each scenario load, the panel tries to read 'CARBON MONOXIDE
+VOLUME FRACTION' through QuantityProvider. Where CO is available, it shows
+the full FED (Fractional Effective Dose: toxic-gas dose + convected-heat
+dose, tenability.full_fed) instead, with a disclaimer that states so --
+never silently mixing the two. Today's dataset has no CO output, so
+QuantityProvider raises GatedQuantityError immediately (the registry's own
+gate) and the panel falls back to the partial screen, unchanged from M3.2.
+
+Static/playback-independent (a single time-to-untenable/FED field per
 scenario, not per-frame), same convention as the other Analysis panels.
 Lazy: computed on first tab show.
 """
@@ -18,7 +26,8 @@ import numpy as np
 from PyQt5 import QtCore, QtWidgets
 
 from widgets import MplCanvas
-from slice_key import DEFAULT_SLICE_KEY
+from slice_key import DEFAULT_SLICE_KEY, SliceKey
+from quantity_provider import GatedQuantityError
 import tenability as tn
 
 _DISCLAIMER = (
@@ -27,14 +36,20 @@ _DISCLAIMER = (
     "Toxic-gas tenability is not assessed."
 )
 
+_FULL_FED_NOTICE = (
+    "✓ Full FED (Fractional Effective Dose): toxic-gas (CO) dose + convected-heat dose "
+    "(ISO 13571 / SFPE Handbook). FED ≥ 1.0 marks incapacitation."
+)
+
 
 class TenabilityPanel(QtWidgets.QWidget):
-    def __init__(self, store, manifest: list, fps: int, parent=None):
+    def __init__(self, provider, manifest: list, fps: int, parent=None):
         super().__init__(parent)
-        self._store = store
+        self._provider = provider
         self._manifest = sorted(manifest, key=lambda e: e.case_index)
         self._fps = max(1, fps)
         self._loaded = False
+        self._has_co = False
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -59,10 +74,10 @@ class TenabilityPanel(QtWidgets.QWidget):
         header.addWidget(self.threshold_spin)
         layout.addLayout(header)
 
-        disclaimer = QtWidgets.QLabel(_DISCLAIMER)
-        disclaimer.setWordWrap(True)
-        disclaimer.setProperty("role", "caption")
-        layout.addWidget(disclaimer)
+        self.disclaimer = QtWidgets.QLabel(_DISCLAIMER)
+        self.disclaimer.setWordWrap(True)
+        self.disclaimer.setProperty("role", "caption")
+        layout.addWidget(self.disclaimer)
 
         self.canvas = MplCanvas(self)
         self.canvas.setAccessibleName("Time to untenable map")
@@ -92,8 +107,18 @@ class TenabilityPanel(QtWidgets.QWidget):
 
     def _extent(self, case_index):
         try:
-            return self._store.get_extent(case_index, DEFAULT_SLICE_KEY)
+            return self._provider.get_extent(case_index, DEFAULT_SLICE_KEY)
         except Exception:  # noqa: BLE001 - geometry is a nice-to-have
+            return None
+
+    def _co_field(self, case_index):
+        """V6-M6: a real CO ppm field for this scenario, or None if gated.
+        GatedQuantityError is the registry's own gate (fires before any
+        store access) -- this is never a broad except-and-hope."""
+        try:
+            return np.asarray(self._provider.get(
+                case_index, SliceKey("CARBON MONOXIDE VOLUME FRACTION")))
+        except GatedQuantityError:
             return None
 
     def _refresh(self) -> None:
@@ -103,26 +128,42 @@ class TenabilityPanel(QtWidgets.QWidget):
         if case_index is None:
             return
         threshold = float(self.threshold_spin.value())
-        data = np.asarray(self._store.get(case_index, DEFAULT_SLICE_KEY))
-        field = tn.time_to_untenable_field(data, threshold, self._fps)
-        scalar = tn.time_to_untenable_scalar(data, threshold, self._fps)
-        end_frac = tn.untenable_fraction(data, threshold, data.shape[0] - 1)
-
-        display = np.where(np.isfinite(field), field, np.nan)
-        finite = field[np.isfinite(field)]
-        vmax = float(finite.max()) if finite.size else 1.0
+        data = np.asarray(self._provider.get(case_index, DEFAULT_SLICE_KEY))
+        co = self._co_field(case_index)
+        self._has_co = co is not None
         extent = self._extent(case_index)
-
         fig = self.canvas.fig
         fig.clear()
         ax = fig.add_subplot(111)
         cmap = mpl.colormaps["RdYlGn"].copy()
-        cmap.set_bad("#e8e8e8")  # cells that never become untenable
+        cmap.set_bad("#e8e8e8")  # cells that never become untenable/incapacitated
+
+        if self._has_co:
+            self.disclaimer.setText(_FULL_FED_NOTICE)
+            fed = tn.full_fed(data, co, self._fps)
+            field = tn.time_to_fed_field(fed, self._fps)
+            scalar = tn.time_to_fed_scalar(fed, self._fps)
+            end_frac = float(np.mean(fed[-1] >= tn.FED_INCAPACITATION))
+            title = "Time to FED ≥ 1.0 (incapacitation)"
+            onset_label = "Onset of incapacitation (full FED)"
+            end_label = "incapacitated (FED ≥ 1.0)"
+        else:
+            self.disclaimer.setText(_DISCLAIMER)
+            field = tn.time_to_untenable_field(data, threshold, self._fps)
+            scalar = tn.time_to_untenable_scalar(data, threshold, self._fps)
+            end_frac = tn.untenable_fraction(data, threshold, data.shape[0] - 1)
+            title = f"Time to untenable (>{int(threshold)} °C)"
+            onset_label = "Onset of untenable heat"
+            end_label = "untenable"
+
+        display = np.where(np.isfinite(field), field, np.nan)
+        finite = field[np.isfinite(field)]
+        vmax = float(finite.max()) if finite.size else 1.0
         image = ax.imshow(display, cmap=cmap, vmin=0.0, vmax=vmax, aspect="auto",
                            extent=extent if extent is not None else None)
         ax.set_xticks([])
         ax.set_yticks([])
-        ax.set_title(f"Time to untenable (>{int(threshold)} °C)", fontsize=9, fontweight="bold")
+        ax.set_title(title, fontsize=9, fontweight="bold")
         cbar = fig.colorbar(image, ax=ax, fraction=0.046, pad=0.02)
         cbar.set_label("First-crossing time (s) — red = early, grey = never", fontsize=8)
         fig.subplots_adjust(top=0.92, bottom=0.03, left=0.02, right=0.95)
@@ -130,5 +171,5 @@ class TenabilityPanel(QtWidgets.QWidget):
 
         onset = f"{scalar:.1f} s" if scalar is not None else "never reached"
         self.stats_label.setText(
-            f"Onset of untenable heat: {onset} · {end_frac:.0%} of the slice is "
-            f"untenable at the end of the run.")
+            f"{onset_label}: {onset} · {end_frac:.0%} of the slice is "
+            f"{end_label} at the end of the run.")

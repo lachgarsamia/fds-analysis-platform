@@ -788,10 +788,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.controller.store, self.sim_data.manifest,
                 self._quantity_options(), self.sim_data.timesteps_per_second)
             self.energy_panel = EnergyBudgetPanel(self.sim_data.manifest)
-            # Tenability screening (M3.2): works for any study with a
-            # manifest, factorial or not (it's per-scenario, no factor axes).
+            # Tenability screening (M3.2; full FED V6-M6): works for any
+            # study with a manifest, factorial or not (it's per-scenario, no
+            # factor axes). Takes the provider (not the raw store) so a CO
+            # read cleanly gates instead of touching the store.
             self.tenability_panel = TenabilityPanel(
-                self.controller.store, self.sim_data.manifest, self.sim_data.timesteps_per_second)
+                self.quantity_provider, self.sim_data.manifest, self.sim_data.timesteps_per_second)
             # Fire MRI (V3-M1): per-scenario temporal signature maps.
             self.fire_mri_panel = FireMRIPanel(
                 self.controller.store, self.sim_data.manifest,
@@ -863,8 +865,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.assistant_panel = AssistantPanel()
             # Research workspace (V5-M4): hazard spaces + mission-control
             # dashboard. Per-scenario, so any study (not just the factorial).
+            # V6-M6: takes the provider (not the raw store) so a CO read
+            # (full FED) cleanly gates instead of touching the store.
             self.hazard_panel = HazardPanel(
-                self.controller.store, self.sim_data.manifest,
+                self.quantity_provider, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
             self.dashboard_panel = DashboardPanel(
                 self.controller.store, self.sim_data.manifest,

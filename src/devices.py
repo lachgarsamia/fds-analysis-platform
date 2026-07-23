@@ -37,6 +37,7 @@ import numpy as np
 
 from slice_key import SliceKey, DEFAULT_DIRECTION, DEFAULT_OFFSET
 import measure as mz
+import tenability as tn
 
 KINDS = ("thermocouple", "heat_detector", "sprinkler")
 KIND_LABELS = {"thermocouple": "Thermocouple", "heat_detector": "Heat detector",
@@ -83,12 +84,28 @@ def compute_thermocouple(provider, scenario: int, x: float, z: float, fps: int,
     n = temp.shape[0]
     time_s = np.arange(n) / fps
     rate = np.gradient(temp) * fps if n >= 2 else np.zeros_like(temp)
+    temp_field = temp.reshape(-1, 1, 1)
+    fed_heat = tn.fed_heat_dose(temp_field, fps).reshape(-1)
+    # V6-M6: full FED (toxic-gas + convected-heat dose) at this point, when
+    # CO is available. Gated today (registry 'CARBON MONOXIDE VOLUME
+    # FRACTION') -- a clean GatedQuantityError, never a fabricated gas dose.
+    fed_full = None
+    try:
+        co = probe_series(provider, scenario, "CARBON MONOXIDE VOLUME FRACTION",
+                          x, z, direction, offset)
+        fed_full = tn.full_fed(temp_field, co.reshape(-1, 1, 1), fps).reshape(-1).tolist()
+    except Exception:  # noqa: BLE001 - GatedQuantityError today; never fabricate a gas dose
+        fed_full = None
     return {
         "time_s": time_s.tolist(),
         "temperature_C": temp.tolist(),
         "max_temperature_C": float(np.max(temp)) if n else 0.0,
         "heating_rate_C_per_s": float(np.max(rate)) if n else 0.0,
         "threshold_times_s": {f"{t:g}": _crossing_time(temp, fps, t) for t in TC_THRESHOLDS},
+        "fed_heat": fed_heat.tolist(),
+        "fed_full": fed_full,
+        "max_fed_heat": float(np.max(fed_heat)) if n else 0.0,
+        "max_fed_full": float(np.max(fed_full)) if fed_full else None,
         "basis": "TEMPERATURE probed at (x, z), bilinearly interpolated each frame.",
     }
 
@@ -305,10 +322,11 @@ class Device:
 
 
 def export_csv(dev: Device, path: str) -> None:
-    """time_s, temperature_C, device_state -- plus a metadata header (device
-    type, coordinates, parameters, scenario, basis) for traceability. Reuses
-    timeseries.write_series_csv (same CSV convention as every other export
-    in the app)."""
+    """time_s, temperature_C, device_state -- plus fed_heat/fed_full for a
+    thermocouple (V6-M6; fed_full omitted when CO is gated) -- plus a
+    metadata header (device type, coordinates, parameters, scenario, basis)
+    for traceability. Reuses timeseries.write_series_csv (same CSV
+    convention as every other export in the app)."""
     from timeseries import write_series_csv
     r = dev.results or {}
     time_s = np.asarray(r.get("time_s", []), dtype=float)
@@ -323,6 +341,9 @@ def export_csv(dev: Device, path: str) -> None:
     for k, v in dev.parameters.items():
         metadata[f"param_{k}"] = v
     metadata["basis"] = r.get("basis", "")
-    write_series_csv(path, "time_s", time_s,
-                     [("temperature_C", temp), ("device_state", state)],
-                     metadata=metadata)
+    series = [("temperature_C", temp), ("device_state", state)]
+    if dev.type == "thermocouple" and r.get("fed_heat"):
+        series.append(("fed_heat", np.asarray(r["fed_heat"], dtype=float)))
+        if r.get("fed_full"):
+            series.append(("fed_full", np.asarray(r["fed_full"], dtype=float)))
+    write_series_csv(path, "time_s", time_s, series, metadata=metadata)

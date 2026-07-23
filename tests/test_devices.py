@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 import devices as dv
+import tenability as tn
 from quantity_provider import QuantityProvider
 
 
@@ -15,9 +16,10 @@ class FakeStore:
     """A minimal ScenarioStore stand-in: uniform-per-frame fields, so a
     bilinear probe at any point returns exactly the frame's scalar value."""
 
-    def __init__(self, temp, velocity=None, extent=(0.0, 2.0, 0.0, 2.0)):
+    def __init__(self, temp, velocity=None, co=None, extent=(0.0, 2.0, 0.0, 2.0)):
         self._temp = temp
         self._velocity = velocity
+        self._co = co
         self._extent = extent
 
     def get(self, scenario, key):
@@ -27,6 +29,11 @@ class FakeStore:
             if self._velocity is None:
                 raise KeyError("VELOCITY not available in this fixture")
             return self._velocity
+        if key.quantity == "CARBON MONOXIDE VOLUME FRACTION":
+            if self._co is None:
+                from quantity_provider import GatedQuantityError
+                raise GatedQuantityError("Requires the M-SIM cluster re-run")
+            return self._co
         raise KeyError(key.quantity)
 
     def get_extent(self, scenario, key):
@@ -44,6 +51,38 @@ class TestThermocouple:
         r = dv.compute_thermocouple(provider, 0, 1.0, 1.0, fps=1)
         assert r["temperature_C"] == pytest.approx(values)
         assert r["max_temperature_C"] == pytest.approx(120.0)
+
+    def test_fed_heat_is_populated_and_monotonic(self):
+        values = [20.0 + 10.0 * i for i in range(11)]
+        provider = QuantityProvider(FakeStore(_uniform_field(values)), fps=1)
+        r = dv.compute_thermocouple(provider, 0, 1.0, 1.0, fps=1)
+        assert len(r["fed_heat"]) == 11
+        assert all(b > a for a, b in zip(r["fed_heat"], r["fed_heat"][1:]))
+        assert r["max_fed_heat"] == pytest.approx(max(r["fed_heat"]))
+
+    def test_fed_full_is_none_when_co_gated(self):
+        """The real registry gates CO -- QuantityProvider raises
+        GatedQuantityError before the store is ever touched, regardless of
+        what the store itself would return."""
+        values = [20.0 + 10.0 * i for i in range(5)]
+        provider = QuantityProvider(FakeStore(_uniform_field(values), co=_uniform_field(values)), fps=1)
+        r = dv.compute_thermocouple(provider, 0, 1.0, 1.0, fps=1)
+        assert r["fed_full"] is None and r["max_fed_full"] is None
+
+    def test_fed_full_combines_heat_and_gas_dose_when_co_available(self):
+        """A duck-typed fake *provider* (not wrapped in the real
+        QuantityProvider, which always gates CO via the registry) simulates
+        the post-M-SIM-re-run case where CO is real."""
+        n = 5
+        temp = _uniform_field([200.0] * n)
+        co = _uniform_field([5000.0] * n)
+        fake_provider = FakeStore(temp, co=co)   # duck-typed: .get/.get_extent only
+        r = dv.compute_thermocouple(fake_provider, 0, 1.0, 1.0, fps=1)
+        assert r["fed_full"] is not None
+        co_probed = np.full((n, 1, 1), 5000.0)   # the bilinearly-probed (uniform) CO value
+        expected = np.asarray(r["fed_heat"]) + tn.fed_gas_dose(co_probed, 1).reshape(-1)
+        np.testing.assert_allclose(r["fed_full"], expected)
+        assert r["max_fed_full"] == pytest.approx(max(r["fed_full"]))
 
     def test_heating_rate(self):
         # 10 C/s ramp -> max heating rate is exactly 10.

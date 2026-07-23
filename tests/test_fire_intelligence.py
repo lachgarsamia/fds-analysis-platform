@@ -1275,6 +1275,30 @@ class TestHazardSpaces:
         assert cls[0, 0, 0] == 1              # early: instantaneous Warning
         assert cls[-1, 0, 0] == 3             # late: escalated by exposure
 
+    def test_co_field_escalates_via_full_fed_not_exposure_proxy(self):
+        # V6-M6: a Warning-level temperature (70 C) that alone would never
+        # reach the exposure-time proxy's threshold in so few frames, but an
+        # extreme CO field drives full FED past 1.0 (confirmed independently
+        # via tenability.full_fed, not assumed).
+        import tenability as tn
+        n, fps = 10, 1
+        data = np.full((n, 1, 1), 70.0, dtype=np.float32)
+        co = np.full((n, 1, 1), 300000.0, dtype=np.float32)
+        fed = tn.full_fed(data.astype(float), co.astype(float), fps)
+        assert fed[-1, 0, 0] >= 1.0   # sanity: this scenario does cross incapacitation
+        cls_partial = hzs.classify_series(data, self.THR, fps=fps, exposure_limit_s=1e9)
+        cls_fed = hzs.classify_series(data, self.THR, fps=fps, exposure_limit_s=1e9, co_field=co)
+        assert cls_partial[-1, 0, 0] == 1     # partial screen: still just Warning
+        assert cls_fed[-1, 0, 0] == 3         # full FED: escalated to Untenable
+
+    def test_co_field_none_is_byte_identical_to_before(self):
+        """Regression: the default (no CO) path must be completely
+        unaffected by the new parameter."""
+        data = np.full((10, 1, 1), 70.0, dtype=np.float32)
+        cls = hzs.classify_series(data, self.THR, fps=1, exposure_limit_s=5.0)
+        cls_explicit = hzs.classify_series(data, self.THR, fps=1, exposure_limit_s=5.0, co_field=None)
+        np.testing.assert_array_equal(cls, cls_explicit)
+
     def test_class_fractions_sum_to_one(self):
         data = np.array([[[20.0, 80.0], [150.0, 400.0]]], dtype=np.float32)
         fr = hzs.class_fractions(hzs.classify_series(data, self.THR, 1, 1e9))

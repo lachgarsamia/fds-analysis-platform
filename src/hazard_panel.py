@@ -1,13 +1,22 @@
-"""Hazard Spaces panel (V5-M4), an Analysis-page tab.
+"""Hazard Spaces panel (V5-M4; full FED V6-M6), an Analysis-page tab.
 
 A dynamic hazard map (cells coloured Safe / Warning / Critical / Untenable) and
 a hazard timeline (stacked class fractions over time, with the flashover
-indicator and a time cursor). Classification is temperature + exposure based;
-the basis is stated on the panel. scenario_combo / frame_slider are bound to
-the SelectionBus (M1) by main_window, so it stays in sync with every panel.
+indicator and a time cursor). Classification is temperature + exposure based
+by default; the basis is stated on the panel. scenario_combo / frame_slider
+are bound to the SelectionBus (M1) by main_window, so it stays in sync with
+every panel.
 
-Static/lazy; the class series is computed once per scenario. Reuses the store,
-the registry hazard bands, and hazard_spaces.
+V6-M6: on each scenario load, the panel tries to read 'CARBON MONOXIDE
+VOLUME FRACTION' through QuantityProvider. Where available, classify_series
+escalates on full FED (toxic-gas + convected-heat dose) instead of the
+temperature-exposure proxy, and the caption states the full-FED basis. Gated
+today (this dataset has no CO output) -- QuantityProvider raises
+GatedQuantityError immediately, and the panel falls back to the exposure
+proxy, unchanged from V5-M4.
+
+Static/lazy; the class series is computed once per scenario. Reuses the
+provider, the registry hazard bands, and hazard_spaces.
 """
 
 from __future__ import annotations
@@ -19,17 +28,18 @@ from PyQt5 import QtCore, QtWidgets
 
 from widgets import MplCanvas
 from slice_key import SliceKey
+from quantity_provider import GatedQuantityError
 import hazard_spaces as hz
 
 
 class HazardPanel(QtWidgets.QWidget):
-    def __init__(self, store, manifest: list, fps: int, parent=None):
+    def __init__(self, provider, manifest: list, fps: int, parent=None):
         super().__init__(parent)
-        self._store = store
+        self._provider = provider
         self._manifest = sorted(manifest, key=lambda e: e.case_index)
         self._fps = max(1, fps)
         self._loaded = False
-        self._cache = {}      # case_index -> dict(classes, fractions, flashover, extent)
+        self._cache = {}      # case_index -> dict(classes, fractions, flashover, extent, has_co)
         self._data = None
         self._series = None
 
@@ -97,6 +107,16 @@ class HazardPanel(QtWidgets.QWidget):
         self.scenario_combo.blockSignals(False)
         self._reload()
 
+    def _co_field(self, case_index):
+        """V6-M6: a real CO ppm field for this scenario, or None if gated
+        (GatedQuantityError is the registry's own gate, before any store
+        access -- never a broad except-and-hope)."""
+        try:
+            return np.asarray(self._provider.get(
+                case_index, SliceKey("CARBON MONOXIDE VOLUME FRACTION")))
+        except GatedQuantityError:
+            return None
+
     def _reload(self) -> None:
         if not self._loaded:
             return
@@ -104,18 +124,23 @@ class HazardPanel(QtWidgets.QWidget):
         if case_index is None:
             return
         if case_index not in self._cache:
-            data = np.asarray(self._store.get(case_index, SliceKey("TEMPERATURE")))
-            extent = self._store.get_extent(case_index, SliceKey("TEMPERATURE"))
+            data = np.asarray(self._provider.get(case_index, SliceKey("TEMPERATURE")))
+            extent = self._provider.get_extent(case_index, SliceKey("TEMPERATURE"))
+            co = self._co_field(case_index)
             thr = hz.band_thresholds("TEMPERATURE")
-            classes = hz.classify_series(data, thr, self._fps)
+            classes = hz.classify_series(data, thr, self._fps, co_field=co)
             self._cache[case_index] = {
                 "data": data, "extent": extent, "classes": classes,
                 "fractions": hz.class_fractions(classes),
                 "flashover": hz.flashover_indicator(data),
                 "worst": hz.worst_class(classes),
+                "has_co": co is not None,
             }
         self._series = self._cache[case_index]
         self._data = self._series["data"]
+        self.caption.setText(
+            "Basis: " + (hz.FULL_FED_BASIS if self._series["has_co"] else hz.BASIS)
+            + ". Flashover is an indicator only (no combustion model).")
         n = self._data.shape[0]
         self.frame_slider.blockSignals(True)
         self.frame_slider.setRange(0, n - 1)

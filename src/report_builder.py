@@ -197,7 +197,13 @@ def _devices_block(devices: list) -> str:
         if not r:
             headline = "not yet computed"
         elif d.get("type") == "thermocouple":
-            headline = f"peak {r.get('max_temperature_C', 0.0):.0f} °C"
+            # V6-M6: report the full FED when CO was available at compute
+            # time, else the heat-only FED -- never fabricated either way.
+            if r.get("max_fed_full") is not None:
+                fed_part = f", FED {r['max_fed_full']:.2f}"
+            else:
+                fed_part = f", heat-FED {r.get('max_fed_heat', 0.0):.2f}"
+            headline = f"peak {r.get('max_temperature_C', 0.0):.0f} °C{fed_part}"
         elif r.get("activated"):
             headline = f"activated at {r.get('activation_time_s', 0.0):.1f} s"
         else:

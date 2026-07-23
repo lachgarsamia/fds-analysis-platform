@@ -17,6 +17,14 @@ read/reshape correctly, but its two in-plane axes are generically labelled
 never been observed against real data -- values are always exactly what the
 store returns, only that label is a best-effort placeholder pending real data.
 
+V6-M6: a quantity toggle (Temperature / Full FED) alongside the plane
+selector. Full FED (tenability.full_fed) reshapes exactly like Temperature --
+same (n_t, n_z, n_x) shape -- so the existing locator/x-time/z-time machinery
+is unchanged; only the colour scale/labels differ. Requires 'CARBON MONOXIDE
+VOLUME FRACTION', gated until the M-SIM re-run: unavailable today, so this
+mode is exercised only via the gated-status path (same mechanism the plane
+selector already uses), never fabricated.
+
 SelectionBus (M1): scenario_combo is bound by main_window; clicking the locator
 publishes the point, and a point selected elsewhere moves the cross-sections.
 Reuses the provider (not the raw store) so plane gating is honest, and the
@@ -32,8 +40,11 @@ from widgets import MplCanvas
 from registry import get_quantity
 from slice_key import SliceKey, AXIS_TO_DIRECTION, DIRECTION_TO_AXIS
 from timeseries import phys_to_index
+import tenability as tn
 
 _PLANE_AXES = ("y", "x", "z")   # y first: the app's default/verified plane
+_QUANTITY_MODES = ("temperature", "full_fed")
+_QUANTITY_LABELS = {"temperature": "Temperature", "full_fed": "Full FED"}
 
 
 class SpaceTimePanel(QtWidgets.QWidget):
@@ -51,6 +62,7 @@ class SpaceTimePanel(QtWidgets.QWidget):
         self._bus = None
         self._loc_ax = None
         self._gate_reason = None
+        self._mode = "temperature"
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -80,6 +92,15 @@ class SpaceTimePanel(QtWidgets.QWidget):
         self.offset_spin.setToolTip("The plane's mesh-cell offset along its normal axis")
         self.offset_spin.setRange(0, 999)
         header.addWidget(self.offset_spin)
+        # V6-M6: Temperature (always real) vs. Full FED (gated until CO
+        # exists -- see module docstring).
+        self.quantity_combo = QtWidgets.QComboBox()
+        self.quantity_combo.setAccessibleName("Space-time quantity")
+        self.quantity_combo.setToolTip("Temperature is always real; Full FED needs CO "
+                                       "data, gated on this dataset")
+        for mode in _QUANTITY_MODES:
+            self.quantity_combo.addItem(_QUANTITY_LABELS[mode], mode)
+        header.addWidget(self.quantity_combo)
         layout.addLayout(header)
 
         self.caption = QtWidgets.QLabel(
@@ -110,6 +131,7 @@ class SpaceTimePanel(QtWidgets.QWidget):
         self.scenario_combo.currentIndexChanged.connect(self._reload)
         self.plane_combo.currentIndexChanged.connect(self._reload)
         self.offset_spin.valueChanged.connect(lambda _v: self._reload())
+        self.quantity_combo.currentIndexChanged.connect(self._reload)
         self.loc_canvas.mpl_connect("button_press_event", self._on_click)
 
     # ------------------------------------------------------------- bus (M1)
@@ -147,18 +169,33 @@ class SpaceTimePanel(QtWidgets.QWidget):
     def _offset(self) -> int:
         return self.offset_spin.value()
 
+    @property
+    def _quantity_mode(self) -> str:
+        return self.quantity_combo.currentData() or "temperature"
+
     def _reload(self) -> None:
         if not self._loaded:
             return
         case_index = self.scenario_combo.currentData()
         if case_index is None:
             return
-        ck = (case_index, self._direction, self._offset)
+        mode = self._quantity_mode
+        ck = (case_index, self._direction, self._offset, mode)
         if ck not in self._cache:
             key = SliceKey("TEMPERATURE", self._direction, self._offset)
             try:
-                data = np.asarray(self._provider.get(case_index, key))
+                temp = np.asarray(self._provider.get(case_index, key))
                 extent = self._provider.get_extent(case_index, key)
+                if mode == "full_fed":
+                    # V6-M6: CO is registry-gated (a clean, immediate
+                    # GatedQuantityError -- the registry's own gate fires
+                    # before any store access) -- never fabricated.
+                    co_key = SliceKey("CARBON MONOXIDE VOLUME FRACTION",
+                                     self._direction, self._offset)
+                    co = np.asarray(self._provider.get(case_index, co_key))
+                    data = tn.full_fed(temp, co, self._fps)
+                else:
+                    data = temp
                 self._gate_reason = None
             except Exception as e:
                 # V6-M5: an X/Z-normal (or absent-offset) plane -- shown
@@ -177,11 +214,13 @@ class SpaceTimePanel(QtWidgets.QWidget):
                 self._cache[ck] = (None, None)
                 self._gate_reason = str(e)
                 self._data, self._extent = None, None
+                self._mode = mode
                 self.status.setText(f"Gated: {e}")
                 self._render()
                 return
             self._cache[ck] = (data, extent)
         self._data, self._extent = self._cache[ck]
+        self._mode = mode
         if self._data is None:
             self._gate_reason = self._gate_reason or "This plane is not available for this scenario."
             self.status.setText(f"Gated: {self._gate_reason}")
@@ -215,11 +254,21 @@ class SpaceTimePanel(QtWidgets.QWidget):
             ax.set_xticks([]); ax.set_yticks([])
             canvas.draw_idle()
 
+    def _display_params(self):
+        """(cmap, vmin, vmax) for the current quantity mode (V6-M6):
+        Temperature uses the registry's own scale; Full FED uses a fixed
+        0..max(1, data) scale with 1.0 = incapacitation (ISO 13571)."""
+        if self._mode == "full_fed":
+            vmax = max(1.0, float(np.nanmax(self._data)) if self._data.size else 1.0)
+            return "RdYlGn_r", 0.0, vmax
+        q = get_quantity("TEMPERATURE")
+        return q.cmap, q.vmin, q.slider_default
+
     def _render(self) -> None:
         if self._data is None:
             self._render_gated()
             return
-        q = get_quantity("TEMPERATURE")
+        cmap, vmin, vmax = self._display_params()
         n_t = self._data.shape[0]
         t_end = (n_t - 1) / self._fps
         ext = self._extent or [0, self._data.shape[2], 0, self._data.shape[1]]
@@ -240,7 +289,7 @@ class SpaceTimePanel(QtWidgets.QWidget):
         lfig.clear()
         self._loc_ax = lfig.add_subplot(111)
         frame = self._data[int(n_t * 0.6)]
-        self._loc_ax.imshow(frame, cmap=q.cmap, vmin=q.vmin, vmax=q.slider_default,
+        self._loc_ax.imshow(frame, cmap=cmap, vmin=vmin, vmax=vmax,
                             aspect="auto", extent=ext)
         self._loc_ax.set_xticks([]); self._loc_ax.set_yticks([])
         px = x0 + self._col / max(frame.shape[1] - 1, 1) * (x1 - x0)
@@ -252,22 +301,21 @@ class SpaceTimePanel(QtWidgets.QWidget):
 
         # --- x-time at the point's height ---
         xt = self._data[:, self._row, :]        # (n_t, n_x)
-        self._heatmap(self.xt_canvas, xt, (x0, x1, t_end, 0.0), q,
+        self._heatmap(self.xt_canvas, xt, (x0, x1, t_end, 0.0), cmap, vmin, vmax,
                       f"axis-b–time at fixed axis-a={pz:.2f} m" if self._direction != 1
                       else f"x–time at z={pz:.2f} m", col_axis_label)
         # --- z-time at the point's column (row 0 = ceiling) ---
         zt = self._data[:, :, self._col]        # (n_t, n_z)
-        self._heatmap(self.zt_canvas, zt, (z1, z0, t_end, 0.0), q,
+        self._heatmap(self.zt_canvas, zt, (z1, z0, t_end, 0.0), cmap, vmin, vmax,
                       f"axis-a–time at fixed axis-b={px:.2f} m" if self._direction != 1
                       else f"z–time at x={px:.2f} m", row_axis_label)
 
     @staticmethod
-    def _heatmap(canvas, arr, extent, q, title, xlabel) -> None:
+    def _heatmap(canvas, arr, extent, cmap, vmin, vmax, title, xlabel) -> None:
         fig = canvas.fig
         fig.clear()
         ax = fig.add_subplot(111)
-        ax.imshow(arr, cmap=q.cmap, vmin=q.vmin, vmax=q.slider_default,
-                  aspect="auto", extent=extent)
+        ax.imshow(arr, cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto", extent=extent)
         ax.set_xlabel(xlabel, fontsize=8)
         ax.set_ylabel("time (s)", fontsize=8)
         ax.set_title(title, fontsize=8)

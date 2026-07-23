@@ -12,8 +12,12 @@ exposure above the warning threshold:
 `flashover_indicator` flags frames whose peak temperature exceeds a ~500 °C
 indicator -- an *indicator only*, not a flashover/combustion model.
 
-This is a temperature-only, partial hazard screen (the standing FED gate: no
-CO/CO₂), and every UI surface must say so. Pure NumPy, Qt-free.
+By default this is a temperature-only, partial hazard screen (no CO/CO2),
+and every UI surface must say so. V6-M6: when a real CO field is supplied
+(`co_field`, read by the caller through QuantityProvider -- gated until the
+M-SIM re-run, see tenability.py), `classify_series` escalates on full FED
+(tenability.full_fed) instead of the convected-heat-only exposure proxy --
+still Pure NumPy, Qt-free.
 """
 
 from __future__ import annotations
@@ -28,6 +32,9 @@ DEFAULT_EXPOSURE_LIMIT_S = 30.0
 FLASHOVER_INDICATOR_C = 500.0
 BASIS = ("temperature thresholds (60/100/300 °C) plus cumulative exposure above "
          "60 °C; temperature-only partial screen (no CO/CO₂)")
+FULL_FED_BASIS = ("temperature thresholds (60/100/300 °C) plus full FED (Fractional "
+                  "Effective Dose: toxic-gas CO dose + convected-heat dose, ISO 13571 / "
+                  "SFPE Handbook); Untenable once FED >= 1.0 (incapacitation)")
 
 
 def band_thresholds(quantity: str = "TEMPERATURE"):
@@ -48,18 +55,30 @@ def classify_instant(frame, thresholds) -> np.ndarray:
 
 
 def classify_series(data, thresholds, fps: int,
-                    exposure_limit_s: float = DEFAULT_EXPOSURE_LIMIT_S) -> np.ndarray:
-    """Per-frame, per-cell hazard class (n_t, n_z, n_x). A cell is escalated to
-    Untenable once its cumulative time above the warning threshold reaches
-    `exposure_limit_s` -- combining instantaneous level with heat dose."""
+                    exposure_limit_s: float = DEFAULT_EXPOSURE_LIMIT_S,
+                    co_field=None) -> np.ndarray:
+    """Per-frame, per-cell hazard class (n_t, n_z, n_x). A cell is escalated
+    to Untenable once either:
+
+    - `co_field` is given (V6-M6, a real CO ppm field): its full FED
+      (tenability.full_fed) reaches 1.0 (ISO 13571 incapacitation), or
+    - `co_field` is None (the default, partial screen): its cumulative time
+      above the warning threshold reaches `exposure_limit_s` -- a coarse
+      heat-dose proxy, kept exactly as before for backward compatibility.
+    """
     arr = np.asarray(data, dtype=float)
     t0, t1, t2 = thresholds
     inst = np.zeros(arr.shape, dtype=int)
     inst[arr >= t0] = 1
     inst[arr >= t1] = 2
     inst[arr >= t2] = 3
-    exposure = np.cumsum(arr > t0, axis=0) / max(1, fps)     # seconds above warning, per cell
-    escalate = np.where(exposure >= exposure_limit_s, 3, 0)
+    if co_field is not None:
+        from tenability import full_fed, FED_INCAPACITATION
+        fed = full_fed(arr, co_field, fps)
+        escalate = np.where(fed >= FED_INCAPACITATION, 3, 0)
+    else:
+        exposure = np.cumsum(arr > t0, axis=0) / max(1, fps)     # seconds above warning, per cell
+        escalate = np.where(exposure >= exposure_limit_s, 3, 0)
     return np.maximum(inst, escalate)
 
 
