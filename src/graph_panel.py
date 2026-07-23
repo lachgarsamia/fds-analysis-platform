@@ -7,8 +7,9 @@ the workspace to the relevant scenario / time / region. Filter by node type or
 by tag (e.g. "vod2", a notebook tag) to isolate a slice of the memory.
 
 Built deterministically from existing artifacts (scenarios, experiments,
-sessions, notebook, zones, measurements, and the selected scenario's narrative
-events). "Refresh" re-gathers them. Reuses graph_model, events, and the M1 bus.
+sessions, notebook, zones, measurements, placed devices/vector probes (V6-M4),
+and the selected scenario's narrative events). "Refresh" re-gathers them.
+Reuses graph_model, events, and the M1 bus.
 """
 
 from __future__ import annotations
@@ -131,6 +132,10 @@ class GraphPanel(QtWidgets.QWidget):
         entries = list(notebook.entries) if notebook is not None else []
         zones = live("zone_panel", "_zones") or []
         measures = live("measurement_panel", "_measurements") or []
+        # V6-M4: placed devices/vector probes become graph nodes too, the
+        # same way zones/measurements already do.
+        devices = live("device_panel", "_devices") or []
+        vector_probes = live("velocity_panel", "_probes") or []
         experiments = []
         sessions = []
         try:
@@ -148,13 +153,14 @@ class GraphPanel(QtWidgets.QWidget):
         ev = {}
         if self._current_scenario is not None:
             ev[self._current_scenario] = self._events_for(self._current_scenario)
-        return entries, zones, measures, experiments, sessions, ev
+        return entries, zones, measures, experiments, sessions, ev, devices, vector_probes
 
     def _rebuild(self) -> None:
-        entries, zones, measures, experiments, sessions, ev = self._gather()
+        entries, zones, measures, experiments, sessions, ev, devices, vector_probes = self._gather()
         self._graph = gm.build_graph(self._manifest, notebook=entries, zones=zones,
                                      measurements=measures, experiments=experiments,
-                                     sessions=sessions, events_by_scenario=ev)
+                                     sessions=sessions, events_by_scenario=ev,
+                                     devices=devices, vector_probes=vector_probes)
         # tag filter options
         self.tag_combo.blockSignals(True)
         self.tag_combo.clear()

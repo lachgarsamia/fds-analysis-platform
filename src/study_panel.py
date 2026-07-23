@@ -94,6 +94,12 @@ class StudyPanel(QtWidgets.QWidget):
         layout.addWidget(self.tabs, 1)
 
         self.scenario_combo.currentIndexChanged.connect(self._render_parallel)
+        # V6-M4: click a line in the parallel-coordinates plot to select
+        # that scenario -- the combo above is already bus-bound generically
+        # (bind_to_bus, main_window._build_selection), so moving its index
+        # is enough to publish the selection; no direct bus reference needed
+        # here.
+        self.parallel_canvas.mpl_connect("button_press_event", self._on_parallel_click)
         self._render_all()
 
     # ------------------------------------------------------------- rendering
@@ -128,6 +134,25 @@ class StudyPanel(QtWidgets.QWidget):
             ax.axvline(x, color="#ddd", linewidth=0.6, zorder=0)
         fig.subplots_adjust(top=0.97, bottom=0.22, left=0.08, right=0.98)
         self.parallel_canvas.draw_idle()
+
+    def _on_parallel_click(self, event) -> None:
+        """Study point -> jump to scenario (V6-M4): find the plotted line
+        nearest the click and select its scenario in `scenario_combo`,
+        which is already wired to the SelectionBus."""
+        if event.inaxes is None or event.xdata is None or not self._table:
+            return
+        norm = sa.normalized_axes(self._table, self._axis_keys, self._axis_kind)
+        axis_idx = min(max(int(round(event.xdata)), 0), len(self._axis_keys) - 1)
+        best_i, best_d = None, None
+        for i in range(len(self._table)):
+            d = abs(norm[i][axis_idx] - event.ydata)
+            if best_d is None or d < best_d:
+                best_d, best_i = d, i
+        if best_i is None:
+            return
+        idx = self.scenario_combo.findData(int(self._table[best_i]["case_index"]))
+        if idx >= 0:
+            self.scenario_combo.setCurrentIndex(idx)
 
     def _render_influence(self) -> None:
         fig = self.influence_canvas.fig

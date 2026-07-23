@@ -140,6 +140,10 @@ class SliceView:
         self._true_vector_xy = None
         self.streamline_collection = None
         self._streamline_colors = None
+        # Linked hover (V6-M4): a small always-present ring, empty until a
+        # panel (e.g. the Context Panel) hovers a device/probe row. Never
+        # touches selection_bus -- a pure visual highlight, not a selection.
+        self.hover_highlight = None
 
     def widget(self) -> QtWidgets.QWidget:
         return self.canvas
@@ -176,6 +180,11 @@ class SliceView:
         # given density and matplotlib's Quiver has no clean "empty" state.
         self.streamline_collection = LineCollection([], linewidths=1.2, zorder=8)
         self.ax.add_collection(self.streamline_collection)
+        # Linked hover (V6-M4): a hollow ring, empty until set_hover_highlight
+        # is called -- same "always present, empty by default" convention as
+        # ember_scatter/device_scatter above.
+        self.hover_highlight = self.ax.scatter([], [], s=220, marker="o", facecolors="none",
+                                               edgecolors="#FDE047", linewidths=2.0, zorder=10)
         self.ax.set_xticks([])
         self.ax.set_yticks([])
         self.canvas.fig.subplots_adjust(top=0.97, bottom=0.03, left=0.02, right=0.95)
@@ -245,7 +254,7 @@ class SliceView:
 
     def _animated_artists(self) -> list:
         artists = [self.heatmap, self.ember_scatter, self.device_scatter,
-                  self.streamline_collection]
+                  self.streamline_collection, self.hover_highlight]
         if self.velocity_quiver is not None:
             artists.append(self.velocity_quiver)
         if self.true_vector_quiver is not None:
@@ -305,11 +314,22 @@ class SliceView:
         segments set together for a clean per-line mapping."""
         self._streamline_colors = list(colors) if colors else None
 
+    def set_hover_highlight(self, point) -> None:
+        """Linked hover (V6-M4): highlight a physical (x, z) point (e.g. a
+        device/probe row hovered in the Context Panel) without touching
+        selection_bus -- `point=None` clears it. Caller must also call
+        redraw_overlays_now() to blit immediately (hover isn't tied to a
+        TimeController tick)."""
+        if point is None or self._extent is None:
+            self.hover_highlight.set_offsets(np.empty((0, 2)))
+            return
+        self.hover_highlight.set_offsets([point])
+
     def redraw_overlays_now(self) -> None:
-        """Blit the current device markers / vector field immediately (V6-M2
-        /V6-M3) -- for the placed/edited/deleted case, outside a
-        TimeController tick, where nothing else is about to call
-        show_frame() and trigger the blit."""
+        """Blit the current device markers / vector field / hover highlight
+        immediately (V6-M2/V6-M3/V6-M4) -- for the placed/edited/deleted/
+        hovered case, outside a TimeController tick, where nothing else is
+        about to call show_frame() and trigger the blit."""
         self.canvas.blit_update(self._animated_artists())
 
     def set_cmap(self, name: str) -> None:

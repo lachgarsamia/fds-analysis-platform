@@ -67,14 +67,18 @@ class VelocityPanel(QtWidgets.QWidget):
         header = QtWidgets.QHBoxLayout()
         self.scenario_combo = QtWidgets.QComboBox()
         self.scenario_combo.setAccessibleName("Velocity scenario")
+        self.scenario_combo.setToolTip("Which scenario's vector field to compute and display")
         header.addWidget(self.scenario_combo)
         self.mode_combo = QtWidgets.QComboBox()
         self.mode_combo.setAccessibleName("Vector mode")
+        self.mode_combo.setToolTip("Show a whole-plane quiver, per-probe streamlines, or both")
         for m in vel.MODES:
             self.mode_combo.addItem(_MODE_LABELS[m], m)
         header.addWidget(self.mode_combo)
         self.color_by_combo = QtWidgets.QComboBox()
         self.color_by_combo.setAccessibleName("Color by")
+        self.color_by_combo.setToolTip("Color streamlines by speed/direction, or show a "
+                                       "temperature background instead")
         for c in vel.COLOR_BY:
             self.color_by_combo.addItem(_COLOR_BY_LABELS[c], c)
         header.addWidget(self.color_by_combo)
@@ -85,6 +89,7 @@ class VelocityPanel(QtWidgets.QWidget):
         controls.addWidget(QtWidgets.QLabel("Density"))
         self.density_spin = QtWidgets.QSpinBox()
         self.density_spin.setAccessibleName("Vector density")
+        self.density_spin.setToolTip("Approximate number of quiver arrows across the plane")
         self.density_spin.setRange(20, 2000)
         self.density_spin.setValue(300)
         self.density_spin.setSingleStep(20)
@@ -92,6 +97,7 @@ class VelocityPanel(QtWidgets.QWidget):
         controls.addWidget(QtWidgets.QLabel("Streamline length (m)"))
         self.length_spin = QtWidgets.QDoubleSpinBox()
         self.length_spin.setAccessibleName("Streamline length")
+        self.length_spin.setToolTip("Maximum streamline length, in metres, from each probe")
         self.length_spin.setRange(0.1, 100.0)
         self.length_spin.setValue(3.0)
         controls.addWidget(self.length_spin)
@@ -129,6 +135,12 @@ class VelocityPanel(QtWidgets.QWidget):
         self.list.currentRowChanged.connect(lambda _i: self._render())
         list_row.addWidget(self.list, 1)
         btns = QtWidgets.QVBoxLayout()
+        _TOOLTIPS = {
+            "vector-rename": "Rename the selected probe",
+            "vector-jump": "Reveal this probe's result across the app (Live Viewer, Context)",
+            "vector-export": "Export this probe's speed/direction time series as CSV",
+            "vector-delete": "Delete the selected probe",
+        }
         for text, slot, name in (
                 ("Rename", self._rename, "vector-rename"),
                 ("Jump to", self._jump_to, "vector-jump"),
@@ -136,6 +148,7 @@ class VelocityPanel(QtWidgets.QWidget):
                 ("Delete", self._delete, "vector-delete")):
             b = QtWidgets.QPushButton(text)
             b.setAccessibleName(name)
+            b.setToolTip(_TOOLTIPS[name])
             b.clicked.connect(slot)
             btns.addWidget(b)
         btns.addStretch(1)
@@ -176,7 +189,9 @@ class VelocityPanel(QtWidgets.QWidget):
         return "TEMPERATURE" if self.color_by == "temperature" else "VELOCITY"
 
     def _reload_background_and_render(self) -> None:
-        self._reload()
+        self._reload(
+            
+        )
 
     def _reload(self) -> None:
         if not self._loaded:

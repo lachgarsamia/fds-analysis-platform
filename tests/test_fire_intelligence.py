@@ -1384,3 +1384,25 @@ class TestGraphModel:
         ins = gmod.Node("i", "insight", "x", time_s=8.0, point=(0.9, 0.1))
         sel = ins.to_selection()
         assert sel.time_s == 8.0 and sel.point == (0.9, 0.1)
+
+    def test_devices_become_graph_nodes(self):
+        import devices as dv
+        d = dv.Device(id="d1", name="TC-01", type="thermocouple",
+                     scenario=1, position=(1.0, 1.0))
+        g = gmod.build_graph(self._scenarios(), devices=[d])
+        nodes = g.nodes_of("device")
+        assert len(nodes) == 1
+        assert nodes[0].scenario == 1 and nodes[0].point == (1.0, 1.0)
+        assert nodes[0].to_selection().scenario == 1
+
+    def test_vector_probes_become_graph_nodes(self):
+        import velocity as vel
+        p = vel.VectorProbe(id="p1", name="VP-01", scenario=2, position=(0.5, 0.5))
+        g = gmod.build_graph(self._scenarios(), vector_probes=[p])
+        nodes = g.nodes_of("vector_probe")
+        assert len(nodes) == 1
+        assert nodes[0].scenario == 2 and nodes[0].to_selection().point == (0.5, 0.5)
+
+    def test_no_devices_or_probes_is_unaffected(self):
+        g = gmod.build_graph(self._scenarios())
+        assert g.nodes_of("device") == [] and g.nodes_of("vector_probe") == []

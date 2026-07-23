@@ -87,6 +87,8 @@ from spacetime_panel import SpaceTimePanel
 from narrative_panel import NarrativePanel
 from ensemble_panel import EnsemblePanel
 from graph_panel import GraphPanel
+from context_panel import ContextPanel
+from history import InvestigationHistory
 from calculator_panel import CalculatorPanel
 import field_calculator as field_calculator_mod
 from device_panel import DevicePanel
@@ -883,6 +885,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.graph_panel = GraphPanel(
                 self.controller.store, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second, app=self)
+            # Context Panel (V6-M4): the unified "what's related to this
+            # selection" hub -- constructed after every panel it duck-types
+            # against (device_panel/velocity_panel/evidence_dock/zone_panel/
+            # measurement_panel/graph_panel), same placement rule graph_panel
+            # itself already follows.
+            self.context_panel = ContextPanel(app=self)
             # Named analysis sessions (V4-M6): save/browse/reload/export the
             # whole investigation. Pure UI; main_window collects/applies state.
             self.sessions_panel = SessionsPanel()
@@ -936,6 +944,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.narrative_panel = None
             self.ensemble_panel = None
             self.graph_panel = None
+            self.context_panel = None
             self.sessions_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
@@ -983,6 +992,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 narrative_content=self.narrative_panel,
                 ensemble_content=self.ensemble_panel,
                 graph_content=self.graph_panel,
+                context_content=self.context_panel,
                 calculator_content=self.calculator_panel,
                 devices_content=self.device_panel,
                 velocity_content=self.velocity_panel,
@@ -1095,6 +1105,21 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.velocity_panel is not None:
             self.velocity_panel.probes_changed.connect(self._refresh_vector_field)
             self.velocity_panel.probe_activated.connect(self._on_insight_activated)
+        # V6-M4: the Context Panel reacts to the shared selection like the
+        # graph panel; its Insight-shaped rows (devices/probes/notebook/
+        # zones/measurements) reuse the same _on_insight_activated every
+        # other feature already converges on -- no new dispatch code.
+        if self.context_panel is not None:
+            self.context_panel.set_bus(self.selection_bus)
+            self.context_panel.insight_activated.connect(self._on_insight_activated)
+            self.context_panel.session_reveal_requested.connect(self._on_context_session_reveal)
+            self.context_panel.hover_changed.connect(self._on_context_hover)
+        # V6-M4 Investigation History: records every *meaningful* selection
+        # (skips its own back/forward replay via the `self.history` sentinel
+        # origin, and MainWindow's own playback-tick echo via `self` -- time_s
+        # alone changes on every tick and must not flood the log).
+        self.history = InvestigationHistory()
+        self.selection_bus.changed.connect(self._on_history_changed)
         self.selection_bus.changed.connect(self._on_bus_changed)
         # RC polish: switching analysis tabs re-syncs the newly-shown panel to
         # the current selection/time.
@@ -1119,8 +1144,42 @@ class MainWindow(QtWidgets.QMainWindow):
             self.selection_bus.update(origin=None, quantity=quantity)
         panel = getattr(self, panel_attr, None) if panel_attr else None
         if panel is not None:
-            self._navigate_to("analysis")
-            self.pages["analysis"].show_tab(panel)
+            self._reveal(panel)
+
+    def _reveal(self, panel: QtWidgets.QWidget) -> None:
+        """Raise the Analysis page and show `panel`'s tab (V6-M4): the one
+        cross-navigation primitive every "reveal in Analysis" interaction
+        should share, instead of each feature re-deriving the same two
+        lines (previously duplicated in _on_workspace_preset and
+        _on_experiment_compare)."""
+        self._navigate_to("analysis")
+        self.pages["analysis"].show_tab(panel)
+
+    def _on_context_hover(self, payload) -> None:
+        """Linked hover (V6-M4 objective 4): highlight a Context Panel graph
+        node's location on the matching Live Viewer cell, without touching
+        selection_bus -- a temporary visual, not a navigation."""
+        scenario, point = payload if payload is not None else (None, None)
+        for cell in self.view_grid.visible_cells():
+            if cell.cell_type == "slice":
+                cell.view.set_hover_highlight(point if cell.case_index == scenario else None)
+                cell.view.redraw_overlays_now()
+
+    def _on_context_session_reveal(self, path: str) -> None:
+        """V6-M4: the Context Panel's "reveal a related session" action --
+        a session isn't Insight-shaped, so it can't ride the shared
+        insight_activated path; it reuses _reveal instead."""
+        if self.sessions_panel is not None:
+            self._reveal(self.sessions_panel)
+
+    def _on_history_changed(self, selection, origin) -> None:
+        """V6-M4 Investigation History: record every selection except a
+        replay of the history itself (`origin is self.history`) or
+        MainWindow's own playback-tick echo (`origin is self` -- time_s
+        alone changes every tick and must not flood the log)."""
+        if origin is self.history or origin is self:
+            return
+        self.history.record(selection)
 
     def _on_bus_changed(self, selection, origin) -> None:
         """React to the shared selection in the Live Viewer: seek playback to
@@ -1259,8 +1318,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if ca is None or cb is None:
             return
         self.advanced_compare_panel.set_scenarios(ca, cb)
-        self._navigate_to("analysis")
-        self.pages["analysis"].show_tab(self.advanced_compare_panel)
+        self._reveal(self.advanced_compare_panel)
 
     def _build_evidence_notebook(self) -> None:
         """Evidence Notebook (V4-M2): a dockable, session-backed collection

@@ -3652,3 +3652,189 @@ class TestTrueVelocity:
         after = window.velocity_panel.get_probes()
         assert after == before["vector_probes"]     # identical, not recomputed
         window.close()
+
+
+class TestUnifiedWorkspace:
+    """V6-M4: connecting existing capabilities into one investigation
+    workflow -- Context Panel, cross-navigation, Knowledge Graph expansion,
+    Investigation History, and performance (no expensive work per tick)."""
+
+    def test_context_panel_shows_placed_device(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        dp = window.device_panel
+        dp.ensure_loaded()
+        dp.type_combo.setCurrentIndex(dp.type_combo.findData("thermocouple"))
+        dp._place(1.0, 1.0)
+        case_index = dp.scenario_combo.currentData()
+        window.selection_bus.update(origin=None, scenario=case_index)
+        QtWidgets.QApplication.processEvents()
+        assert window.context_panel.devices_list.count() == 1
+        window.close()
+
+    def test_context_panel_ignores_pure_time_ticks(self, qapp, monkeypatch):
+        """Performance (objective 8): playback publishes time_s every tick
+        (main_window._on_time_changed) -- the Context Panel must not
+        re-gather (a filesystem scan) on a time-only change."""
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        calls = []
+        import context_panel as cp_mod
+        real_gather = cp_mod.gather_context
+        def counting_gather(app, sel):
+            calls.append(sel)
+            return real_gather(app, sel)
+        monkeypatch.setattr(cp_mod, "gather_context", counting_gather)
+        window.selection_bus.update(origin=None, scenario=0)
+        n_after_scenario = len(calls)
+        assert n_after_scenario >= 1
+        for t in (1.0, 2.0, 3.0):
+            window.selection_bus.update(origin=window, time_s=t)   # mirrors the tick's own origin
+        assert len(calls) == n_after_scenario   # no new gather_context calls from time-only changes
+        window.close()
+
+    def test_study_panel_parallel_click_propagates_to_bus(self, qapp):
+        import numpy as np
+        import study_analytics as sa
+        window = MainWindow(load_simulation_data())
+        if window.study_panel is None:
+            window.close()
+            return
+        window.show()
+        sp = window.study_panel
+        norm = sa.normalized_axes(sp._table, sp._axis_keys, sp._axis_kind)
+        # A continuous response axis (max_temp_c, right after sa.PARAMS) has an
+        # essentially-unique maximum across real scenarios (norm == 1.0 there),
+        # unlike a categorical factor axis where many rows tie -- picking the
+        # row at its peak makes "nearest line" unambiguous for this test.
+        axis_idx = len(sa.PARAMS)
+        target_row = int(np.nanargmax(norm[:, axis_idx]))
+        axes = sp.parallel_canvas.fig.axes
+        assert axes
+        expected = sp._table[target_row]["case_index"]
+        # Start from a different combo index so the click is a genuine
+        # change (PyQt doesn't emit currentIndexChanged for a same-index set).
+        target_idx = sp.scenario_combo.findData(int(expected))
+        sp.scenario_combo.setCurrentIndex((target_idx + 1) % sp.scenario_combo.count())
+        class FakeEvent:
+            inaxes = axes[0]
+            xdata = float(axis_idx)
+            ydata = float(norm[target_row][axis_idx])
+        sp._on_parallel_click(FakeEvent())
+        QtWidgets.QApplication.processEvents()
+        assert sp.scenario_combo.currentData() == expected
+        assert window.selection_bus.current.scenario == expected
+        window.close()
+
+    def test_history_ignores_playback_ticks_and_own_replay(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        window.selection_bus.update(origin=None, scenario=0)
+        window.selection_bus.update(origin=None, scenario=1)
+        n = len(window.history)
+        assert n >= 2
+        # playback ticks (origin=self) must not grow the log
+        for t in (1.0, 2.0, 3.0, 4.0):
+            window.selection_bus.update(origin=window, time_s=t)
+        assert len(window.history) == n
+        # back() then replaying it (origin=history) must not grow the log either
+        sel = window.history.back()
+        assert sel is not None
+        window.selection_bus.set(sel, origin=window.history)
+        assert len(window.history) == n
+        window.close()
+
+    def test_history_back_forward_round_trip_via_bus(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        window.selection_bus.update(origin=None, scenario=0)
+        window.selection_bus.update(origin=None, scenario=1)
+        assert window.history.can_back()
+        sel = window.history.back()
+        window.selection_bus.set(sel, origin=window.history)
+        assert window.selection_bus.current.scenario == 0
+        assert window.history.can_forward()
+        sel = window.history.forward()
+        window.selection_bus.set(sel, origin=window.history)
+        assert window.selection_bus.current.scenario == 1
+        window.close()
+
+    def test_graph_gains_device_and_probe_nodes_after_placement(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        dp = window.device_panel
+        dp.ensure_loaded()
+        dp.type_combo.setCurrentIndex(dp.type_combo.findData("thermocouple"))
+        dp._place(1.0, 1.0)
+        window.graph_panel._rebuild()
+        assert len(window.graph_panel._graph.nodes_of("device")) == 1
+        window.close()
+
+    def test_reveal_helper_used_by_workspace_preset_and_experiment_compare(self, qapp):
+        """Regression check for the _reveal refactor (V6-M4): both existing
+        call sites must still raise the Analysis page and the right tab."""
+        window = MainWindow(load_simulation_data())
+        if window.dashboard_panel is None:
+            window.close()
+            return
+        window._on_workspace_preset("Study analytics")
+        assert window._active_page_key == "analysis"
+        assert window.pages["analysis"].tabs.currentWidget() is window.study_panel
+        window.close()
+
+    def test_context_panel_session_reveal_shows_sessions_tab(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sessions_panel is None:
+            window.close()
+            return
+        window.show()
+        window._on_context_session_reveal("/tmp/whatever-session.json")
+        assert window._active_page_key == "analysis"
+        assert window.pages["analysis"].tabs.currentWidget() is window.sessions_panel
+        window.close()
+
+    def test_hover_highlight_sets_and_clears_without_touching_selection(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        cell = window.view_grid.active_cell()
+        before = window.selection_bus.current
+        window._on_context_hover((cell.case_index, (1.0, 1.0)))
+        assert len(cell.view.hover_highlight.get_offsets()) == 1
+        assert window.selection_bus.current == before   # hover never touches selection
+        window._on_context_hover(None)
+        assert len(cell.view.hover_highlight.get_offsets()) == 0
+        window.close()
+
+    def test_session_report_includes_devices_via_full_session_pipeline(self, qapp):
+        from report_builder import build_session_report
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        dp = window.device_panel
+        dp.ensure_loaded()
+        dp.type_combo.setCurrentIndex(dp.type_combo.findData("thermocouple"))
+        dp._place(1.0, 1.0)
+        session = window._collect_session_dict()
+        html = build_session_report(session)
+        assert "Virtual devices" in html and "TC-01" in html
+        window.close()

@@ -55,6 +55,7 @@ class AnalysisPage(Page):
                  calculator_content: QtWidgets.QWidget = None,
                  devices_content: QtWidgets.QWidget = None,
                  velocity_content: QtWidgets.QWidget = None,
+                 context_content: QtWidgets.QWidget = None,
                  experiments_content: QtWidgets.QWidget = None,
                  quantities_content: QtWidgets.QWidget = None,
                  assistant_content: QtWidgets.QWidget = None,
@@ -80,6 +81,7 @@ class AnalysisPage(Page):
         # pane at once. Only supplied (non-None) surfaces get a tab; demo
         # mode supplies none.
         sections = [
+            ("Context", context_content),
             ("Dashboard", dashboard_content),
             ("Hazard", hazard_content),
             ("Narrative", narrative_content),

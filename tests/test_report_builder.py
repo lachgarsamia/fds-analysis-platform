@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from report_builder import (  # noqa: E402
     build_scenario_report, build_comparison_report, write_report,
+    build_session_report, _devices_block, _vector_probes_block,
 )
 
 
@@ -83,3 +84,52 @@ def test_write_report_round_trip(tmp_path):
     path = str(tmp_path / "r.html")
     write_report(path, html)
     assert open(path, encoding="utf-8").read() == html
+
+
+class TestDevicesBlock:
+    def test_empty_renders_nothing(self):
+        assert _devices_block([]) == ""
+
+    def test_thermocouple_shows_peak_temperature(self):
+        d = {"name": "TC-01", "type": "thermocouple", "position": [1.0, 2.0],
+            "results": {"max_temperature_C": 123.4}}
+        html = _devices_block([d])
+        assert "TC-01" in html and "123" in html and "1.00, 2.00" in html
+
+    def test_detector_shows_activation(self):
+        d = {"name": "HD-01", "type": "heat_detector", "position": [0.0, 0.0],
+            "results": {"activated": True, "activation_time_s": 42.5}}
+        assert "activated at 42.5 s" in _devices_block([d])
+
+    def test_not_yet_computed(self):
+        d = {"name": "TC-02", "type": "thermocouple", "position": [0.0, 0.0], "results": None}
+        assert "not yet computed" in _devices_block([d])
+
+
+class TestVectorProbesBlock:
+    def test_empty_renders_nothing(self):
+        assert _vector_probes_block([]) == ""
+
+    def test_gated_shows_reason(self):
+        p = {"name": "VP-01", "position": [0.0, 0.0],
+            "results": {"gated": True, "reason": "Requires the M-SIM cluster re-run"}}
+        html = _vector_probes_block([p])
+        assert "VP-01" in html and "gated" in html and "M-SIM" in html
+
+    def test_computed_shows_peak_speed(self):
+        p = {"name": "VP-02", "position": [0.0, 0.0], "results": {"max_speed_m_s": 3.2}}
+        assert "3.2 m/s" in _vector_probes_block([p])
+
+
+class TestSessionReportIncludesDevicesAndProbes:
+    def test_devices_and_probes_render_when_present(self):
+        session = {"name": "s", "devices": [{"name": "TC-01", "type": "thermocouple",
+                                            "position": [0.0, 0.0], "results": None}],
+                  "vector_probes": [{"name": "VP-01", "position": [0.0, 0.0],
+                                    "results": {"max_speed_m_s": 1.0}}]}
+        html = build_session_report(session)
+        assert "TC-01" in html and "VP-01" in html
+
+    def test_absent_devices_and_probes_omit_sections(self):
+        html = build_session_report({"name": "s"})
+        assert "Virtual devices" not in html and "Vector probes" not in html

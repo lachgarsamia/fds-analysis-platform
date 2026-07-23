@@ -186,6 +186,48 @@ def _measurements_block(measurements: list) -> str:
     return f"<h2>Measurements</h2><ul>{items}</ul>"
 
 
+def _devices_block(devices: list) -> str:
+    """V6-M4: session.py has persisted devices (V6-M2) since they were
+    added, but this report never rendered them until now."""
+    if not devices:
+        return ""
+    items = []
+    for d in devices:
+        r = d.get("results") or {}
+        if not r:
+            headline = "not yet computed"
+        elif d.get("type") == "thermocouple":
+            headline = f"peak {r.get('max_temperature_C', 0.0):.0f} °C"
+        elif r.get("activated"):
+            headline = f"activated at {r.get('activation_time_s', 0.0):.1f} s"
+        else:
+            headline = "did not activate"
+        x, z = d.get("position", [0.0, 0.0])
+        items.append(f"<li>{_esc(d.get('name', ''))} ({_esc(d.get('type', ''))}) at "
+                    f"({x:.2f}, {z:.2f}) m — {_esc(headline)}</li>")
+    return f"<h2>Virtual devices</h2><ul>{''.join(items)}</ul>"
+
+
+def _vector_probes_block(probes: list) -> str:
+    """V6-M4: session.py has persisted vector probes (V6-M3) since they
+    were added, but this report never rendered them until now."""
+    if not probes:
+        return ""
+    items = []
+    for p in probes:
+        r = p.get("results") or {}
+        if r.get("gated"):
+            headline = f"gated — {r.get('reason', '')}"
+        elif r:
+            headline = f"peak speed {r.get('max_speed_m_s', 0.0):.1f} m/s"
+        else:
+            headline = "not yet computed"
+        x, z = p.get("position", [0.0, 0.0])
+        items.append(f"<li>{_esc(p.get('name', ''))} at ({x:.2f}, {z:.2f}) m "
+                    f"— {_esc(headline)}</li>")
+    return f"<h2>Vector probes</h2><ul>{''.join(items)}</ul>"
+
+
 def build_session_report(session: dict, timeline_png: bytes = None) -> str:
     """Self-contained HTML report for a named analysis session (V4-M6):
     metadata, intent, the Evidence Notebook, zones, the time-window
@@ -208,7 +250,9 @@ def build_session_report(session: dict, timeline_png: bytes = None) -> str:
         f"{_time_window_block(session.get('time_window', {}))}"
         f"<h2>Evidence Notebook</h2>{_notebook_block(session.get('notebook', []))}"
         f"{_zones_block(session.get('zones', []))}"
-        f"{_measurements_block(session.get('measurements', []))}")
+        f"{_measurements_block(session.get('measurements', []))}"
+        f"{_devices_block(session.get('devices', []))}"
+        f"{_vector_probes_block(session.get('vector_probes', []))}")
     return _document(f"Session — {name}", body)
 
 

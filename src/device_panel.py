@@ -64,9 +64,11 @@ class DevicePanel(QtWidgets.QWidget):
         header = QtWidgets.QHBoxLayout()
         self.scenario_combo = QtWidgets.QComboBox()
         self.scenario_combo.setAccessibleName("Device scenario")
+        self.scenario_combo.setToolTip("Which scenario new devices are placed in")
         header.addWidget(self.scenario_combo)
         self.type_combo = QtWidgets.QComboBox()
         self.type_combo.setAccessibleName("Device type")
+        self.type_combo.setToolTip("The device type the next map click will place")
         for t in dv.KINDS:
             self.type_combo.addItem(dv.KIND_LABELS[t], t)
         header.addWidget(self.type_combo)
@@ -97,6 +99,13 @@ class DevicePanel(QtWidgets.QWidget):
         self.list.currentRowChanged.connect(lambda _i: self._render())
         list_row.addWidget(self.list, 1)
         btns = QtWidgets.QVBoxLayout()
+        _TOOLTIPS = {
+            "device-rename": "Rename the selected device",
+            "device-edit": "Edit RTI/activation-temperature parameters and recompute",
+            "device-jump": "Reveal this device's result across the app (Live Viewer, Graph, Context)",
+            "device-export": "Export this device's time series as CSV",
+            "device-delete": "Delete the selected device",
+        }
         for text, slot, name in (
                 ("Rename", self._rename, "device-rename"),
                 ("Edit parameters", self._edit_parameters, "device-edit"),
@@ -105,6 +114,7 @@ class DevicePanel(QtWidgets.QWidget):
                 ("Delete", self._delete, "device-delete")):
             b = QtWidgets.QPushButton(text)
             b.setAccessibleName(name)
+            b.setToolTip(_TOOLTIPS[name])
             b.clicked.connect(slot)
             btns.addWidget(b)
         btns.addStretch(1)
