@@ -43,7 +43,8 @@ def build_session_dict(layout_name: str, cells: list, active_index: int, time_in
                         measurements: list | None = None,
                         selection: dict | None = None,
                         calculated_fields: list | None = None,
-                        devices: list | None = None) -> dict:
+                        devices: list | None = None,
+                        vector_probes: list | None = None) -> dict:
     return {
         "version": SESSION_VERSION,
         "layout": layout_name,
@@ -65,6 +66,7 @@ def build_session_dict(layout_name: str, cells: list, active_index: int, time_in
         "selection": selection or {},       # V5-M1 shared selection (scenario/time/point/...)
         "calculated_fields": calculated_fields or [],  # V6-M1 Field Calculator definitions
         "devices": devices or [],  # V6-M2 Virtual Device Network placements + cached results
+        "vector_probes": vector_probes or [],  # V6-M3 True Velocity probe placements + cached results
     }
 
 

@@ -26,7 +26,7 @@ from __future__ import annotations
 from collections import OrderedDict
 
 from registry import get_quantity
-from slice_key import SliceKey
+from slice_key import SliceKey, DEFAULT_DIRECTION, DEFAULT_OFFSET
 from derived_quantities import derive, source_quantity
 
 
@@ -96,12 +96,18 @@ class QuantityProvider:
         return self._store.get(scenario, key)
 
     def get_vector(self, scenario: int, direction: int = None, offset: int = None):
-        """V6 hook (GATED): the in-plane velocity vector field (U, W) for true
-        streamlines / quiver. Prepared here so the streamline panel can call one
-        method; wire it to U-VELOCITY / W-VELOCITY slice reads when the M-SIM
-        re-run provides them (docs/msim-preparation.md §3). Not implemented --
-        the components do not exist in the current output."""
-        raise GatedQuantityError(get_quantity("U-VELOCITY").gate_reason)
+        """V6-M3: the in-plane velocity vector field (U, W) for true
+        streamlines / quiver. Reads U-VELOCITY/W-VELOCITY through the same
+        `get()` path as any other quantity -- both are registered `gated=True`
+        today (docs/msim-preparation.md §3), so `get()`'s own gate check raises
+        GatedQuantityError here exactly as before. The moment the M-SIM re-run
+        ungates them in the registry, this starts returning real arrays with
+        no further code change -- the seam is real, not a hardcoded stub."""
+        direction = DEFAULT_DIRECTION if direction is None else direction
+        offset = DEFAULT_OFFSET if offset is None else offset
+        u = self.get(scenario, SliceKey("U-VELOCITY", direction, offset))
+        w = self.get(scenario, SliceKey("W-VELOCITY", direction, offset))
+        return u, w
 
     def get_extent(self, scenario: int, key: SliceKey = None):
         key = key or SliceKey("TEMPERATURE")

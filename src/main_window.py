@@ -90,6 +90,7 @@ from graph_panel import GraphPanel
 from calculator_panel import CalculatorPanel
 import field_calculator as field_calculator_mod
 from device_panel import DevicePanel
+from velocity_panel import VelocityPanel
 from figure_export import save_figure
 from report_builder import build_publication_manifest
 import study_analytics as study_analytics_mod
@@ -775,6 +776,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.device_panel = DevicePanel(
                 self.quantity_provider, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
+            # True velocity (V6-M3): gated on U/W-VELOCITY -- the panel
+            # itself shows the gate reason plainly until the M-SIM re-run
+            # provides them; see velocity.py/velocity_panel.py.
+            self.velocity_panel = VelocityPanel(
+                self.quantity_provider, self.sim_data.manifest,
+                self.sim_data.timesteps_per_second)
             self.timeseries_panel = TimeSeriesPanel(
                 self.controller.store, self.sim_data.manifest,
                 self._quantity_options(), self.sim_data.timesteps_per_second)
@@ -901,6 +908,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.quantity_provider = None
             self.calculator_panel = None
             self.device_panel = None
+            self.velocity_panel = None
             self.timeseries_panel = None
             self.energy_panel = None
             self.factor_effects_panel = None
@@ -977,6 +985,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 graph_content=self.graph_panel,
                 calculator_content=self.calculator_panel,
                 devices_content=self.device_panel,
+                velocity_content=self.velocity_panel,
                 experiments_content=self.experiments_panel,
                 quantities_content=self.quantities_panel,
                 assistant_content=self.assistant_panel,
@@ -1044,7 +1053,8 @@ class MainWindow(QtWidgets.QMainWindow):
                      "factor_effects_panel", "tenability_panel", "timeseries_panel",
                      "energy_panel", "forecasting_panel", "quantities_panel",
                      "advanced_compare_panel", "study_panel", "hazard_panel",
-                     "spacetime_panel", "narrative_panel", "ensemble_panel", "device_panel"):
+                     "spacetime_panel", "narrative_panel", "ensemble_panel", "device_panel",
+                     "velocity_panel"):
             panel = getattr(self, attr, None)
             if panel is not None:
                 bind_to_bus(panel, self.selection_bus, fps)
@@ -1079,6 +1089,12 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.device_panel is not None:
             self.device_panel.devices_changed.connect(self._refresh_device_markers)
             self.device_panel.device_activated.connect(self._on_insight_activated)
+        # V6-M3: a placed/renamed/deleted vector probe refreshes the Live
+        # Viewer's quiver/streamline overlay; jump-to reuses the same shared
+        # navigation as devices/insights.
+        if self.velocity_panel is not None:
+            self.velocity_panel.probes_changed.connect(self._refresh_vector_field)
+            self.velocity_panel.probe_activated.connect(self._on_insight_activated)
         self.selection_bus.changed.connect(self._on_bus_changed)
         # RC polish: switching analysis tabs re-syncs the newly-shown panel to
         # the current selection/time.
@@ -2163,7 +2179,53 @@ class MainWindow(QtWidgets.QMainWindow):
         for cell in self.view_grid.visible_cells():
             if cell.cell_type == "slice":
                 cell.view.set_device_markers(self._device_markers_for(cell.case_index, index))
-                cell.view.redraw_markers_now()
+                cell.view.redraw_overlays_now()
+
+    def _vector_field_for(self, case_index: int, index: int):
+        """(quiver, streamlines, colors) for `case_index` at already-cached
+        frame `index` -- VectorField.quiver_at()/streamline_at() are O(1)/
+        memoized (see velocity.py), never a recompute here. Empty/None when
+        no VectorField has been successfully computed for this scenario
+        (gated, or no panel/probes yet)."""
+        panel = getattr(self, "velocity_panel", None)
+        if panel is None:
+            return None, [], []
+        field = panel._fields.get(case_index)
+        if field is None:
+            return None, [], []
+        quiver = None
+        if panel.mode in ("quiver", "both"):
+            quiver = field.quiver_at(index, density=panel.density_spin.value())
+        streamlines, colors = [], []
+        if panel.mode in ("streamlines", "both"):
+            for p in panel._probes:
+                if p.scenario != case_index or p.gated or not p.results:
+                    continue
+                pts = field.streamline_at(p.position, index, max_length=panel.length_spin.value())
+                if len(pts) < 2:
+                    continue
+                streamlines.append(pts)
+                # "activation-state-like" coloring: current speed vs. this
+                # probe's own historical mean -- a real, derived state, not
+                # a fabricated threshold.
+                speed_now = p.state_at(index).get("speed_m_s")
+                mean_speed = float(np.mean(p.results["speed_m_s"]))
+                fast = speed_now is not None and speed_now > mean_speed
+                colors.append("#FF5252" if fast else "#3DA5FF")
+        return quiver, streamlines, colors
+
+    def _refresh_vector_field(self) -> None:
+        """Re-draw every visible slice cell's quiver/streamlines at the
+        current time -- called when a probe is placed/renamed/deleted, so
+        the Live Viewer reflects it immediately without waiting for the
+        next tick."""
+        index = self.time_controller.index
+        for cell in self.view_grid.visible_cells():
+            if cell.cell_type == "slice":
+                quiver, streamlines, colors = self._vector_field_for(cell.case_index, index)
+                cell.view.set_streamline_colors(colors)
+                cell.view.set_vector_field(quiver=quiver, streamlines=streamlines)
+                cell.view.redraw_overlays_now()
 
     def _on_time_changed(self, index: int):
         """TimeController's tick/seek signal (M1.4.1): pull the frame for
@@ -2192,10 +2254,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 # Phase 2.1f) wants VELOCITY data every tick regardless of
                 # whether the separate contour-overlay checkbox is on.
                 if cell.cell_type == "slice":
-                    # markers must be set *before* show_frame's blit paints
-                    # this tick's animated artists (V6-M2) -- otherwise the
-                    # new marker state wouldn't appear until the next tick.
+                    # markers/vectors must be set *before* show_frame's blit
+                    # paints this tick's animated artists (V6-M2/V6-M3) --
+                    # otherwise the new state wouldn't appear until the next
+                    # tick (see the V6-M2 ordering bug fixed for markers).
                     cell.view.set_device_markers(self._device_markers_for(cell.case_index, index))
+                    quiver, streamlines, colors = self._vector_field_for(cell.case_index, index)
+                    cell.view.set_streamline_colors(colors)
+                    cell.view.set_vector_field(quiver=quiver, streamlines=streamlines)
                 if cell.view.velocity_overlay_enabled or cinematic:
                     velocity_frame = self._velocity_overlay_frame_for_cell(cell, index)
                     cell.view.show_frame(frame, velocity_frame=velocity_frame, **extra)
@@ -3362,7 +3428,9 @@ class MainWindow(QtWidgets.QMainWindow):
                        if getattr(self, "selection_bus", None) is not None else {}),
             calculated_fields=[f.to_dict() for f in field_calculator_mod.all_fields()],
             devices=(self.device_panel.get_devices()
-                     if self.device_panel is not None else []))
+                     if self.device_panel is not None else []),
+            vector_probes=(self.velocity_panel.get_probes()
+                          if self.velocity_panel is not None else []))
 
     # --------------------------------------------------- named sessions (M6)
     def _refresh_sessions(self) -> None:
@@ -3446,6 +3514,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.device_panel is not None:
             self.device_panel.set_devices(session.get("devices", []))
             self._refresh_device_markers()
+        # V6-M3: restore vector probes with their cached results verbatim (no recompute).
+        if self.velocity_panel is not None:
+            self.velocity_panel.set_probes(session.get("vector_probes", []))
+            self._refresh_vector_field()
         # V5-M1: restore the shared selection (absent in older sessions -> empty).
         if getattr(self, "selection_bus", None) is not None:
             self.selection_bus.set(Selection.from_dict(session.get("selection", {})))

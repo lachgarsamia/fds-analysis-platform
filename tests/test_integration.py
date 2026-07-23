@@ -6,7 +6,7 @@ import numpy as np
 from PyQt5 import QtCore, QtWidgets
 from data_provider import load_simulation_data
 from main_window import MainWindow
-from slice_key import DEFAULT_SLICE_KEY
+from slice_key import DEFAULT_SLICE_KEY, SliceKey
 
 
 def _drain_workers(qapp, workers: list, timeout: float = 5.0):
@@ -3486,4 +3486,169 @@ class TestVirtualDeviceNetwork:
         window._apply_analysis_session(before)
         after = window.device_panel.get_devices()
         assert after == before["devices"]      # identical, not recomputed
+        window.close()
+
+
+class _SyntheticVectorProvider:
+    """Wraps a real QuantityProvider but supplies synthetic U/W so V6-M3's
+    full (non-gated) pipeline is testable even though the actual dataset has
+    no U-VELOCITY/W-VELOCITY yet. TEMPERATURE/VELOCITY/extent reads still go
+    through the real provider (so the panel's background heatmap is real
+    data) -- only get_vector is synthetic, and it is never confused with a
+    real quantity: production code always goes through the real provider,
+    this stand-in only exists in tests."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def get(self, scenario, key):
+        return self._real.get(scenario, key)
+
+    def get_extent(self, scenario, key):
+        # U-VELOCITY/W-VELOCITY have no real geometry on disk in this
+        # dataset (only TEMPERATURE/VELOCITY were ever read) -- redirect to
+        # TEMPERATURE's real, on-disk extent rather than letting the real
+        # store try (and crash) reading geometry for a slice that was never
+        # part of the manifest.
+        if key.quantity in ("U-VELOCITY", "W-VELOCITY"):
+            return self._real.get_extent(scenario, SliceKey("TEMPERATURE"))
+        return self._real.get_extent(scenario, key)
+
+    def get_vector(self, scenario, direction=None, offset=None):
+        temp = self._real.get(scenario, SliceKey("TEMPERATURE"))
+        u = np.full_like(np.asarray(temp, dtype=float), 1.0)
+        w = np.zeros_like(np.asarray(temp, dtype=float))
+        return u, w
+
+
+class TestTrueVelocity:
+    """V6-M3: true (U, W) vector field -- streamlines/quiver, gated on
+    U-VELOCITY/W-VELOCITY. The real dataset has no U/W yet, so gating tests
+    run against the real provider, while the rendering/coloring/jump-to/
+    session tests substitute a synthetic provider (uniform flow) to exercise
+    the full non-gated pipeline without fabricating anything in production
+    code."""
+
+    def test_placing_a_probe_on_the_real_dataset_is_gated(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        p = window.velocity_panel
+        p.ensure_loaded()
+        p._place(1.0, 1.0)
+        probe = p._probes[0]
+        assert probe.gated is True
+        assert "M-SIM" in probe.results["reason"] or "msim" in probe.results["reason"].lower()
+        assert "M-SIM" in p.status.text() or "msim" in p.status.text().lower()
+        window.close()
+
+    def test_get_vector_still_raises_gated_quantity_error(self, qapp):
+        """V6-M3 must not weaken the gate: the real provider still raises."""
+        from quantity_provider import GatedQuantityError
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        with pytest.raises(GatedQuantityError):
+            window.quantity_provider.get_vector(0)
+        window.close()
+
+    def test_synthetic_provider_renders_quiver_and_streamline(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        p = window.velocity_panel
+        p.ensure_loaded()
+        p._provider = _SyntheticVectorProvider(window.quantity_provider)
+        p.mode_combo.setCurrentIndex(p.mode_combo.findData("both"))
+        case_index = p.scenario_combo.currentData()
+        extent = window.quantity_provider.get_extent(case_index, SliceKey("TEMPERATURE"))
+        x0, x1, z0, z1 = extent
+        p._place(x0 + 0.3 * (x1 - x0), z0 + 0.3 * (z1 - z0))
+        probe = p._probes[0]
+        assert probe.gated is False
+        assert probe.results["max_speed_m_s"] == pytest.approx(1.0)
+
+        field = p._fields[case_index]
+        quiver, streamlines, colors = window._vector_field_for(case_index, 0)
+        assert quiver is not None and len(quiver[0]) > 0
+        assert len(streamlines) == 1 and len(streamlines[0]) > 1
+        assert len(colors) == 1
+
+    def test_marker_ordering_matches_v6_m2_fix(self, qapp):
+        """The tick loop must set the vector field *before* show_frame's
+        blit, exactly like the V6-M2 device-marker ordering fix -- verified
+        here by checking the artist actually holds non-empty data right
+        after a seek (not one tick late)."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        p = window.velocity_panel
+        p.ensure_loaded()
+        p._provider = _SyntheticVectorProvider(window.quantity_provider)
+        p.mode_combo.setCurrentIndex(p.mode_combo.findData("quiver"))
+        cell = window.view_grid.active_cell()
+        case_index = p.scenario_combo.currentData()
+        extent = window.quantity_provider.get_extent(case_index, SliceKey("TEMPERATURE"))
+        x0, x1, z0, z1 = extent
+        p.scenario_combo.setCurrentIndex(p.scenario_combo.findData(int(cell.case_index))
+                                        if p.scenario_combo.findData(int(cell.case_index)) >= 0
+                                        else 0)
+        p._place(x0 + 0.5 * (x1 - x0), z0 + 0.5 * (z1 - z0))
+        n = window._current_n_frames
+        window._on_seek_requested(int(n * 0.5))
+        QtWidgets.QApplication.processEvents()
+        assert cell.view.true_vector_quiver is not None
+        window.close()
+
+    def test_jump_to_probe_publishes_point_selection(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        p = window.velocity_panel
+        p.ensure_loaded()
+        p._provider = _SyntheticVectorProvider(window.quantity_provider)
+        case_index = p.scenario_combo.currentData()
+        extent = window.quantity_provider.get_extent(case_index, SliceKey("TEMPERATURE"))
+        x0, x1, z0, z1 = extent
+        seed = (x0 + 0.4 * (x1 - x0), z0 + 0.4 * (z1 - z0))
+        p._place(*seed)
+        p.list.setCurrentRow(0)
+        p._jump_to()
+        QtWidgets.QApplication.processEvents()
+        assert window.selection_bus.current.point == pytest.approx(seed)
+        window.close()
+
+    def test_session_round_trip_preserves_probes_and_results(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        p = window.velocity_panel
+        p.ensure_loaded()
+        p._provider = _SyntheticVectorProvider(window.quantity_provider)
+        case_index = p.scenario_combo.currentData()
+        extent = window.quantity_provider.get_extent(case_index, SliceKey("TEMPERATURE"))
+        x0, x1, z0, z1 = extent
+        p._place(x0 + 0.5 * (x1 - x0), z0 + 0.5 * (z1 - z0))
+        before = window._collect_session_dict()
+        assert len(before["vector_probes"]) == 1
+        window._apply_analysis_session(before)
+        after = window.velocity_panel.get_probes()
+        assert after == before["vector_probes"]     # identical, not recomputed
         window.close()

@@ -11,6 +11,7 @@ from typing import Protocol
 
 import matplotlib as mpl
 import numpy as np
+from matplotlib.collections import LineCollection
 from PyQt5 import QtCore, QtWidgets
 
 from widgets import MplCanvas
@@ -128,6 +129,17 @@ class SliceView:
         # never recreated. No color-mapping (literal facecolors only), so
         # (unlike the heatmap) it needs no cmap/clim bookkeeping.
         self.device_scatter = None
+        # True velocity vectors (V6-M3): a *different* artist from the
+        # cinema-mode `velocity_quiver` above (that one is a heuristic
+        # direction guess from |v| + a temperature gradient, explicitly not
+        # science-grade -- see cinema/velocity_arrows.py). This quiver/line
+        # pair is the real, gated U/W vector field: off/empty until a panel
+        # supplies data, positions held fixed by density (only U/V/segments
+        # refresh per frame -- see set_vector_field).
+        self.true_vector_quiver = None
+        self._true_vector_xy = None
+        self.streamline_collection = None
+        self._streamline_colors = None
 
     def widget(self) -> QtWidgets.QWidget:
         return self.canvas
@@ -158,6 +170,12 @@ class SliceView:
         # construction for the same scalar-mappable reason as ember_scatter.
         self.device_scatter = self.ax.scatter([], [], s=70, marker="D", zorder=7,
                                               edgecolors="#14171F", linewidths=1.0)
+        # True velocity streamlines (V6-M3): empty until a panel supplies
+        # segments; the quiver itself is created lazily on first real data
+        # (see set_vector_field) since its arrow positions are fixed for a
+        # given density and matplotlib's Quiver has no clean "empty" state.
+        self.streamline_collection = LineCollection([], linewidths=1.2, zorder=8)
+        self.ax.add_collection(self.streamline_collection)
         self.ax.set_xticks([])
         self.ax.set_yticks([])
         self.canvas.fig.subplots_adjust(top=0.97, bottom=0.03, left=0.02, right=0.95)
@@ -226,9 +244,12 @@ class SliceView:
             self.canvas.blit_update(self._animated_artists())
 
     def _animated_artists(self) -> list:
-        artists = [self.heatmap, self.ember_scatter, self.device_scatter]
+        artists = [self.heatmap, self.ember_scatter, self.device_scatter,
+                  self.streamline_collection]
         if self.velocity_quiver is not None:
             artists.append(self.velocity_quiver)
+        if self.true_vector_quiver is not None:
+            artists.append(self.true_vector_quiver)
         return artists
 
     def set_device_markers(self, markers: list) -> None:
@@ -246,10 +267,49 @@ class SliceView:
         self.device_scatter.set_offsets(offsets)
         self.device_scatter.set_facecolor(colors)
 
-    def redraw_markers_now(self) -> None:
-        """Blit the current device markers immediately (V6-M2) -- for the
-        placed/edited/deleted case, outside a TimeController tick, where
-        nothing else is about to call show_frame() and trigger the blit."""
+    def set_vector_field(self, quiver: tuple = None, streamlines: list = None) -> None:
+        """V6-M3: `quiver` is (xs, zs, us, ws) or None to clear; `streamlines`
+        is a list of [(x, z), ...] polylines or None/empty to clear. Quiver
+        arrow *positions* are recreated only when they change (a control
+        change, e.g. density) -- per-frame, only U/V (and the streamline
+        segments) update, matching the ember/device-marker cost profile."""
+        if not streamlines:
+            self.streamline_collection.set_segments([])
+        else:
+            self.streamline_collection.set_segments(streamlines)
+            if self._streamline_colors is not None and len(self._streamline_colors) == len(streamlines):
+                self.streamline_collection.set_color(self._streamline_colors)
+        if quiver is None or self._extent is None:
+            if self.true_vector_quiver is not None:
+                self.true_vector_quiver.set_UVC(
+                    np.zeros(len(self._true_vector_xy[0])), np.zeros(len(self._true_vector_xy[0])))
+            return
+        xs, zs, us, ws = quiver
+        same_grid = (self._true_vector_xy is not None
+                    and len(xs) == len(self._true_vector_xy[0])
+                    and np.allclose(xs, self._true_vector_xy[0])
+                    and np.allclose(zs, self._true_vector_xy[1]))
+        if self.true_vector_quiver is None or not same_grid:
+            if self.true_vector_quiver is not None:
+                self.true_vector_quiver.remove()
+            self.true_vector_quiver = self.ax.quiver(
+                xs, zs, us, ws, color="#14171F", angles="xy", scale_units="xy",
+                width=0.004, zorder=9)
+            self._true_vector_xy = (xs, zs)
+        else:
+            self.true_vector_quiver.set_UVC(us, ws)
+
+    def set_streamline_colors(self, colors: list) -> None:
+        """One color per streamline (V6-M3 color-by) -- applied on the next
+        set_vector_field() call, since LineCollection needs colors and
+        segments set together for a clean per-line mapping."""
+        self._streamline_colors = list(colors) if colors else None
+
+    def redraw_overlays_now(self) -> None:
+        """Blit the current device markers / vector field immediately (V6-M2
+        /V6-M3) -- for the placed/edited/deleted case, outside a
+        TimeController tick, where nothing else is about to call
+        show_frame() and trigger the blit."""
         self.canvas.blit_update(self._animated_artists())
 
     def set_cmap(self, name: str) -> None:
