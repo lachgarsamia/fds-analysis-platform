@@ -3520,6 +3520,14 @@ class _SyntheticVectorProvider:
         w = np.zeros_like(np.asarray(temp, dtype=float))
         return u, w
 
+    def get_vector3d(self, scenario, direction=None, offset=None):
+        # V6-M7: synthetic V (through-plane component) alongside U/W above.
+        temp = self._real.get(scenario, SliceKey("TEMPERATURE"))
+        u = np.full_like(np.asarray(temp, dtype=float), 1.0)
+        v = np.full_like(np.asarray(temp, dtype=float), 2.0)
+        w = np.zeros_like(np.asarray(temp, dtype=float))
+        return u, v, w
+
 
 class TestTrueVelocity:
     """V6-M3: true (U, W) vector field -- streamlines/quiver, gated on
@@ -3651,6 +3659,40 @@ class TestTrueVelocity:
         window._apply_analysis_session(before)
         after = window.velocity_panel.get_probes()
         assert after == before["vector_probes"]     # identical, not recomputed
+        window.close()
+
+    def test_3d_toggle_gated_on_real_data(self, qapp):
+        """V6-M7: with no synthetic provider, V-VELOCITY is gated exactly
+        like U/W -- checking "3D (color by V)" must not crash, and simply
+        has nothing to show (has_3d stays False)."""
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        p = window.velocity_panel
+        p.ensure_loaded()
+        p._place(1.0, 1.0)
+        p.show_3d_check.setChecked(True)
+        QtWidgets.QApplication.processEvents()
+        window.close()   # must reach here without raising
+
+    def test_3d_toggle_colors_quiver_with_synthetic_v(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        p = window.velocity_panel
+        p.ensure_loaded()
+        p._provider = _SyntheticVectorProvider(window.quantity_provider)
+        p._place(1.0, 1.0)
+        case_index = p.scenario_combo.currentData()
+        field = p._fields[case_index]
+        assert field.has_3d
+        p.show_3d_check.setChecked(True)
+        QtWidgets.QApplication.processEvents()
+        assert p.canvas.fig.axes   # rendered without error
         window.close()
 
 
@@ -4078,4 +4120,154 @@ class TestFullFED:
         dev = dp._devices[-1]
         assert dev.results["max_fed_full"] is not None
         assert "FED" in dp._headline(dev)
+        window.close()
+
+
+class _SyntheticMultiPlaneProvider:
+    """Wraps a real QuantityProvider but supplies synthetic data for every
+    plane direction (X/Y/Z-normal), so V6-M7's multi-plane panel is fully
+    testable even though the real dataset only has the Y-normal plane.
+    TEMPERATURE at the real (y-normal) direction still goes through the
+    real provider; other directions return a small synthetic (t, n, n)
+    stack of the same dtype -- never confused with real data (production
+    code always goes through the real, gated provider)."""
+
+    def __init__(self, real, shape=(5, 6, 6)):
+        self._real = real
+        self._shape = shape
+
+    def get(self, scenario, key):
+        if key.quantity == "TEMPERATURE" and key.direction != 1:
+            return np.full(self._shape, 42.0, dtype=float)
+        return self._real.get(scenario, key)
+
+    def get_extent(self, scenario, key):
+        if key.quantity == "TEMPERATURE" and key.direction != 1:
+            return [0.0, 1.0, 0.0, 1.0]
+        return self._real.get_extent(scenario, key)
+
+
+class TestMultiPlaneLinkedCrossSections:
+    """V6-M7: XY/XZ/YZ simultaneous cross-sections, synced via SelectionBus.
+    Only XZ (y-normal) has real data on this dataset -- XY/YZ are honestly
+    gated, exercised fully via a synthetic multi-plane provider."""
+
+    def test_tab_present_and_xz_shows_real_data(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        mp = window.multiplane_panel
+        mp.ensure_loaded()
+        case_index = mp.scenario_combo.currentData()
+        data, extent = mp._plane(case_index, 1)   # y-normal -- real
+        assert data is not None and extent is not None
+        window.close()
+
+    def test_xy_and_yz_are_gated_on_real_data(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        mp = window.multiplane_panel
+        mp.ensure_loaded()
+        case_index = mp.scenario_combo.currentData()
+        xy_data, xy_reason = mp._plane(case_index, 2)   # z-normal -- absent
+        yz_data, yz_reason = mp._plane(case_index, 0)   # x-normal -- absent
+        assert xy_data is None and isinstance(xy_reason, str)
+        assert yz_data is None and isinstance(yz_reason, str)
+        window.close()
+
+    def test_render_does_not_crash_with_mixed_gating(self, qapp):
+        """One real plane + two gated planes rendered together must not
+        raise (the exact failure mode fixed in V6-M5: an uncaught exception
+        escaping a Qt slot aborts the whole process)."""
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        mp = window.multiplane_panel
+        mp.ensure_loaded()
+        assert "gated" in mp.status.text().lower() or mp.status.text() == ""
+        for name in ("XY", "XZ", "YZ"):
+            assert mp.canvases[name].fig.axes
+        window.close()
+
+    def test_point_click_in_xz_pane_publishes_to_bus(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        mp = window.multiplane_panel
+        mp.ensure_loaded()
+        class FakeEvent:
+            pass
+        ev = FakeEvent()
+        ev.xdata, ev.ydata = 1.0, 0.2
+        ev.inaxes = mp._axes["XZ"]
+        mp._on_click("XZ", ev)
+        assert window.selection_bus.current.point == pytest.approx((1.0, 0.2))
+        window.close()
+
+    def test_point_selected_elsewhere_moves_xz_crosshair(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        mp = window.multiplane_panel
+        mp.ensure_loaded()
+        window.selection_bus.update(origin=None, point=(0.5, 0.1))
+        assert mp._point == pytest.approx((0.5, 0.1))
+        window.close()
+
+    def test_depth_syncs_via_bus_without_disturbing_point(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        mp = window.multiplane_panel
+        mp.ensure_loaded()
+        window.selection_bus.update(origin=None, point=(0.5, 0.1))
+        window.selection_bus.update(origin=None, depth=0.3)
+        assert mp._depth == pytest.approx(0.3)
+        assert mp._point == pytest.approx((0.5, 0.1))   # untouched by the depth-only update
+        window.close()
+
+    def test_synthetic_provider_renders_all_three_planes_real(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        mp = window.multiplane_panel
+        mp._provider = _SyntheticMultiPlaneProvider(window.quantity_provider)
+        mp.ensure_loaded()
+        case_index = mp.scenario_combo.currentData()
+        for direction in (0, 1, 2):
+            data, extent = mp._plane(case_index, direction)
+            assert data is not None
+        assert mp.status.text() == ""
+        window.close()
+
+    def test_click_in_xy_pane_sets_point_x_and_depth(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        mp = window.multiplane_panel
+        mp._provider = _SyntheticMultiPlaneProvider(window.quantity_provider)
+        mp.ensure_loaded()
+        class FakeEvent:
+            pass
+        ev = FakeEvent()
+        ev.xdata, ev.ydata = 0.7, 0.4   # (x, y) in the XY pane
+        ev.inaxes = mp._axes["XY"]
+        mp._on_click("XY", ev)
+        sel = window.selection_bus.current
+        assert sel.point[0] == pytest.approx(0.7)
+        assert sel.depth == pytest.approx(0.4)
         window.close()

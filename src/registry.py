@@ -96,6 +96,12 @@ QUANTITY_REGISTRY = {
         slider_min=1, slider_max=10, slider_default=5, kind="slice2d",
         interpretation="Signed in-plane z-velocity; with U, the true vector field "
                        "for streamlines/quiver.", gated=True, gate_reason=MSIM_GATE),
+    "V-VELOCITY": QuantityInfo(
+        "V-VELOCITY", "Velocity V (y-component)", "m/s", "coolwarm", -5.0,
+        slider_min=1, slider_max=10, slider_default=5, kind="slice2d",
+        interpretation="Signed through-plane y-velocity; with U/W, the full 3D "
+                       "vector field for true 3D flow visualization (V6-M7).",
+        gated=True, gate_reason=MSIM_GATE),
     "CARBON MONOXIDE VOLUME FRACTION": QuantityInfo(
         "CARBON MONOXIDE VOLUME FRACTION", "Carbon monoxide (CO)", "ppm", "inferno", 0.0,
         slider_min=100, slider_max=12000, slider_default=1200,

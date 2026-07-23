@@ -42,6 +42,10 @@ class Selection:
     interval: Optional[Interval] = None       # (t0, t1)
     phase: Optional[str] = None               # detected-phase name (events.py)
     comparison: Optional[Comparison] = None   # (scenario_a, scenario_b)
+    depth: Optional[float] = None             # V6-M7: a chosen y (through-plane),
+                                               # for multi-plane cross-section linking
+                                               # (point already covers x/z; the app has
+                                               # no other y-coordinate concept)
 
     def with_(self, **changes) -> "Selection":
         """A copy with some fields replaced (the model is immutable, so a
@@ -59,7 +63,7 @@ class Selection:
         fields are written, so an empty selection round-trips to {}."""
         out = {}
         for name in ("scenario", "quantity", "point", "region", "height",
-                     "time_s", "interval", "phase", "comparison"):
+                     "time_s", "interval", "phase", "comparison", "depth"):
             value = getattr(self, name)
             if value is not None and not (name == "quantity" and value == "TEMPERATURE"):
                 out[name] = list(value) if isinstance(value, tuple) else value
@@ -74,7 +78,7 @@ class Selection:
         return cls(scenario=d.get("scenario"), quantity=d.get("quantity", "TEMPERATURE"),
                    point=_tuple("point"), region=_tuple("region"), height=d.get("height"),
                    time_s=d.get("time_s"), interval=_tuple("interval"),
-                   phase=d.get("phase"), comparison=_tuple("comparison"))
+                   phase=d.get("phase"), comparison=_tuple("comparison"), depth=d.get("depth"))
 
     @classmethod
     def from_insight(cls, insight, scenario=None) -> "Selection":
@@ -127,6 +131,10 @@ class SelectionContext:
     @property
     def height(self):
         return self._selection.height
+
+    @property
+    def depth(self):
+        return self._selection.depth
 
     @property
     def time_s(self):

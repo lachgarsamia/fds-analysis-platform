@@ -9,6 +9,19 @@ real components exist -- that exception is never caught here, only in the
 UI layer (velocity_panel.py), which surfaces it as a clear, honest status
 instead of a broken plot.
 
+V6-M7: an optional true-3D enhancement, `VectorField.compute_v()` /
+`VectorProbe`'s 3D fields, additionally reads V-VELOCITY (the through-plane
+component, also registered `gated=True`) via QuantityProvider.get_vector3d().
+This is deliberately a *separate* call from compute()/get_vector(): the 2D
+(U, W) baseline this module already provides is completely unaffected by
+whether V exists -- compute_v() is tried afterward, and its
+GatedQuantityError (propagated, never swallowed here) means "no 3D bonus
+today", not "no vectors at all". True volumetric path integration (a
+streamline that actually leaves the 2D plane) still needs volumetric U/V/W,
+which no `.s3d` output provides -- see volume_sample() below; V6-M7's 3D
+support is a per-point/quiver *reading* (speed/direction including the
+through-plane component), not 3D path integration.
+
 VectorField is the compute-once/read-many engine, mirroring devices.py's
 Device: `compute()` reads (U, W) once and derives speed/angle over the
 whole (t, z, x) stack in one vectorized pass; `quiver_at()` is then a plain
@@ -43,11 +56,15 @@ def stride_for_target(shape: tuple, target_count: int) -> int:
     return max(1, int(round((total / max(1, target_count)) ** 0.5)))
 
 
-def quiver_grid(u_frame: np.ndarray, w_frame: np.ndarray, extent: tuple, stride: int):
+def quiver_grid(u_frame: np.ndarray, w_frame: np.ndarray, extent: tuple, stride: int,
+                v_frame: Optional[np.ndarray] = None):
     """(xs, zs, us, ws) for every `stride`-th grid point, in physical
     coordinates -- a plain grid subsample. Positions are deterministic from
     `stride` alone, so a caller can keep them fixed across frames and only
-    refresh U/V (see SliceView.set_vector_field)."""
+    refresh U/V (see SliceView.set_vector_field). `v_frame` (V6-M7,
+    optional): when given, also returns `vs` (the through-plane component
+    at the same sample points, e.g. for colour-by-V) as a 5th element --
+    existing 4-tuple callers are unaffected since this defaults to None."""
     n_z, n_x = u_frame.shape
     rows = np.arange(0, n_z, max(1, stride))
     cols = np.arange(0, n_x, max(1, stride))
@@ -55,7 +72,11 @@ def quiver_grid(u_frame: np.ndarray, w_frame: np.ndarray, extent: tuple, stride:
     x0, x1, z0, z1 = extent
     xs = x0 + (cc / max(n_x - 1, 1)) * (x1 - x0)
     zs = z1 - (rr / max(n_z - 1, 1)) * (z1 - z0)
-    return xs.ravel(), zs.ravel(), u_frame[rr, cc].ravel(), w_frame[rr, cc].ravel()
+    us = u_frame[rr, cc].ravel()
+    ws = w_frame[rr, cc].ravel()
+    if v_frame is not None:
+        return xs.ravel(), zs.ravel(), us, ws, v_frame[rr, cc].ravel()
+    return xs.ravel(), zs.ravel(), us, ws
 
 
 def _uv_at(u_frame, w_frame, extent, x, z):
@@ -136,8 +157,10 @@ class VectorField:
         self.offset = DEFAULT_OFFSET if offset is None else offset
         self.u: Optional[np.ndarray] = None
         self.w: Optional[np.ndarray] = None
+        self.v: Optional[np.ndarray] = None            # V6-M7: through-plane component
         self.speed: Optional[np.ndarray] = None
         self.angle: Optional[np.ndarray] = None
+        self.speed3d: Optional[np.ndarray] = None       # V6-M7: sqrt(u^2+v^2+w^2)
         self.extent = None
         self._streamline_cache: dict = {}
 
@@ -159,6 +182,23 @@ class VectorField:
             self.scenario, SliceKey("VELOCITY", self.direction, self.offset))
         self._streamline_cache.clear()
 
+    def compute_v(self) -> None:
+        """V6-M7: additionally read V-VELOCITY (the through-plane
+        component) for a true 3D speed. Requires compute() to have run
+        first (uses its cached u/w rather than re-fetching them). Raises
+        GatedQuantityError (propagated) if V isn't available -- callers
+        should try/except this *separately* from compute(): the 2D (U, W)
+        field this class already provides is unaffected either way."""
+        if self.u is None or self.w is None:
+            raise RuntimeError("compute() must run before compute_v()")
+        _u, v, _w = self._provider.get_vector3d(self.scenario, self.direction, self.offset)
+        self.v = np.asarray(v, dtype=float)
+        self.speed3d = np.sqrt(self.u ** 2 + self.v ** 2 + self.w ** 2)
+
+    @property
+    def has_3d(self) -> bool:
+        return self.v is not None
+
     @property
     def n_frames(self) -> int:
         return int(self.u.shape[0]) if self.u is not None else 0
@@ -171,6 +211,18 @@ class VectorField:
         stride = stride_for_target(self.u.shape[1:], density)
         return quiver_grid(self.u[i], self.w[i], self.extent, stride)
 
+    def quiver_at_3d(self, frame_index: int, density: int = 400):
+        """(xs, zs, us, ws, vs) at `frame_index` -- same sample grid as
+        quiver_at(), plus the through-plane component `vs` (e.g. for
+        colour-by-V quiver). Requires compute_v() (has_3d); a separate
+        method from quiver_at() so every existing 4-tuple caller is
+        unaffected regardless of 3D availability."""
+        if not self.has_3d:
+            raise RuntimeError("compute_v() must run before quiver_at_3d()")
+        i = min(max(frame_index, 0), self.n_frames - 1)
+        stride = stride_for_target(self.u.shape[1:], density)
+        return quiver_grid(self.u[i], self.w[i], self.extent, stride, v_frame=self.v[i])
+
     def probe_speed(self, x: float, z: float) -> np.ndarray:
         """The (t,) local speed series at physical (x, z) -- same probe
         convention as devices.py, for a seed's own readout/export."""
@@ -179,6 +231,14 @@ class VectorField:
 
     def probe_angle(self, x: float, z: float) -> np.ndarray:
         return np.array([mz.probe_value(self.angle[k], self.extent, x, z)
+                         for k in range(self.n_frames)])
+
+    def probe_v(self, x: float, z: float) -> np.ndarray:
+        """V6-M7: the (t,) local through-plane-velocity series at physical
+        (x, z). Requires compute_v() (has_3d)."""
+        if not self.has_3d:
+            raise RuntimeError("compute_v() must run before probe_v()")
+        return np.array([mz.probe_value(self.v[k], self.extent, x, z)
                          for k in range(self.n_frames)])
 
     def streamline_at(self, seed: tuple, frame_index: int, step: float = 0.05,
@@ -220,7 +280,10 @@ class VectorProbe:
         """Precomputes this probe's local speed/angle series from an
         already-computed VectorField -- probe_speed/probe_angle are cheap,
         O(n_frames) bilinear lookups, not a recompute of U/W. Called once at
-        placement/scenario-change, never per GUI tick."""
+        placement/scenario-change, never per GUI tick. When the field also
+        has V (V6-M7, has_3d), additionally reports the true 3D speed --
+        absent (no v_m_s/speed3d_m_s keys) when V is gated, never
+        fabricated."""
         speed = vector_field.probe_speed(*self.position)
         angle = vector_field.probe_angle(*self.position)
         n = len(speed)
@@ -232,6 +295,13 @@ class VectorProbe:
             "max_speed_m_s": float(np.max(speed)) if n else 0.0,
             "basis": "U/W-VELOCITY probed at (x, z), bilinearly interpolated each frame.",
         }
+        if vector_field.has_3d:
+            v = vector_field.probe_v(*self.position)
+            speed3d = np.sqrt(speed ** 2 + v ** 2)
+            self.results["v_m_s"] = v.tolist()
+            self.results["speed3d_m_s"] = speed3d.tolist()
+            self.results["max_speed3d_m_s"] = float(np.max(speed3d)) if n else 0.0
+            self.results["basis"] += " Full 3D (U/V/W-VELOCITY) available."
 
     def mark_gated(self, reason: str) -> None:
         """No U/W for this probe's scenario -- record why, fabricate nothing."""
@@ -262,6 +332,11 @@ class VectorProbe:
                 category="event", quantity="VELOCITY", location=tuple(self.position),
                 basis=self.results["reason"])
         r = self.results or {}
+        if r.get("max_speed3d_m_s") is not None:
+            return Insight(
+                statement=f"Vector probe {self.name}: 3D peak speed {r['max_speed3d_m_s']:.1f} m/s",
+                category="event", quantity="VELOCITY", location=tuple(self.position),
+                value=r["max_speed3d_m_s"], unit="m/s", basis=r.get("basis", ""))
         return Insight(
             statement=f"Vector probe {self.name}: peak speed {r.get('max_speed_m_s', 0.0):.1f} m/s",
             category="event", quantity="VELOCITY", location=tuple(self.position),

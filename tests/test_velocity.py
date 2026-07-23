@@ -55,13 +55,20 @@ class FakeProvider:
     entirely, for pure-engine math tests (gating itself is exercised
     separately, against the real QuantityProvider, in TestGating below)."""
 
-    def __init__(self, u_stack, w_stack, extent):
+    def __init__(self, u_stack, w_stack, extent, v_stack=None):
         self._u = u_stack
         self._w = w_stack
+        self._v = v_stack
         self._extent = extent
 
     def get_vector(self, scenario, direction=None, offset=None):
         return self._u, self._w
+
+    def get_vector3d(self, scenario, direction=None, offset=None):
+        if self._v is None:
+            from quantity_provider import GatedQuantityError
+            raise GatedQuantityError("Requires the M-SIM cluster re-run")
+        return self._u, self._v, self._w
 
     def get_extent(self, scenario, key):
         return self._extent
@@ -216,6 +223,95 @@ class TestVectorField:
         assert field.n_frames == 7
 
 
+class TestVectorField3D:
+    """V6-M7: the optional true-3D enhancement (V-VELOCITY/compute_v) --
+    the 2D (U, W) baseline must be completely unaffected either way."""
+
+    def _field_2d_only(self, n_frames=5):
+        extent = (-2.0, 2.0, -2.0, 2.0)
+        u_stack, w_stack = _grid((41, 41), extent, lambda x, z: np.full_like(x, 3.0),
+                                 lambda x, z: np.full_like(x, 4.0), n_frames=n_frames)
+        provider = FakeProvider(u_stack, w_stack, extent)   # no v_stack -- V gated
+        field = vel.VectorField(provider, scenario=0)
+        field.compute()
+        return field
+
+    def _field_3d(self, n_frames=5):
+        extent = (-2.0, 2.0, -2.0, 2.0)
+        shape = (41, 41)
+        u_stack, w_stack = _grid(shape, extent, lambda x, z: np.full_like(x, 3.0),
+                                 lambda x, z: np.full_like(x, 4.0), n_frames=n_frames)
+        v_stack, _ = _grid(shape, extent, lambda x, z: np.full_like(x, 12.0),
+                           lambda x, z: np.full_like(x, 0.0), n_frames=n_frames)
+        provider = FakeProvider(u_stack, w_stack, extent, v_stack=v_stack)
+        field = vel.VectorField(provider, scenario=0)
+        field.compute()
+        return field, provider
+
+    def test_has_3d_false_until_compute_v(self):
+        field = self._field_2d_only()
+        assert not field.has_3d
+        assert field.v is None and field.speed3d is None
+
+    def test_compute_v_requires_compute_first(self):
+        extent = (-1.0, 1.0, -1.0, 1.0)
+        u_stack, w_stack = _grid((5, 5), extent, lambda x, z: x, lambda x, z: z)
+        provider = FakeProvider(u_stack, w_stack, extent)
+        field = vel.VectorField(provider, scenario=0)
+        with pytest.raises(RuntimeError):
+            field.compute_v()
+
+    def test_compute_v_raises_gated_when_v_absent(self):
+        field = self._field_2d_only()
+        with pytest.raises(GatedQuantityError):
+            field.compute_v()
+        assert not field.has_3d   # 2D field untouched by the failed attempt
+
+    def test_compute_v_populates_speed3d(self):
+        field, _provider = self._field_3d()
+        field.compute_v()
+        assert field.has_3d
+        # 3-4-12-13 Pythagorean quadruple: sqrt(3^2+12^2+4^2) = 13
+        assert np.allclose(field.speed3d, 13.0)
+
+    def test_quiver_at_3d_matches_quiver_grid_with_v(self):
+        field, _provider = self._field_3d()
+        field.compute_v()
+        xs, zs, us, ws, vs = field.quiver_at_3d(0, density=50)
+        stride = vel.stride_for_target(field.u.shape[1:], 50)
+        xs2, zs2, us2, ws2, vs2 = vel.quiver_grid(field.u[0], field.w[0], field.extent,
+                                                   stride, v_frame=field.v[0])
+        np.testing.assert_allclose(vs, vs2)
+        assert np.allclose(vs, 12.0)
+
+    def test_quiver_at_3d_requires_compute_v(self):
+        field = self._field_2d_only()
+        with pytest.raises(RuntimeError):
+            field.quiver_at_3d(0)
+
+    def test_quiver_at_unaffected_by_3d_availability(self):
+        """quiver_at() (the pre-existing 4-tuple) must return identically
+        whether or not compute_v() was ever called."""
+        field, _provider = self._field_3d()
+        before = field.quiver_at(0, density=50)
+        field.compute_v()
+        after = field.quiver_at(0, density=50)
+        assert len(before) == 4 and len(after) == 4
+        for a, b in zip(before, after):
+            np.testing.assert_allclose(a, b)
+
+    def test_probe_v_requires_compute_v(self):
+        field = self._field_2d_only()
+        with pytest.raises(RuntimeError):
+            field.probe_v(0.0, 0.0)
+
+    def test_probe_v_is_constant(self):
+        field, _provider = self._field_3d()
+        field.compute_v()
+        series = field.probe_v(0.5, 0.5)
+        assert np.allclose(series, 12.0)
+
+
 class TestGating:
     """The real QuantityProvider.get_vector must still raise
     GatedQuantityError, unchanged, pointing at the M-SIM doc -- V6-M3 must
@@ -247,6 +343,38 @@ class TestGating:
         with pytest.raises(GatedQuantityError):
             field.compute()
         assert field.u is None                 # never fabricated a fallback
+
+    def test_get_vector3d_raises_when_v_absent(self):
+        """V6-M7: get_vector3d must gate exactly like get_vector -- V is
+        registered gated=True, same as U/W, so this fires before the store
+        is ever touched."""
+        class DummyStore:
+            def get(self, scenario, key):
+                raise AssertionError("should never reach the store -- gate must fire first")
+
+            def get_extent(self, scenario, key):
+                raise AssertionError("should never reach the store")
+
+        provider = QuantityProvider(DummyStore(), fps=1)
+        with pytest.raises(GatedQuantityError) as exc:
+            provider.get_vector3d(0)
+        assert "msim-preparation" in str(exc.value) or "M-SIM" in str(exc.value)
+
+    def test_vector_field_compute_v_propagates_gate(self):
+        class DummyStore:
+            def get(self, scenario, key):
+                raise AssertionError("gate must fire before the store is touched")
+
+            def get_extent(self, scenario, key):
+                raise AssertionError("gate must fire before the store is touched")
+
+        provider = QuantityProvider(DummyStore(), fps=1)
+        field = vel.VectorField(provider, scenario=0)
+        field.u = np.zeros((1, 1, 1))   # satisfy compute_v()'s precondition check
+        field.w = np.zeros((1, 1, 1))
+        with pytest.raises(GatedQuantityError):
+            field.compute_v()
+        assert field.v is None and not field.has_3d
 
 
 def test_volume_sample_is_not_implemented():
@@ -307,6 +435,38 @@ class TestVectorProbe:
         vel.export_csv(probe, str(path))
         text = path.read_text()
         assert "time_s,speed_m_s,angle_deg" in text
+
+    def _field_3d(self):
+        extent = (-2.0, 2.0, -2.0, 2.0)
+        shape = (41, 41)
+        u_stack, w_stack = _grid(shape, extent, lambda x, z: np.full_like(x, 3.0),
+                                 lambda x, z: np.full_like(x, 4.0), n_frames=6)
+        v_stack, _ = _grid(shape, extent, lambda x, z: np.full_like(x, 12.0),
+                           lambda x, z: np.full_like(x, 0.0), n_frames=6)
+        provider = FakeProvider(u_stack, w_stack, extent, v_stack=v_stack)
+        field = vel.VectorField(provider, scenario=0)
+        field.compute()
+        field.compute_v()
+        return field
+
+    def test_compute_with_3d_field_adds_speed3d(self):
+        probe = vel.VectorProbe(id="p8", name="VP-08", scenario=0, position=(0.5, 0.5))
+        probe.compute(self._field_3d(), fps=2)
+        assert probe.results["max_speed3d_m_s"] == pytest.approx(13.0)   # 3-4-12 -> 13
+        assert probe.results["v_m_s"][0] == pytest.approx(12.0)
+        assert "3D" in probe.results["basis"]
+
+    def test_compute_without_3d_field_omits_speed3d(self):
+        probe = vel.VectorProbe(id="p9", name="VP-09", scenario=0, position=(0.5, 0.5))
+        probe.compute(self._field(), fps=2)   # 2D-only field (no compute_v())
+        assert "max_speed3d_m_s" not in probe.results
+        assert "v_m_s" not in probe.results
+
+    def test_summary_insight_prefers_3d_speed_when_available(self):
+        probe = vel.VectorProbe(id="p10", name="VP-10", scenario=0, position=(0.5, 0.5))
+        probe.compute(self._field_3d(), fps=2)
+        ins = probe.summary_insight()
+        assert "3D peak speed" in ins.statement and "13.0" in ins.statement
 
     def test_export_csv_gated_still_writes_metadata(self, tmp_path):
         probe = vel.VectorProbe(id="p8", name="VP-08", scenario=0, position=(0.0, 0.0))

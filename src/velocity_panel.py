@@ -82,6 +82,17 @@ class VelocityPanel(QtWidgets.QWidget):
         for c in vel.COLOR_BY:
             self.color_by_combo.addItem(_COLOR_BY_LABELS[c], c)
         header.addWidget(self.color_by_combo)
+        # V6-M7: true 3D (colour the quiver by the through-plane V
+        # component). Gated on V-VELOCITY, same as U/W -- checking this
+        # with no 3D data available leaves the ordinary 2D quiver exactly
+        # as it was (a graceful fallback, not an error).
+        self.show_3d_check = QtWidgets.QCheckBox("3D (color by V)")
+        self.show_3d_check.setAccessibleName("Show 3D vector (color by V)")
+        self.show_3d_check.setToolTip("Color quiver arrows by the through-plane V-VELOCITY "
+                                      "component. Gated on this dataset -- falls back to the "
+                                      "ordinary 2D quiver when V is unavailable.")
+        self.show_3d_check.stateChanged.connect(lambda _s: self._render())
+        header.addWidget(self.show_3d_check)
         header.addStretch(1)
         layout.addLayout(header)
 
@@ -222,6 +233,18 @@ class VelocityPanel(QtWidgets.QWidget):
             self._gate_reasons[case_index] = str(e)
             return None
         self._fields[case_index] = f
+        # V6-M7: optional 3D enhancement (V-VELOCITY) -- tried separately
+        # from the 2D (U, W) compute() above, which has already succeeded
+        # and is completely unaffected if this fails. Gated today (same
+        # registry gate as U/W); the "3D (color by V)" toggle simply has
+        # nothing to show until this succeeds.
+        try:
+            f.compute_v()
+        except Exception:  # noqa: BLE001 - GatedQuantityError today; a provider that
+            # doesn't even implement get_vector3d (e.g. an older duck-typed
+            # fake/test double) must fall back the same way, not crash --
+            # the 3D toggle simply has nothing to show either way.
+            pass
         return f
 
     # -------------------------------------------------- session hooks (V6-M3)
@@ -340,8 +363,21 @@ class VelocityPanel(QtWidgets.QWidget):
             ax.set_title(f"{_MODE_LABELS[self.mode]} · density {self.density_spin.value()}", fontsize=8)
             frame_index = int(field.n_frames * 0.6)
             if self.mode in ("quiver", "both"):
-                xs, zs, us, ws = field.quiver_at(frame_index, density=self.density_spin.value())
-                ax.quiver(xs, zs, us, ws, color="#14171F", angles="xy", scale_units="xy", width=0.004)
+                if self.show_3d_check.isChecked() and field.has_3d:
+                    # V6-M7: colour by the through-plane V component --
+                    # only when actually available (has_3d); otherwise this
+                    # branch is simply never taken and the plain 2D quiver
+                    # below renders exactly as before (graceful fallback).
+                    xs, zs, us, ws, vs = field.quiver_at_3d(
+                        frame_index, density=self.density_spin.value())
+                    q3d = ax.quiver(xs, zs, us, ws, vs, cmap="coolwarm",
+                                    angles="xy", scale_units="xy", width=0.004)
+                    self.canvas.fig.colorbar(q3d, ax=ax, fraction=0.046, pad=0.04,
+                                             label="V-VELOCITY (m/s, through-plane)")
+                else:
+                    xs, zs, us, ws = field.quiver_at(frame_index, density=self.density_spin.value())
+                    ax.quiver(xs, zs, us, ws, color="#14171F", angles="xy",
+                             scale_units="xy", width=0.004)
             if self.mode in ("streamlines", "both"):
                 for p in self._probes:
                     if p.scenario != case_index or p.gated:

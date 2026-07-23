@@ -156,6 +156,22 @@ class QuantityProvider:
         w = self.get(scenario, SliceKey("W-VELOCITY", direction, offset))
         return u, w
 
+    def get_vector3d(self, scenario: int, direction: int = None, offset: int = None):
+        """V6-M7: the full 3D velocity vector (U, V, W) for true 3D flow
+        visualization. V-VELOCITY (the through-plane component) is
+        registered `gated=True` today, same as U/W -- reads through the
+        same get() path, so this raises GatedQuantityError immediately
+        (before touching the store) exactly like get_vector() does, and
+        starts returning real arrays with no code change once the M-SIM
+        re-run ungates it. Never a 2D-to-3D fabrication: callers that only
+        need the in-plane pair should keep using get_vector()."""
+        direction = DEFAULT_DIRECTION if direction is None else direction
+        offset = DEFAULT_OFFSET if offset is None else offset
+        u = self.get(scenario, SliceKey("U-VELOCITY", direction, offset))
+        v = self.get(scenario, SliceKey("V-VELOCITY", direction, offset))
+        w = self.get(scenario, SliceKey("W-VELOCITY", direction, offset))
+        return u, v, w
+
     def get_extent(self, scenario: int, key: SliceKey = None):
         key = key or SliceKey("TEMPERATURE")
         q = get_quantity(key.quantity)
