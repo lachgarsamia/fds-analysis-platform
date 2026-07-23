@@ -15,6 +15,10 @@ dist/
 # Logs
 *.log
 
+# Test runner caches
+.pytest_cache/
+.coverage
+
 # Data: simulation outputs are large (2.3G) and regenerable; test fixtures
 # under tests/fixtures/ carry the data needed by the test suite.
 fds/sim/

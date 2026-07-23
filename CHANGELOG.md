@@ -1,5 +1,63 @@
 # Changelog
 
+## v6.0.0 — Gated Capabilities Realized
+
+V6 turns V5 Phase 7's prepared-but-gated seams into working features, wherever
+the current FDS output actually supports them -- and keeps every capability the
+data doesn't yet support cleanly, honestly gated (`GatedQuantityError`, never a
+fabricated value) rather than silently faked. The suite is green throughout
+(1004 tests at release).
+
+### Highlights
+
+- **M1 — Field Calculator** — a safe, deterministic expression engine
+  (Python `ast`, whitelisted operators/functions only, never `eval`/`exec`) so
+  a researcher can define derived quantities like `Temperature - 20` or
+  `gradient(Temperature)`; every field records its expression as its basis.
+- **M1.5 — Calculated fields as first-class visual quantities** — a calculated
+  field appears in the Live Viewer quantity combo, renders as a heatmap, and
+  updates during playback, routed through `QuantityProvider` with no changes
+  to the cinematic pipeline, cache, or `TimeController`.
+- **M2 — Virtual Device Network** — place virtual thermocouples, heat
+  detectors, and RTI sprinklers at a point; each computes its time series once
+  (cached) and never recomputes per playback tick. Session/report/CSV
+  round-trip.
+- **M3 — True 3D velocity: streamlines / quiver** — the in-plane (U, W)
+  vector field, gated on `U-VELOCITY`/`W-VELOCITY` (absent from this dataset,
+  so exercised via synthetic providers); RK2/RK4/Euler streamline
+  integration, adaptive quiver density, per-frame-memoized so playback never
+  re-integrates.
+- **M4 — Unified scientific workspace** — a Context Panel connecting devices,
+  vector probes, notebook entries, zones, measurements, the Knowledge Graph,
+  and saved sessions to whatever is currently selected; one `_reveal()`
+  cross-navigation primitive reused everywhere; an Investigation History
+  (back/forward through recorded selections) that ignores per-tick playback
+  noise.
+- **M5 — Multi-plane cross-sections (plane-gating foundation)** — `SliceKey`/
+  `QuantityProvider` extended to any (direction, offset) plane, checked
+  against the real `.smv` inventory before ever touching the store (a plane
+  that's merely *declared* but not actually loadable is caught the same way);
+  devices and the Space-Time Cube both became plane-aware.
+- **M6 — Full FED / CO / smoke toxicity** — the standard ISO 13571 / SFPE
+  Handbook (Purser) dose equations: toxic-gas dose + convected-heat dose:
+  full FED. Tenability and Hazard Spaces automatically upgrade from the
+  temperature-only partial screen to full FED wherever `CARBON MONOXIDE
+  VOLUME FRACTION` is available (gated today); thermocouples report FED
+  alongside temperature.
+- **M7 — Multi-plane linked cross-sections + true 3D velocity** — a
+  simultaneous XY/XZ/YZ view synced via the `SelectionBus` (a new
+  `Selection.depth` field carries the third spatial coordinate); an optional
+  `V-VELOCITY` third component for a true 3D vector reading, layered onto M3
+  without changing its existing 2D behaviour.
+
+### Honesty, unchanged from V5
+
+Every capability above is additive at a seam V5 Phase 7 already prepared.
+Nothing fabricates data the current FDS output doesn't have: absent
+quantities raise `GatedQuantityError` with a clear reason
+(`docs/msim-preparation.md`), never a guessed value. **V6-4 (validation
+toolkit: simulation vs. experiment) was not started** and remains open.
+
 ## v5.0.0 — Computational Fire Scientist (connected analysis environment)
 
 V5's theme is **connection**: the panels (live), the artifacts (memory), and the
