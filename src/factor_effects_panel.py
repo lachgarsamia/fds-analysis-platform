@@ -185,8 +185,6 @@ class FactorEffectsPanel(QtWidgets.QWidget):
         fig.clear()
         self._ax = fig.add_subplot(111)
         if field is None:
-            self._ax.text(0.5, 0.5, "Not enough factor levels for this combination",
-                           ha="center", va="center", fontsize=9)
             self._ax.set_xticks([])
             self._ax.set_yticks([])
             self._image = None

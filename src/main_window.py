@@ -32,11 +32,11 @@ from widgets import ToggleGroup, CollapsibleSection, TimelineWidget
 from simulation_controller import SimulationController
 from time_controller import TimeController
 from data_provider import SimulationData, load_study, DataLoadError
-from schematic import SchematicWidget, resolve_room_extent, _VOD_STATES, _VOC_STATES
+from schematic import SchematicWidget, resolve_room_extent, _VOD_STATES, _VOC_STATES, room_overlay_geometry
 from controls.candle_card import CandleCard
 from controls.door_widget import DoorWidget
 from controls.vent_widget import VentWidget
-from inspector import InspectorPanel
+from inspector import InspectorPanel, InspectorStack
 from export import AnimationExporter, ffmpeg_available
 from load_data import SIM_ROOT
 from slice_key import (SliceInfo, SliceKey, DEFAULT_SLICE_KEY, available_slices,
@@ -275,11 +275,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._hrr_cache = {}
         # V3-M2: per-scenario detected fire events (events.py), computed once.
         self._fire_events_cache = {}
-        # FireLab roadmap Phase 3: (case_index, quantity_key) the Live
-        # Inspector's sparkline/narration were last built for -- recomputed
-        # only when the active cell's scenario/quantity actually changes,
-        # not once per playback tick.
-        self._inspector_series_key = None
+        # FireLab roadmap Phase 3: (case_index, quantity_key) each visible
+        # cell's own Inspector section's sparkline/narration were last built
+        # for -- one entry per grid position (V6 polish: extended from a
+        # single scalar to a list when the Inspector grew a section per
+        # cell), recomputed only when that cell's scenario/quantity
+        # actually changes, not once per playback tick.
+        self._inspector_series_key = []
 
         # M3.2.5: trained-model predictions, if ml/train.py + ml/rollout.py
         # have ever been run -- absent/empty otherwise (predictions/ simply
@@ -338,7 +340,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # Populate the Fire story now that the inspector exists (the first
         # marker update during plot-panel build ran before it did, V3-M2).
         self._update_event_markers()
-        self.inspector.set_story_index(self.time_controller.index)
+        for i in range(self.inspector_stack.count()):
+            self.inspector_stack.section(i).set_story_index(self.time_controller.index)
 
         # Kiosk / attract mode (FireLab roadmap Phase 5): idle -> Home,
         # any input -> Live. Needs a live QApplication instance, which
@@ -356,6 +359,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # Guards the Compare -> Home/Live grid-reset bugfix (_navigate_to)
         # from firing on _apply_compare_preset's own internal jump to Live.
         self._applying_compare_preset = False
+        # True while the grid is showing a Compare preset's comparison
+        # setup -- Compare and the plain Live Viewer are meant to be
+        # independent, so _navigate_to resets the grid back to a single
+        # view the next time the user actually asks for "live" or "home"
+        # (including re-clicking "Live Viewer" while already there).
+        self._compare_active = False
         # Esc long-press: "effects off" master switch, tracked via
         # keyPressEvent/keyReleaseEvent below (QShortcut has no notion of
         # hold-duration).
@@ -434,6 +443,7 @@ class MainWindow(QtWidgets.QMainWindow):
         grid_menu = view_menu.addMenu("Grid Layout")
         self.grid_layout_action_group = QtWidgets.QActionGroup(self)
         for label, layout_name in (("1 view", "1x1"), ("2 views (side by side)", "1x2"),
+                                   ("2 views (stacked)", "2x1"),
                                    ("4 views (2x2)", "2x2"), ("9 views (3x3)", "3x3")):
             action = QtWidgets.QAction(label, self, checkable=True)
             action.setChecked(layout_name == "1x1")
@@ -1379,14 +1389,23 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _navigate_to(self, key: str) -> None:
         page = self.pages.get(key)
-        if page is None or key == self._active_page_key:
+        if page is None:
+            return
+        # Compare and the plain Live Viewer are meant to be independent: a
+        # preset's comparison grid must not stick around as "the" Live
+        # Viewer. Checked before the same-page early-return below so
+        # re-clicking "Live Viewer" while its comparison grid is still
+        # showing there also resets it, not just navigating in from
+        # elsewhere -- _navigate_to's only other caller with this guard
+        # already up is _apply_compare_preset's own internal jump.
+        if (key in ("home", "live") and getattr(self, "_compare_active", False)
+                and not getattr(self, "_applying_compare_preset", False)):
+            self._reset_grid_after_compare()
+        if key == self._active_page_key:
             return
         old_page = self.pages.get(self._active_page_key)
         if old_page is not None:
             old_page.on_leave()
-        if (self._active_page_key == "compare" and key in ("home", "live")
-                and not getattr(self, "_applying_compare_preset", False)):
-            self._reset_grid_after_compare()
         self._active_page_key = key
         self.page_stack.setCurrentWidget(page)
         self.nav_rail.set_active(key)
@@ -1397,10 +1416,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.selection_bus.resend()
 
     def _reset_grid_after_compare(self) -> None:
-        """Bugfix: leaving Compare (which sets up a 1x2 scenario-A /
-        difference grid, see _apply_compare_preset) back to Home or Live
-        must not leave that comparison setup behind -- reset to a plain
-        1x1 view of whichever scenario was being compared."""
+        """Bugfix: leaving a Compare preset's comparison grid (2x1, two
+        plain-slice scenarios -- see _apply_compare_preset) back to Home
+        or Live must not leave that setup behind -- reset to a plain 1x1
+        view of whichever scenario was the comparison's first (A)."""
+        self._compare_active = False
         cells = self.view_grid.visible_cells()
         if not cells:
             return
@@ -1446,12 +1466,38 @@ class MainWindow(QtWidgets.QMainWindow):
     def _build_inspector_panel(self) -> QtWidgets.QWidget:
         """Right-hand Live Inspector (FireLab roadmap Phase 3): probe
         readout, peak-temperature sparkline, HRR gauge, live narration --
-        see _update_inspector() for how it's kept in sync with playback."""
-        self.inspector = InspectorPanel()
-        self.inspector.diff_plot_button.clicked.connect(self._show_difference_over_time)
-        # V3-M2: clicking a Fire story event seeks playback to it.
-        self.inspector.story_list.insight_activated.connect(self._on_insight_activated)
-        return self.inspector
+        see _update_inspector() for how it's kept in sync with playback.
+        One section per visible grid cell (V6 polish: a 2+ cell comparison
+        grid used to only ever show the active cell's stats); self.inspector
+        stays a direct alias to section 0 for any 1x1-layout code that only
+        ever cared about "the" inspector."""
+        self.inspector_stack = InspectorStack()
+        self.inspector_stack.ensure_count(1)
+        self.inspector_stack.section_added.connect(self._wire_inspector_section)
+        self.inspector = self.inspector_stack.section(0)
+        self._wire_inspector_section(0, self.inspector)
+        return self.inspector_stack
+
+    def _wire_inspector_section(self, index: int, panel) -> None:
+        """Connects one InspectorStack section's own widgets the first time
+        it's created (section 0 at construction, any later one lazily via
+        InspectorStack.section_added). The diff-plot button needs to know
+        *which* cell it belongs to (looked up by grid position at click
+        time, never a stale captured reference); the fire-story list
+        doesn't -- an activated Insight already carries its own scenario."""
+        panel.diff_plot_button.clicked.connect(
+            lambda _checked=False, i=index: self._show_difference_over_time(self._cell_at_section_index(i)))
+        panel.story_list.insight_activated.connect(self._on_insight_activated)
+
+    def _cell_at_section_index(self, index: int):
+        cells = self.view_grid.visible_cells()
+        return cells[index] if index < len(cells) else None
+
+    def _inspector_section_index_for_cell(self, cell):
+        try:
+            return self.view_grid.visible_cells().index(cell)
+        except ValueError:
+            return None
 
     def _on_insight_activated(self, insight) -> None:
         """Shared navigation, now via the SelectionBus (V5-M1): publishing the
@@ -1642,8 +1688,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if not multiple_available:
             tooltip += " (Only temperature is available in demo-data mode.)"
         self.quantity_combo.setToolTip(tooltip)
-        for info in self._combo_quantity_list:
+        for i, info in enumerate(self._combo_quantity_list):
             self.quantity_combo.addItem(self._quantity_label(info))
+            item_tip = self._quantity_tooltip(info)
+            if item_tip:
+                self.quantity_combo.setItemData(i, item_tip, QtCore.Qt.ToolTipRole)
         self.quantity_combo.setEnabled(multiple_available)
         self.quantity_combo.currentIndexChanged.connect(self._on_quantity_changed)
         quantity_section.add_row(self.quantity_combo)
@@ -1777,8 +1826,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._combo_quantity_list = list(self.quantity_infos) + self._computed_quantity_infos()
         self.quantity_combo.blockSignals(True)
         self.quantity_combo.clear()
-        for info in self._combo_quantity_list:
+        for i, info in enumerate(self._combo_quantity_list):
             self.quantity_combo.addItem(self._quantity_label(info))
+            item_tip = self._quantity_tooltip(info)
+            if item_tip:
+                self.quantity_combo.setItemData(i, item_tip, QtCore.Qt.ToolTipRole)
         idx = next((i for i, info in enumerate(self._combo_quantity_list)
                     if info.key.quantity == current), 0)
         self.quantity_combo.setCurrentIndex(idx)
@@ -1921,6 +1973,21 @@ class MainWindow(QtWidgets.QMainWindow):
         # Computed fields aren't in QUANTITY_DISPLAY -- use their own label.
         return QUANTITY_DISPLAY.get(info.key.quantity, {}).get('label', info.label)
 
+    @staticmethod
+    def _quantity_tooltip(info) -> str:
+        """Per-item dropdown tooltip: the registry's own plain-language
+        "interpretation" (the same text quantities_panel.py already shows),
+        reused here so a technical label like "Dynamic pressure" or a
+        coordinate-heavy one like "Smoke — doorway (x = 0.25 m)" doesn't
+        require visiting that separate panel just to know what it means."""
+        from registry import get_quantity
+        q = get_quantity(info.key.quantity)
+        if not q.interpretation:
+            return ""
+        if info.key.quantity == SOOT_QUANTITY:
+            return f"{info.label} — {q.interpretation}"
+        return q.interpretation
+
     def _apply_quantity_display_defaults(self, quantity: str):
         """Re-applies the colormap/clim/label defaults for `quantity`
         (M2.1). Called right after self.current_quantity_key changes, so
@@ -1980,6 +2047,26 @@ class MainWindow(QtWidgets.QMainWindow):
         new_extent = self._extent_for(cell.case_index, cell.quantity_key)
         if new_extent != getattr(cell.view, "_extent", None):
             cell.view.set_extent(new_extent)
+        cell.view.set_room_outline(self._room_outline_for(cell))
+
+    def _room_outline_for(self, cell):
+        """The enclosed room's physical geometry (schematic.py's
+        room_overlay_geometry -- walls, door gap, vent states, the sidebar
+        diagram's own single source of truth) for a "slice" cell on the
+        y-normal plane, so the boundary/door/vents read clearly on the
+        heatmap itself rather than relying on however a given quantity's
+        colormap happens to render cells near the wall. None for any other
+        plane or cell type (those constants aren't validated there, and a
+        difference/ensemble cell has no single door/vent state to show --
+        same gating principle as everywhere else: never draw a guessed
+        outline)."""
+        key = cell.quantity_key
+        if cell.cell_type != "slice" or key is None or key.direction != 1:
+            return None
+        entry = next((e for e in (self.sim_data.manifest or []) if e.case_index == cell.case_index), None)
+        if entry is None:
+            return None
+        return room_overlay_geometry(entry.door, entry.vod, entry.voc)
 
     def _setup_cell_probe_and_isotherms(self, cell):
         """Wire the cursor probe and sync isotherm state (M2.6) -- call
@@ -1995,22 +2082,24 @@ class MainWindow(QtWidgets.QMainWindow):
         is the displayed quantity's reading at that point -- shown in the
         status bar rather than a floating tooltip, consistent with how
         _on_time_changed already reports "t = …s" there. Also mirrored,
-        large-type, into the Live Inspector (FireLab roadmap Phase 3) --
-        but only for the active cell, so a multi-view grid's other cells
-        don't fight over the one inspector panel."""
-        is_active = cell is self.view_grid.active_cell()
+        large-type, into that cell's own Inspector section (FireLab roadmap
+        Phase 3, extended for multi-cell comparison in V6 polish) -- each
+        visible cell has its own section, so they no longer fight over one
+        shared inspector panel."""
+        section_index = self._inspector_section_index_for_cell(cell)
+        section = self.inspector_stack.section(section_index) if section_index is not None else None
         if x is None:
             if not self.time_controller.is_playing():
                 self.statusBar().showMessage("Ready.")
-            if is_active:
-                self.inspector.set_probe(None, None, None)
+            if section is not None:
+                section.set_probe(None, None, None)
             return
         display = QUANTITY_DISPLAY.get(cell.quantity_key.quantity if cell.quantity_key else None)
         unit = display['unit'] if display else ""
         value_text = f"{value:.1f}{unit}" if value is not None else "—"
         self.statusBar().showMessage(f"x = {x:.3f} m, z = {z:.3f} m, value = {value_text}")
-        if is_active:
-            self.inspector.set_probe(x, z, value, unit)
+        if section is not None:
+            section.set_probe(x, z, value, unit)
 
     def _apply_contour_overlay_state(self, cell):
         """Sync one cell's contour overlays to their global View-menu
@@ -2084,6 +2173,7 @@ class MainWindow(QtWidgets.QMainWindow):
             colorbar_label=f"{display['label']} ({display['unit']})",
             extent=self._extent_for(cell.case_index, cell.quantity_key),
         )
+        cell.view.set_room_outline(self._room_outline_for(cell))
         self._setup_cell_probe_and_isotherms(cell)
         return data.shape[0]
 
@@ -2127,25 +2217,34 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _update_event_markers(self) -> None:
         """Event Timeline (V2 M1.3, enriched in V3-M2): auto-detected
-        markers on the scrubber for the active cell's scenario, now from
-        the events engine (ignition, hazard crossings, fastest heating,
-        peak, layer descent, stabilization) rather than the summary stats
-        alone. Also feeds the Inspector's Fire story list. Slice cells
-        showing TEMPERATURE only; any other quantity or cell type clears
-        both, matching the sparkline/narration calibration."""
-        cell = self.view_grid.active_cell()
-        show = (self.sim_data.manifest and cell.cell_type == "slice"
-                and cell.quantity_key is not None
-                and cell.quantity_key.quantity == "TEMPERATURE")
-        events = self._fire_events_for_case(cell.case_index) if show else []
+        markers on the scrubber for the *active* cell's scenario (the
+        scrubber is one shared widget, so it can only ever track one
+        cell), now from the events engine (ignition, hazard crossings,
+        fastest heating, peak, layer descent, stabilization) rather than
+        the summary stats alone. Also feeds every visible cell's own
+        Inspector section Fire story list (V6 polish: a 2+ cell comparison
+        grid used to only ever populate the active cell's story).
+        _fire_events_for_case always reads TEMPERATURE itself (see its own
+        docstring) and is cached per case_index, independent of what
+        quantity a cell currently displays -- so looping every visible cell
+        here costs nothing extra for cells sharing a scenario already seen."""
+        active_cell = self.view_grid.active_cell()
         fps = self.time_controller.timesteps_per_second
-        markers = [(ev.frame_index(fps), ev.statement) for ev in events
-                   if ev.frame_index(fps) is not None]
-        self.timeline.set_event_markers(markers)
-        # The inspector is built after the plot panel (which triggers the
-        # first marker update), so guard its first call.
-        if getattr(self, "inspector", None) is not None:
-            self.inspector.set_story(events, fps)
+        has_inspector = getattr(self, "inspector_stack", None) is not None
+        if has_inspector:
+            self.inspector_stack.ensure_count(len(self.view_grid.visible_cells()))
+        for i, cell in enumerate(self.view_grid.visible_cells()):
+            show = bool(self.sim_data.manifest and cell.cell_type == "slice"
+                        and cell.quantity_key is not None)
+            events = self._fire_events_for_case(cell.case_index) if show else []
+            if cell is active_cell:
+                markers = [(ev.frame_index(fps), ev.statement) for ev in events
+                           if ev.frame_index(fps) is not None]
+                self.timeline.set_event_markers(markers)
+            # The inspector is built after the plot panel (which triggers
+            # the first marker update), so guard its first call.
+            if has_inspector:
+                self.inspector_stack.section(i).set_story(events, fps)
 
     def _on_cell_created(self, cell):
         """A new grid cell was instantiated because the grid grew (M2.2.2).
@@ -2312,16 +2411,14 @@ class MainWindow(QtWidgets.QMainWindow):
         Relies on M1.2's disk cache making an already-warm store.get()
         ~1-6ms -- cheap enough to call directly here without stalling the
         GUI thread on every tick, for however many cells are visible."""
-        active_cell = self.view_grid.active_cell()
-        active_frame = None
+        frames = {}
         for cell in self.view_grid.visible_cells():
             try:
                 frame = self._frame_for_cell(cell, index)
             except Exception as e:  # noqa: BLE001 - one bad cell must not blank the rest
                 logger.warning("failed to fetch frame for grid cell (type=%s): %s", cell.cell_type, e)
                 continue
-            if cell is active_cell:
-                active_frame = frame
+            frames[id(cell)] = frame
             if frame is not None:
                 cinematic = cell.cell_type == "slice" and getattr(cell.view, "cinematic_enabled", False)
                 extra = {}
@@ -2350,7 +2447,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.analysis_timeline.set_index(index)
         current_time = index / self.time_controller.timesteps_per_second
         self.statusBar().showMessage(f"t = {current_time:.1f} s", 2000)
-        self._update_inspector(index, active_frame)
+        self._update_inspector(index, frames)
         # RC polish: broadcast the playback time so every bus-bound analysis
         # panel evolves in lockstep with the Live Viewer (both seeks and
         # playback ticks pass through here). Guarded against the echo of a
@@ -2368,73 +2465,100 @@ class MainWindow(QtWidgets.QMainWindow):
         axis = _AXIS_NAMES.get(slice_key.direction, f"axis {slice_key.direction}")
         return f"{axis}-normal, offset {slice_key.offset}"
 
-    def _update_inspector(self, index: int, active_frame=None) -> None:
-        """Keeps the Live Inspector in sync with the active cell. Static
-        metadata (scenario/quantity/grid size/slice/duration/frames) is
-        only rebuilt inside the `key != self._inspector_series_key` guard
-        below -- i.e. on a scenario/quantity/cell-type change, never per
-        tick. `active_frame` is the same array _on_time_changed's own loop
-        already computed via _frame_for_cell for this exact cell/index --
-        reused here for the dynamic min/max readout instead of re-fetching.
-        The peak-temperature sparkline/HRR gauge/narration stay calibrated
-        to "slice" cells showing TEMPERATURE specifically, same as before;
-        any other active cell (ensemble, or a quantity/cell-type combo the
-        narration isn't calibrated for) just leaves those three neutral."""
-        cell = self.view_grid.active_cell()
-        if cell is None or cell.cell_type not in ("slice", "difference") or not cell.quantity_key:
-            self.inspector.clear()
-            self.inspector.clear_difference_stats()
-            if self._inspector_series_key is not None:
-                self.inspector.set_static_info("—", "—", "—", "—", 0, 1.0)
-            self.inspector.set_time(index)
-            self._inspector_series_key = None
-            return
+    def _update_inspector(self, index: int, frames: dict = None) -> None:
+        """Keeps every visible cell's own Inspector section in sync (V6
+        polish: a 2+ cell comparison grid used to only ever show the
+        active cell's stats -- now each cell gets its own full section,
+        stacked in the InspectorStack). Static metadata (scenario/quantity/
+        grid size/slice/duration/frames) is only rebuilt inside each
+        section's own `key != self._inspector_series_key[i]` guard below --
+        i.e. on a scenario/quantity/cell-type change for THAT cell, never
+        per tick. `frames` is `{id(cell): frame}`, the same arrays
+        _on_time_changed's own loop already computed via _frame_for_cell
+        for this exact index -- reused here for the dynamic min/max readout
+        instead of re-fetching. The peak-temperature sparkline/HRR gauge
+        are always about TEMPERATURE and the scenario's own *_hrr.csv
+        respectively -- neither depends on which quantity a cell currently
+        displays, so both stay populated for any "slice" cell regardless of
+        its displayed quantity (re-reading TEMPERATURE separately only when
+        it isn't already the displayed quantity). Difference/ensemble cells
+        leave those two neutral -- there's no single scenario to narrate."""
+        frames = frames or {}
+        cells = self.view_grid.visible_cells()
+        self.inspector_stack.ensure_count(len(cells))
+        while len(self._inspector_series_key) < len(cells):
+            self._inspector_series_key.append(None)
 
-        quantity = cell.quantity_key.quantity
-        display = self._display_for(quantity)
-        if cell.cell_type == "slice":
-            key = ("slice", cell.case_index, cell.quantity_key)
-            scenario_label = self._scenario_label(cell.case_index)
-        else:
-            key = ("difference", cell.case_index_a, cell.case_index_b, cell.quantity_key)
-            scenario_label = f"{self._scenario_label(cell.case_index_a)} − {self._scenario_label(cell.case_index_b)}"
+        for i, cell in enumerate(cells):
+            section = self.inspector_stack.section(i)
+            frame = frames.get(id(cell))
+            if cell is None or cell.cell_type not in ("slice", "difference") or not cell.quantity_key:
+                section.clear()
+                section.clear_difference_stats()
+                if self._inspector_series_key[i] is not None:
+                    section.set_static_info("—", "—", "—", "—", 0, 1.0)
+                section.set_time(index)
+                self._inspector_series_key[i] = None
+                continue
 
-        if key != self._inspector_series_key:
-            self._inspector_series_key = key
+            quantity = cell.quantity_key.quantity
+            display = self._display_for(quantity)
             if cell.cell_type == "slice":
-                ref_data = self._field(self._store_for_cell(cell), cell.case_index, cell.quantity_key)
+                key = ("slice", cell.case_index, cell.quantity_key)
+                scenario_label = self._scenario_label(cell.case_index)
             else:
-                ref_data = self._field(self.controller.store, cell.case_index_a, cell.quantity_key)
-            self.inspector.set_static_info(
-                scenario_label, display.get('label', quantity.title()),
-                f"{ref_data.shape[1]} × {ref_data.shape[2]}",
-                self._slice_location_label(cell.quantity_key),
-                ref_data.shape[0], self.time_controller.timesteps_per_second,
-            )
-            if cell.cell_type == "slice" and quantity == "TEMPERATURE":
-                peak_by_frame = ref_data.reshape(ref_data.shape[0], -1).max(axis=1).tolist()
-                door_wide_open = self.controller.params.door == 1
-                self.inspector.set_scenario(peak_by_frame, QUANTITY_DISPLAY["TEMPERATURE"]["vmin"], door_wide_open)
+                key = ("difference", cell.case_index_a, cell.case_index_b, cell.quantity_key)
+                scenario_label = (f"{self._scenario_label(cell.case_index_a)} − "
+                                 f"{self._scenario_label(cell.case_index_b)}")
+
+            if key != self._inspector_series_key[i]:
+                self._inspector_series_key[i] = key
+                if cell.cell_type == "slice":
+                    ref_data = self._field(self._store_for_cell(cell), cell.case_index, cell.quantity_key)
+                else:
+                    ref_data = self._field(self.controller.store, cell.case_index_a, cell.quantity_key)
+                section.set_static_info(
+                    scenario_label, display.get('label', quantity.title()),
+                    f"{ref_data.shape[1]} × {ref_data.shape[2]}",
+                    self._slice_location_label(cell.quantity_key),
+                    ref_data.shape[0], self.time_controller.timesteps_per_second,
+                )
+                if cell.cell_type == "slice":
+                    if quantity == "TEMPERATURE":
+                        temp_data = ref_data
+                    else:
+                        try:
+                            temp_data = self._field(self._store_for_cell(cell), cell.case_index, DEFAULT_SLICE_KEY)
+                        except Exception as e:  # noqa: BLE001 - sparkline context is a nice-to-have, never fatal
+                            logger.warning("could not read TEMPERATURE for inspector context (case %s): %s",
+                                           cell.case_index, e)
+                            temp_data = None
+                    if temp_data is not None:
+                        peak_by_frame = temp_data.reshape(temp_data.shape[0], -1).max(axis=1).tolist()
+                        door_wide_open = self.controller.params.door == 1
+                        section.set_scenario(peak_by_frame, QUANTITY_DISPLAY["TEMPERATURE"]["vmin"], door_wide_open)
+                    else:
+                        section.clear()
+                else:
+                    section.clear()
+
+            hrr_fraction = None
+            if cell.cell_type == "slice":
+                intensity = self._hrr_intensity_for_cell(cell, index)
+                cached_hrr = self._hrr_cache.get(cell.case_index)
+                hrr_fraction = min(1.0, intensity) if cached_hrr else None
+
+            frame_min = frame_max = None
+            if frame is not None:
+                frame_min, frame_max = float(np.min(frame)), float(np.max(frame))
+            section.set_time(index, hrr_fraction, frame_min, frame_max, display.get('unit', ''))
+
+            if cell.cell_type == "difference" and frame is not None:
+                mean_v = float(np.mean(frame))
+                rms_v = float(np.sqrt(np.mean(np.square(frame))))
+                section.set_difference_stats(frame_min, frame_max, mean_v, rms_v, display.get('unit', ''))
             else:
-                self.inspector.clear()
-
-        hrr_fraction = None
-        if cell.cell_type == "slice" and quantity == "TEMPERATURE":
-            intensity = self._hrr_intensity_for_cell(cell, index)
-            cached_hrr = self._hrr_cache.get(cell.case_index)
-            hrr_fraction = min(1.0, intensity) if cached_hrr else None
-
-        frame_min = frame_max = None
-        if active_frame is not None:
-            frame_min, frame_max = float(np.min(active_frame)), float(np.max(active_frame))
-        self.inspector.set_time(index, hrr_fraction, frame_min, frame_max, display.get('unit', ''))
-
-        if cell.cell_type == "difference" and active_frame is not None:
-            mean_v = float(np.mean(active_frame))
-            rms_v = float(np.sqrt(np.mean(np.square(active_frame))))
-            self.inspector.set_difference_stats(frame_min, frame_max, mean_v, rms_v, display.get('unit', ''))
-        else:
-            self.inspector.clear_difference_stats()
+                section.clear_difference_stats()
 
     def _on_playing_changed(self, playing: bool):
         self.timeline.set_playing(playing)
@@ -2637,7 +2761,21 @@ class MainWindow(QtWidgets.QMainWindow):
         # _build_plot_panel's comment. Only meaningful (and only shown) in
         # single-view mode.
         self.toolbar.setVisible(layout_name == "1x1")
+        if layout_name == "2x1" and not getattr(self, "_link_clim", False):
+            # The stacked layout exists specifically to compare two
+            # scenarios directly, one above the other -- unlinked color
+            # scales would let the same value read as two different colors
+            # between them, defeating that. Auto-enable "Link color
+            # scales" (still a normal, user-toggleable checkbox afterward).
+            self._link_clim = True
+            if hasattr(self, "link_clim_action"):
+                self.link_clim_action.setChecked(True)
         self._apply_link_clim()
+        # A newly-grown cell's Inspector section starts with an empty Fire
+        # story (_on_cell_created only runs _init_cell_view) -- this is the
+        # one place that reliably fires whenever visible cell count changes,
+        # so it's where every section's story gets (re)populated.
+        self._update_event_markers()
         if not self.time_controller.is_playing():
             self._on_time_changed(self.time_controller.index)
 
@@ -2691,10 +2829,15 @@ class MainWindow(QtWidgets.QMainWindow):
             combo.setCurrentIndex(idx)
 
     def _apply_compare_preset(self, key: str) -> None:
-        """Compare page (FireLab roadmap Phase 4): jumps into the Live
-        page's own 1x2 grid, pre-configured as scenario A (slice) next to
-        A-B (difference) -- reusing the exact combo-driven signal chain a
-        user's own clicks already go through, not a second rendering path."""
+        """Compare page: jumps into the Live page's own grid, stacked
+        (2x1) with scenario A above scenario B, both shown as plain slices
+        of the preset's quantity -- switching to "2x1" auto-enables "Link
+        color scales" (see _set_grid_layout), so equal values render as
+        the same color between the two, directly comparable at a glance.
+        Reuses the exact combo-driven signal chain a user's own clicks
+        already go through, not a second rendering path. (A computed A-B
+        difference is still available by right-clicking a cell -- this
+        preset is about direct visual comparison, not a delta.)"""
         preset = _COMPARE_PRESETS.get(key)
         if preset is None or not self.sim_data.manifest:
             return
@@ -2711,7 +2854,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._applying_compare_preset = True
         try:
             self._navigate_to("live")
-            self._set_grid_layout("1x2")
+            self._set_grid_layout("2x1")
             cells = self.view_grid.visible_cells()
             if len(cells) < 2:
                 return
@@ -2722,10 +2865,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self._select_scenario_in_cell(cell_a, case_a)
             self._select_quantity_in_cell(cell_a, quantity_key)
 
-            if cell_b.cell_type != "difference":
-                cell_b.set_cell_type("difference")
-            self._select_difference_scenarios_in_cell(cell_b, case_a, case_b)
+            if cell_b.cell_type != "slice":
+                cell_b.set_cell_type("slice")
+            self._select_scenario_in_cell(cell_b, case_b)
             self._select_quantity_in_cell(cell_b, quantity_key)
+            self._apply_link_clim()
+            self._compare_active = True
         finally:
             self._applying_compare_preset = False
 
@@ -3121,6 +3266,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if store.is_cached(case_index, quantity_key):
             self._redraw_cell_now(cell)
             self._apply_link_clim()
+            self._refresh_inspector_now()
             return
         # A store_override (M3.2.5's PredictionSource) is always fully
         # loaded at construction, so is_cached() above is always True for
@@ -3128,6 +3274,23 @@ class MainWindow(QtWidgets.QMainWindow):
         # ScenarioStore.
         self._pending_cell_prefetches.add(cell)
         self.controller.prefetch(case_index, quantity_key)
+
+    def _refresh_inspector_now(self) -> None:
+        """Refresh every visible cell's Inspector section immediately (V6
+        polish) instead of waiting for the next playback tick/seek -- used
+        after a *non-active* cell's own scenario/quantity combo changes
+        (_load_cell/_on_grid_prefetch_finished), so a comparison grid's
+        Inspector sections never show a stale scenario (or fire story) after
+        a switch."""
+        index = self.time_controller.index
+        frames = {}
+        for cell in self.view_grid.visible_cells():
+            try:
+                frames[id(cell)] = self._frame_for_cell(cell, index)
+            except Exception:  # noqa: BLE001 - inspector refresh is a nice-to-have, never fatal
+                pass
+        self._update_inspector(index, frames)
+        self._update_event_markers()
 
     def _redraw_cell_now(self, cell):
         """Assumes cell.case_index/quantity_key are already cached."""
@@ -3161,6 +3324,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._redraw_cell_now(cell)
         if ready:
             self._apply_link_clim()
+            self._refresh_inspector_now()
 
     def _on_grid_prefetch_error(self, case_idx: int, message: str):
         """A background prefetch failed. No per-cell error UI (out of
@@ -3286,14 +3450,17 @@ class MainWindow(QtWidgets.QMainWindow):
             self._apply_contour_overlay_state(cell)  # quantity may have just changed
             cell.view.show_frame(frame)
 
-    def _show_difference_over_time(self):
+    def _show_difference_over_time(self, cell=None):
         """Inspector's "Plot difference over time…" button (V2 roadmap
-        M1.5): opens DifferenceOverTimeDialog for the active cell's
-        current A/B pair and quantity. Only meaningful while a difference
-        cell is active -- the button is hidden otherwise (see
+        M1.5): opens DifferenceOverTimeDialog for `cell`'s current A/B pair
+        and quantity -- the section that owns the clicked button passes its
+        own current cell (looked up by grid position at click time, see
+        _wire_inspector_section); falls back to the active cell for any
+        caller that doesn't know which cell it means. Only meaningful for a
+        difference cell -- the button is hidden otherwise (see
         InspectorPanel.clear_difference_stats), so this is a defensive
         guard, not the primary gate."""
-        cell = self.view_grid.active_cell()
+        cell = cell or self.view_grid.active_cell()
         if cell is None or cell.cell_type != "difference":
             return
         key = cell.quantity_key
@@ -3799,6 +3966,15 @@ class MainWindow(QtWidgets.QMainWindow):
         palette = THEMES[self._resolve_theme(self.current_theme_name)]
         self.setStyleSheet(build_qss(palette, self.ui_scale))
         self.schematic.apply_palette(palette)
+        self.schematic.set_ui_scale(self.ui_scale)
+        # Nothing inside a matplotlib canvas (colorbar ticks/label, the
+        # room overlay's line widths, ...) responded to UI Scale at all
+        # before this -- only the Qt-side chrome (QSS fonts/padding) did,
+        # so the plot itself looked completely unaffected by the setting.
+        # SliceView.set_ui_scale -> MplCanvas.set_dpi_scale scales the
+        # figure's DPI, which scales every point-sized artist together.
+        for cell in self.view_grid.visible_cells():
+            cell.view.set_ui_scale(self.ui_scale)
         self._refresh_toggle_icons(palette)
         # RC polish: every matplotlib plot follows the theme's chrome colors.
         from widgets import set_plot_theme
@@ -3837,7 +4013,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.door_toggle.set_palette(palette)
         self.vod_toggle.set_palette(palette)
         self.voc_toggle.set_palette(palette)
-        self.inspector.set_palette(palette)
+        self.inspector_stack.set_palette(palette)
 
     # -------------------------------------------------------- misc/window
     def _setup_shortcuts(self):

@@ -16,7 +16,7 @@ from __future__ import annotations
 import numpy as np
 from PyQt5 import QtCore, QtWidgets
 
-from widgets import MplCanvas
+from widgets import MplCanvas, plot_fg_color
 from slice_key import SliceKey
 from registry import get_quantity
 import field_calculator as fc
@@ -138,7 +138,7 @@ class CalculatorPanel(QtWidgets.QWidget):
                          f"max {data.max():.1f}", fontsize=8)
         except Exception as e:  # noqa: BLE001 - preview must never crash the panel
             ax.text(0.5, 0.5, str(e), ha="center", va="center", fontsize=8,
-                    wrap=True, transform=ax.transAxes)
+                    wrap=True, transform=ax.transAxes, color=plot_fg_color())
             ax.set_xticks([]); ax.set_yticks([])
         self.canvas.draw_idle()
 

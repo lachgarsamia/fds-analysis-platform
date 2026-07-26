@@ -183,12 +183,56 @@ _VOC_STATES = {0: "open", 1: "closed"}
 # vertical wall at x~0.27 and the ceiling at z~0.22, so it occupies the
 # bottom-right of the domain). The schematic mirrors the heatmap's own
 # orientation instead of an abstract top-down view.
+# ROOM_X/ROOM_Z are public (not module-private) -- views.py reuses them
+# to draw the same room outline directly on the Live Viewer's heatmap
+# (physical mesh geometry, so it's identical for every quantity/scenario
+# on a y-normal slice, not something to duplicate/hardcode a second time).
 _DOMAIN_X = (0.0, 1.0)
 _DOMAIN_Z = (0.0, 0.48)
-_ROOM_X = (0.27, 1.0)
-_ROOM_Z = (0.0, 0.22)
+ROOM_X = (0.27, 1.0)
+ROOM_Z = (0.0, 0.22)
 _CANDLE_X = (0.84, 0.96)      # candle burner x-band
 _DOMAIN_ASPECT = (_DOMAIN_Z[1] - _DOMAIN_Z[0]) / (_DOMAIN_X[1] - _DOMAIN_X[0])
+
+
+def room_overlay_geometry(door: int, vod: int, voc: int) -> dict:
+    """Physical-coordinate (meters) room geometry for the heatmap's room
+    overlay (views.py) -- the actual &HOLE/&VENT opening positions from
+    the FDS input deck (template.fds / the per-scenario .fds files),
+    not a proportional guess. Confirmed by reading a real scenario file:
+      &HOLE XB=0.25,0.29,...,-0.01,0.05  / Door (narrow, door=0)
+      &HOLE XB=0.25,0.29,...,-0.01,0.15  / Door (wide, door=1)
+      &HOLE XB=0.32,0.40,...,0.21,0.25   / vertical opening door  (VOD)
+      &HOLE XB=0.86,0.94,...,0.21,0.25   / vertical opening candle (VOC)
+    An earlier version used placeholder fractions (34%/64% across the
+    ceiling) that didn't match these real positions -- most visibly wrong
+    for VOC, which sits right next to the candle (x=0.92-0.96) at the
+    room's far edge, not the ceiling's middle, so a real fire plume
+    visibly passed the drawn vent without seeming to go through it.
+
+    Returns {"walls": [(x0,z0,x1,z1), ...], "door": (x0,z0,x1,z1),
+    "vents": [((x0,z0,x1,z1), state_name), ...]}."""
+    x0, x1 = ROOM_X
+    z0, z1 = ROOM_Z
+
+    door_bottom = z0  # HOLE's z0 is -0.01, i.e. right at the floor
+    door_top = door_bottom + (0.16 if door == 1 else 0.06)
+
+    walls = [
+        (x0, z0, x1, z0),             # floor
+        (x1, z0, x1, z1),             # right wall
+        (x0, z1, x1, z1),             # ceiling
+        (x0, z0, x0, door_bottom),    # left wall, below the door
+        (x0, door_top, x0, z1),       # left wall, above the door
+    ]
+    door_seg = (x0, door_bottom, x0, door_top)
+
+    vents = [
+        ((0.32, z1, 0.40, z1), _VOD_STATES.get(vod, "?")),   # vertical opening door
+        ((0.86, z1, 0.94, z1), _VOC_STATES.get(voc, "?")),   # vertical opening candle
+    ]
+
+    return {"walls": walls, "door": door_seg, "vents": vents}
 
 
 class SchematicWidget(QtWidgets.QWidget):
@@ -208,6 +252,7 @@ class SchematicWidget(QtWidgets.QWidget):
         self._vod = 0       # 0 open, 1 closed, 2 HVAC
         self._voc = 0       # 0 open, 1 closed
         self._palette = None
+        self._ui_scale = 1.0
         self.setMinimumHeight(90)
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
         self._update_accessible_description()
@@ -220,6 +265,16 @@ class SchematicWidget(QtWidgets.QWidget):
 
     def apply_palette(self, palette):
         self._palette = palette
+        self.update()
+
+    def set_ui_scale(self, scale: float) -> None:
+        """View -> UI Scale (accessibility zoom): this widget draws itself
+        entirely in paintEvent (no QSS-driven sizing/fonts reach it), so
+        without this it stayed a fixed size and caption font regardless of
+        the chosen scale while everything else around it grew/shrank."""
+        self._ui_scale = scale
+        self.setMinimumHeight(int(90 * scale))
+        self.updateGeometry()
         self.update()
 
     def update_state(self, candles: int, door: int, vod: int, voc: int):
@@ -252,11 +307,19 @@ class SchematicWidget(QtWidgets.QWidget):
         return _DOMAIN_ASPECT
 
     def sizeHint(self):
-        width = max(self.width(), 260)
-        return QtCore.QSize(width, max(90, int(width * self._aspect()) + 30))
+        width = max(self.width(), int(260 * self._ui_scale))
+        return QtCore.QSize(width, max(int(90 * self._ui_scale), int(width * self._aspect()) + 30))
 
     def heightForWidth(self, width: int) -> int:
-        return max(80, int(width * self._aspect()) + 30)
+        return max(int(80 * self._ui_scale), int(width * self._aspect()) + 30)
+
+    def hasHeightForWidth(self) -> bool:
+        # Without this, Qt's layout system never calls heightForWidth() at
+        # all (its default is False) -- the widget's height stayed frozen
+        # at whatever sizeHint() computed once at initial layout, so
+        # resizing the sidebar (or changing ui_scale, which resizes it too)
+        # left the room outline's proportions wrong instead of rescaling.
+        return True
 
     # -- painting -------------------------------------------------------------
     def paintEvent(self, event):
@@ -300,13 +363,21 @@ class SchematicWidget(QtWidgets.QWidget):
         painter.drawRect(domain_rect)
 
         # --- the room (smaller rectangle, bottom-right) ---------------------
-        room_tl = self._phys(domain_rect, _ROOM_X[0], _ROOM_Z[1])   # top-left (x wall, ceiling)
-        room_br = self._phys(domain_rect, _ROOM_X[1], _ROOM_Z[0])   # bottom-right (floor, right wall)
+        room_tl = self._phys(domain_rect, ROOM_X[0], ROOM_Z[1])   # top-left (x wall, ceiling)
+        room_br = self._phys(domain_rect, ROOM_X[1], ROOM_Z[0])   # bottom-right (floor, right wall)
         room_rect = QtCore.QRectF(room_tl, room_br)
         painter.setPen(QtCore.Qt.NoPen)
-        painter.setBrush(QtGui.QColor(palette.bg_sunken))
+        # bg_elevated (not bg_sunken) -- bg_sunken is *darker* than the
+        # domain's own bg_base in every theme, so the room (the part with
+        # the door/vents "openings") visually receded into the background
+        # instead of standing out as the diagram's main subject.
+        painter.setBrush(QtGui.QColor(palette.bg_elevated))
         painter.drawRect(room_rect)
-        wall = QtGui.QPen(QtGui.QColor(palette.border_strong), 2.4)
+        # text_primary (not border_strong) -- the room's own walls are the
+        # diagram's main subject, so they get the same high-contrast tone
+        # as body text rather than a subtle chrome-border gray that reads
+        # too faint against bg_sunken in both themes.
+        wall = QtGui.QPen(QtGui.QColor(palette.text_primary), 2.6)
 
         # left wall (with the door gap) and ceiling drawn as explicit walls;
         # floor and right wall are the plain room edges.
@@ -315,10 +386,13 @@ class SchematicWidget(QtWidgets.QWidget):
         painter.drawLine(room_rect.topRight(), room_rect.bottomRight())     # right wall
 
         # --- door on the LEFT wall, opening size by door state --------------
-        door_h_frac = 0.55 if self._door == 1 else 0.28   # wide vs narrow
+        # Real &HOLE z-range (see room_overlay_geometry's docstring): the
+        # opening reaches the floor (not 6% above it) and is 0.06m (narrow)
+        # or 0.16m (wide) tall, as a fraction of ROOM_Z's 0.22m room height.
+        door_h_frac = (0.16 if self._door == 1 else 0.06) / 0.22
         wall_x = room_rect.left()
         door_h = room_rect.height() * door_h_frac
-        door_bottom = room_rect.bottom() - room_rect.height() * 0.06
+        door_bottom = room_rect.bottom()
         door_top = door_bottom - door_h
         # wall segments above and below the opening
         painter.setPen(wall)
@@ -338,8 +412,12 @@ class SchematicWidget(QtWidgets.QWidget):
         ceiling_y = room_rect.top()
         painter.setPen(wall)
         painter.drawLine(room_rect.topLeft(), room_rect.topRight())  # ceiling
-        vent_w = room_rect.width() * 0.14
-        for frac, label in ((0.34, vod_label), (0.64, voc_label)):
+        # Real &HOLE x-ranges (see room_overlay_geometry's docstring): VOD
+        # sits near the door at x=0.32-0.40, VOC sits right next to the
+        # candle at x=0.86-0.94 -- as fractions of ROOM_X's 0.27-1.00 span,
+        # not the evenly-spaced 34%/64% placeholder this used to draw.
+        vent_w = room_rect.width() * (0.08 / 0.73)
+        for frac, label in (((0.36 - 0.27) / 0.73, vod_label), ((0.90 - 0.27) / 0.73, voc_label)):
             cx = room_rect.left() + room_rect.width() * frac
             vent_rect = QtCore.QRectF(cx - vent_w / 2, ceiling_y - 3, vent_w, 6)
             painter.setPen(QtGui.QPen(QtGui.QColor(palette.border_strong), 1))
@@ -358,13 +436,13 @@ class SchematicWidget(QtWidgets.QWidget):
         xs = [cx_mid] if n_candles == 1 else [cx_mid - span * 0.35, cx_mid + span * 0.35]
         flame_h = room_rect.height() * 0.42
         for x in xs:
-            base = self._phys(domain_rect, x, _ROOM_Z[0])
+            base = self._phys(domain_rect, x, ROOM_Z[0])
             draw_realistic_flame(painter, base.x(), base.y(), flame_h)
 
         # --- caption -------------------------------------------------------------
         painter.setPen(QtGui.QColor(palette.text_secondary))
         font = painter.font()
-        font.setPointSizeF(max(font.pointSizeF() * 0.8, 7))
+        font.setPointSizeF(max(font.pointSizeF() * 0.8, 7) * self._ui_scale)
         painter.setFont(font)
         caption = "Domain + room (side view)  ·  Door: {}  ·  Vent 1: {}  ·  Vent 2: {}  ·  {} candle{}".format(
             "wide" if self._door == 1 else "narrow", vod_label, voc_label,

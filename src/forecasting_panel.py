@@ -136,7 +136,6 @@ class ForecastingPanel(QtWidgets.QWidget):
             self._metrics_ax.set_ylabel("RMSE (°C)")
             self._metrics_ax.set_title("Model evaluation", fontsize=10, fontweight="bold")
         else:
-            self._metrics_ax.text(0.5, 0.5, "No evaluation metrics found", ha="center", va="center")
             self._metrics_ax.set_xticks([])
             self._metrics_ax.set_yticks([])
 

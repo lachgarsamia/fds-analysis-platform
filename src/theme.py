@@ -478,7 +478,13 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
         border-radius: {r_sm};
     }}
 
-    QScrollArea {{
+    /* QScrollArea's own frame is one widget, but its internal viewport
+    (and the content widget placed inside it, e.g. InspectorStack's
+    stacked sections) are separate child widgets Qt creates automatically
+    -- each defaults to an opaque native "Base" background unless matched
+    explicitly, the same fall-back-to-native-light-palette problem as
+    QTableView/GridCell/QTabWidget::pane elsewhere in this file. */
+    QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget {{
         border: none;
         background: transparent;
     }}
@@ -587,6 +593,32 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
         padding: {pad_xs};
     }}
 
+    /* Same fallback-to-native-palette problem as QTableView above, but for
+    every tree/list widget (Fire Narrative's event tree, InsightList's
+    reused summary rows across Devices/Context/Notebook/Reports/Graph,
+    experiment/session browsers, etc.) -- none of these were ever given an
+    explicit dark-aware rule, so their rows silently used the OS's native
+    text/background colors instead of this app's palette. */
+    QTreeWidget, QTreeView, QListWidget, QListView {{
+        background-color: {p.surface};
+        alternate-background-color: {p.bg_sunken};
+        color: {p.text_primary};
+        border: 1px solid {p.border};
+        border-radius: {r_lg};
+        outline: none;
+    }}
+
+    QTreeWidget::item, QTreeView::item, QListWidget::item, QListView::item {{
+        padding: {pad_xs};
+        color: {p.text_primary};
+    }}
+
+    QTreeWidget::item:selected, QTreeView::item:selected,
+    QListWidget::item:selected, QListView::item:selected {{
+        background-color: {p.accent};
+        color: {p.accent_text};
+    }}
+
     QHeaderView::section {{
         background-color: {p.bg_sunken};
         color: {p.text_secondary};
@@ -626,6 +658,17 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
         border-top-right-radius: {r_lg};
         font-weight: 700;
         font-size: {label};
+    }}
+
+    /* Same unstyled-widget-falls-back-to-native-light-palette problem as
+    GridCell/QTableView above: QTabWidget's content pane (pages/analysis.py's
+    Context/Dashboard/Hazard/Narrative/... sub-tabs) was never given an
+    explicit background, so it showed as a stray pale panel -- with its
+    child QLabels' theme-colored (light-on-dark-assuming) text nearly
+    invisible on top of it -- under the dark theme. */
+    QTabWidget::pane {{
+        background-color: {p.bg_base};
+        border: none;
     }}
 
     QTabBar::tab {{

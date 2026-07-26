@@ -21,7 +21,7 @@ from PyQt5 import QtCore, QtWidgets
 from matplotlib.patches import Rectangle
 from scipy.ndimage import map_coordinates
 
-from widgets import MplCanvas
+from widgets import MplCanvas, plot_fg_color
 from views import EnsemblePickerDialog
 
 MODES = ("point", "line", "region")
@@ -130,7 +130,8 @@ class TimeSeriesPanel(QtWidgets.QWidget):
 
         header = QtWidgets.QHBoxLayout()
         title = QtWidgets.QLabel("Time series")
-        title.setProperty("role", "section-title")
+        title.setProperty("role", 
+                          "section-title")
         header.addWidget(title)
         header.addStretch(1)
 
@@ -362,7 +363,7 @@ class TimeSeriesPanel(QtWidgets.QWidget):
         fig = self.plot_canvas.fig
         fig.clear()
         ax = fig.add_subplot(111)
-        ax.text(0.5, 0.5, text, ha="center", va="center", fontsize=9, wrap=True)
+        ax.text(0.5, 0.5, text, ha="center", va="center", fontsize=9, wrap=True, color=plot_fg_color())
         ax.set_xticks([])
         ax.set_yticks([])
         self.plot_canvas.draw_idle()

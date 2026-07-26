@@ -18,7 +18,7 @@ from __future__ import annotations
 import numpy as np
 from PyQt5 import QtCore, QtWidgets
 
-from widgets import MplCanvas
+from widgets import MplCanvas, plot_fg_color
 import study_analytics as sa
 import sensitivity as se
 
@@ -193,7 +193,7 @@ class SensitivityPanel(QtWidgets.QWidget):
         ax = fig.add_subplot(111)
         if fx == fy:
             ax.text(0.5, 0.5, "Choose two different factors.", ha="center",
-                    va="center", transform=ax.transAxes, fontsize=9)
+                    va="center", transform=ax.transAxes, fontsize=9, color=plot_fg_color())
             self.surface_canvas.draw_idle()
             return
         xs, ys, z = se.response_surface(self._table, response, fx, fy, settings)

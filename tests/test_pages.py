@@ -107,21 +107,58 @@ class TestMainWindowPageSwitching:
             window._navigate_to(key)
         window.close()
 
-    def test_compare_preset_configures_a_1x2_difference_grid(self, qapp):
+    def test_compare_preset_configures_a_stacked_linked_grid(self, qapp):
+        """Compare presets show scenario A above scenario B as two plain
+        slices (not a computed A-B difference) of the same quantity,
+        stacked (2x1) with color scales linked -- a direct visual
+        comparison, not a delta."""
         window = MainWindow(load_simulation_data())
         if window.sim_data.is_demo:
             pytest.skip("real dataset not present")
         window._apply_compare_preset("door")
         assert window._active_page_key == "live"
+        assert window.view_grid.layout_name == "2x1"
+        assert window._link_clim is True
         cells = window.view_grid.visible_cells()
         assert len(cells) == 2
         assert cells[0].cell_type == "slice"
+        assert cells[1].cell_type == "slice"
         assert cells[0].quantity_key.quantity == "VELOCITY"
-        assert cells[1].cell_type == "difference"
         assert cells[1].quantity_key.quantity == "VELOCITY"
         manifest = {e.case_index: e for e in window.sim_data.manifest}
-        a = manifest[cells[1].case_index_a]
-        b = manifest[cells[1].case_index_b]
+        a = manifest[cells[0].case_index]
+        b = manifest[cells[1].case_index]
         assert a.door != b.door
         assert (a.candles, a.vod, a.voc) == (b.candles, b.vod, b.voc)
+        window.close()
+
+    def test_reclicking_live_viewer_resets_a_leftover_compare_grid(self, qapp):
+        """Compare and the plain Live Viewer must be independent: a
+        preset's comparison grid must not stick around as "the" Live
+        Viewer -- re-clicking "Live Viewer" (even though it's already the
+        active page) is the user's way of asking for their own plain view
+        back."""
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window._apply_compare_preset("door")
+        assert len(window.view_grid.visible_cells()) == 2
+        assert window._compare_active is True
+
+        window._navigate_to("live")  # re-clicking the already-active nav entry
+
+        assert window._compare_active is False
+        assert window.view_grid.layout_name == "1x1"
+        assert len(window.view_grid.visible_cells()) == 1
+        window.close()
+
+    def test_navigating_away_and_back_to_live_resets_a_leftover_compare_grid(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window._apply_compare_preset("door")
+        window._navigate_to("analysis")
+        window._navigate_to("live")
+        assert window._compare_active is False
+        assert window.view_grid.layout_name == "1x1"
         window.close()

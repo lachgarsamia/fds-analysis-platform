@@ -206,8 +206,6 @@ class MultiPlanePanel(QtWidgets.QWidget):
             ax = fig.add_subplot(111)
             self._axes[name] = ax
             if data is None:
-                ax.text(0.5, 0.5, "gated -- no data for this plane", ha="center", va="center",
-                       fontsize=8, wrap=True, transform=ax.transAxes)
                 ax.set_xticks([]); ax.set_yticks([])
             else:
                 any_real = True

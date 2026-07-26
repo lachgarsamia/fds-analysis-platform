@@ -40,6 +40,13 @@ def _style_ax(ax) -> None:
         ax.title.set_color(_PLOT_THEME["fg"])
 
 
+def plot_fg_color() -> str:
+    """Current theme's plot foreground color, for ad-hoc ax.text() calls
+    (placeholder/guidance messages) that aren't covered by _style_ax's
+    spine/tick/label/title restyling."""
+    return _PLOT_THEME["fg"]
+
+
 def set_plot_theme(palette) -> None:
     """Point every plot at the palette's chrome colors. Updates rcParams (so
     axes created afterwards inherit them) and re-styles + redraws existing
@@ -141,6 +148,22 @@ class MplCanvas(FigureCanvas):
         super().resizeEvent(event)
         # The cached background no longer matches the new canvas size.
         self._background = None
+
+    def set_dpi_scale(self, scale: float) -> None:
+        """View -> UI Scale (accessibility zoom). The canvas widget's own
+        on-screen pixel footprint is set by Qt's layout (Expanding size
+        policy), not by the figure's DPI -- so raising DPI packs more
+        rendered detail into that same footprint, which is exactly what
+        "everything reads bigger" means for a matplotlib figure: font
+        sizes, line widths, and marker sizes are all specified in points,
+        and points-to-pixels is dpi-dependent. Previously nothing in this
+        canvas (colorbar ticks/label, room overlay lines, etc.) responded
+        to UI Scale at all -- only the Qt-side chrome (QSS fonts/padding)
+        did, so the plot itself looked completely unaffected by the
+        setting. A full draw (not blit_update) is required since this
+        changes what's rendered everywhere, not one animated artist."""
+        self.fig.set_dpi(self.DEFAULT_DPI * scale)
+        self.capture_background()
 
 
 class ToggleGroup(QtWidgets.QWidget):

@@ -189,15 +189,15 @@ class InspectorPanel(QtWidgets.QWidget):
         self.probe_label.setWordWrap(True)
         layout.addWidget(self.probe_label)
 
-        sparkline_caption = QtWidgets.QLabel("Peak temperature over time")
-        sparkline_caption.setProperty("role", "caption")
-        layout.addWidget(sparkline_caption)
+        self._sparkline_caption = QtWidgets.QLabel("Peak temperature over time")
+        self._sparkline_caption.setProperty("role", "caption")
+        layout.addWidget(self._sparkline_caption)
         self.sparkline = _Sparkline()
         layout.addWidget(self.sparkline)
 
-        hrr_caption = QtWidgets.QLabel("Heat release rate")
-        hrr_caption.setProperty("role", "caption")
-        layout.addWidget(hrr_caption)
+        self._hrr_caption = QtWidgets.QLabel("Heat release rate")
+        self._hrr_caption.setProperty("role", "caption")
+        layout.addWidget(self._hrr_caption)
         self.hrr_gauge = QtWidgets.QProgressBar()
         self.hrr_gauge.setRange(0, 100)
         self.hrr_gauge.setTextVisible(True)
@@ -217,9 +217,9 @@ class InspectorPanel(QtWidgets.QWidget):
 
         # Fire story (V3-M2): the scenario's detected events as a clickable
         # list, plus a live "current phase" line during playback.
-        story_caption = QtWidgets.QLabel("Fire story")
-        story_caption.setProperty("role", "caption")
-        layout.addWidget(story_caption)
+        self._story_caption = QtWidgets.QLabel("Fire story")
+        self._story_caption.setProperty("role", "caption")
+        layout.addWidget(self._story_caption)
         self.phase_label = QtWidgets.QLabel("")
         self.phase_label.setWordWrap(True)
         self.phase_label.setProperty("role", "value")
@@ -227,6 +227,17 @@ class InspectorPanel(QtWidgets.QWidget):
         self.story_list = InsightList()
         self.story_list.setMaximumHeight(150)
         layout.addWidget(self.story_list)
+
+        # V6 polish: full detail by default (unchanged single-cell Live
+        # Viewer behavior) -- InspectorStack switches a section to compact
+        # only when 2+ scenarios are being compared (see its ensure_count),
+        # since that's the case that needs each section's essentials
+        # (Scenario/Quantity/Live readout) to fit without heavy scrolling.
+        # The sparkline/HRR/narration/Fire story keep computing and
+        # updating underneath either way (set_compact only hides widgets,
+        # never stops feeding them), so switching back to full shows
+        # current data immediately, not stale placeholders.
+        self._compact = False
 
         layout.addStretch(1)
 
@@ -241,6 +252,23 @@ class InspectorPanel(QtWidgets.QWidget):
 
     def set_palette(self, palette) -> None:
         self.sparkline.set_color(palette.accent)
+
+    def set_compact(self, compact: bool) -> None:
+        """Show/hide the HRR/narration/Fire story block, keeping
+        Scenario/Quantity/Grid size/Slice/Duration/Frames + the Live
+        frame/min-max/probe readout + the peak-temperature sparkline (kept
+        visible even when compact -- comparing scenarios still wants that
+        curve, just not the HRR gauge/narration/Fire story). Hiding (not
+        removing) these widgets means they keep updating from underneath
+        -- toggling back to non-compact shows current data immediately, no
+        stale placeholder."""
+        self._compact = compact
+        expanded = not compact
+        self._sparkline_caption.setVisible(True)
+        self.sparkline.setVisible(True)
+        for w in (self._hrr_caption, self.hrr_gauge, self.hrr_state_label,
+                 self.narration_label, self._story_caption, self.phase_label, self.story_list):
+            w.setVisible(expanded)
 
     def set_static_info(self, scenario: str, quantity: str, grid_size: str,
                         slice_location: str, n_frames: int, fps: float) -> None:
@@ -286,15 +314,17 @@ class InspectorPanel(QtWidgets.QWidget):
 
     def set_story(self, events: list, fps: int) -> None:
         """Populate the Fire story list with a scenario's detected events
-        (V3-M2). `events` are insight.Insight objects from events.py; None
-        or [] clears the list (e.g. a non-temperature quantity)."""
+        (V3-M2), computed from TEMPERATURE regardless of which quantity the
+        cell currently displays. `events` are insight.Insight objects from
+        events.py; None or [] clears the list (e.g. a difference/ensemble
+        cell, which has no single scenario to narrate, or a scenario where
+        no events were detected)."""
         self._events = list(events or [])
         self._events_fps = max(1, fps)
         self.story_list.set_insights(self._events)
         # RC polish: an explicit empty-state instead of a blank grey list.
         self.phase_label.setText(
-            "" if self._events else "No fire events detected for this view "
-            "(temperature-based; other quantities have no story).")
+            "" if self._events else "No fire events detected for this scenario.")
 
     def set_story_index(self, index: int) -> None:
         """Update the live "current phase" line to the most recent event at
@@ -373,3 +403,73 @@ def _divider() -> QtWidgets.QFrame:
     line.setFrameShape(QtWidgets.QFrame.HLine)
     line.setFixedHeight(1)
     return line
+
+
+class InspectorStack(QtWidgets.QWidget):
+    """One InspectorPanel per visible grid cell, stacked vertically in a
+    scroll area (V6 polish: comparing 2+ cells needs each cell's own full
+    detail, not just whichever one is "active" -- the single-InspectorPanel
+    design couldn't show more than one scenario's stats at a time). Grows
+    lazily and hides extra sections rather than destroying them, same
+    convention as GridLayout's _grow_to/_place_cells, so switching layouts
+    back and forth never loses a section's state. Section 0 is never
+    hidden/destroyed, so callers that only ever cared about "the" inspector
+    (single-cell layouts) can keep holding a direct reference to it."""
+
+    section_added = QtCore.pyqtSignal(int, object)  # index, new InspectorPanel
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        outer.addWidget(scroll)
+
+        content = QtWidgets.QWidget()
+        self._layout = QtWidgets.QVBoxLayout(content)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(4)
+        self._layout.addStretch(1)
+        scroll.setWidget(content)
+
+        self._sections: list = []   # [(label QLabel, InspectorPanel), ...]
+
+    def _add_section(self) -> None:
+        label = QtWidgets.QLabel()
+        label.setProperty("role", "section-title")
+        panel = InspectorPanel()
+        insert_at = self._layout.count() - 1   # before the trailing stretch
+        self._layout.insertWidget(insert_at, label)
+        self._layout.insertWidget(insert_at + 1, panel)
+        self._sections.append((label, panel))
+        self.section_added.emit(len(self._sections) - 1, panel)
+
+    def ensure_count(self, n: int) -> None:
+        """Grow to at least `n` sections if needed, then show exactly the
+        first `n` (hiding, never destroying, any extra). Per-section "Cell
+        N" labels only show once there's more than one. A single visible
+        section (the Live Viewer's normal 1x1 case) always gets full detail
+        -- comparing 2+ scenarios switches every visible section to
+        InspectorPanel.set_compact so they fit without heavy scrolling."""
+        n = max(1, n)
+        while len(self._sections) < n:
+            self._add_section()
+        for i, (label, panel) in enumerate(self._sections):
+            visible = i < n
+            panel.setVisible(visible)
+            label.setVisible(visible and n > 1)
+            if visible:
+                label.setText(f"Cell {i + 1}")
+                panel.set_compact(n > 1)
+
+    def section(self, i: int) -> InspectorPanel:
+        return self._sections[i][1]
+
+    def count(self) -> int:
+        return len(self._sections)
+
+    def set_palette(self, palette) -> None:
+        for _label, panel in self._sections:
+            panel.set_palette(palette)

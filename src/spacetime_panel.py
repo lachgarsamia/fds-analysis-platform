@@ -249,8 +249,6 @@ class SpaceTimePanel(QtWidgets.QWidget):
             fig = canvas.fig
             fig.clear()
             ax = fig.add_subplot(111)
-            ax.text(0.5, 0.5, "gated -- no data for this plane", ha="center", va="center",
-                   fontsize=8, wrap=True, transform=ax.transAxes)
             ax.set_xticks([]); ax.set_yticks([])
             canvas.draw_idle()
 

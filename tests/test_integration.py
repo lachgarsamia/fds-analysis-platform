@@ -336,6 +336,137 @@ class TestIntegration:
         assert not image.isNull()
         window.close()
 
+    def test_schematic_has_height_for_width_and_grows_with_ui_scale(self, qapp):
+        """Bug found live: the schematic implemented heightForWidth() but
+        never overrode hasHeightForWidth() (Qt's layout system ignores
+        heightForWidth entirely without it, default False) -- its height
+        stayed frozen at whatever sizeHint() computed once at startup
+        instead of rescaling with the sidebar. Also verifies UI Scale
+        (accessibility zoom) actually grows the widget -- it draws itself
+        entirely in paintEvent, so no QSS-driven sizing reaches it without
+        set_ui_scale."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        assert window.schematic.hasHeightForWidth() is True
+        assert window.schematic.heightForWidth(400) > window.schematic.heightForWidth(200)
+
+        # A tiny width parameter makes heightForWidth's ui_scale-driven
+        # minimum floor the dominant term (the aspect-based term shrinks to
+        # near nothing), isolating what set_ui_scale actually controls from
+        # the real layout's own (test-environment-dependent) current width.
+        # Pinned to a known baseline first -- ui_scale persists in QSettings
+        # across runs, so a prior manual session could leave it non-default.
+        window._set_ui_scale(1.0)
+        before = window.schematic.heightForWidth(1)
+        window._set_ui_scale(2.0)
+        after = window.schematic.heightForWidth(1)
+        assert after > before
+        assert window.schematic._ui_scale == 2.0
+        # QSettings is shared with the real app (not test-isolated) --
+        # restore the default so this test doesn't leave the real app at
+        # 2x scale the next time someone actually launches it.
+        window._set_ui_scale(1.0)
+        window.close()
+
+    def test_room_outline_drawn_on_default_y_normal_slice(self, qapp):
+        """Live-polish request: the room's physical boundary -- walls minus
+        the door gap, the door opening, and the two vents -- is drawn
+        directly on the heatmap for the default (y-normal) slice, matching
+        the sidebar diagram's own geometry, not just a plain closed box."""
+        from schematic import ROOM_X, ROOM_Z
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        view = window.view_grid.active_cell().view
+        wall_segs = view.room_walls.get_segments()
+        assert len(wall_segs) == 5           # floor, ceiling, right wall, 2 left-wall pieces
+        assert len(view.room_door.get_segments()) == 1
+        assert len(view.room_vents.get_segments()) == 2
+        xs = [p[0] for seg in wall_segs for p in seg]
+        zs = [p[1] for seg in wall_segs for p in seg]
+        assert min(xs) == pytest.approx(ROOM_X[0])
+        assert max(xs) == pytest.approx(ROOM_X[1])
+        assert min(zs) == pytest.approx(ROOM_Z[0])
+        assert max(zs) == pytest.approx(ROOM_Z[1])
+        window.close()
+
+    def test_room_outline_hidden_for_non_y_normal_or_non_slice_cell(self, qapp):
+        """ROOM_X/ROOM_Z are only validated for the y-normal plane, and a
+        difference/ensemble cell has no single door/vent state -- both
+        must hide the overlay rather than draw a guessed one (same gating
+        principle used everywhere else in the app)."""
+        import types
+        from slice_key import SliceKey
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        wrong_plane = types.SimpleNamespace(
+            cell_type="slice", quantity_key=SliceKey("SOOT DENSITY", 0, 0, 0.25), case_index=0)
+        assert window._room_outline_for(wrong_plane) is None
+        diff_cell = types.SimpleNamespace(
+            cell_type="difference", quantity_key=SliceKey("TEMPERATURE", 1, 0), case_index=0)
+        assert window._room_outline_for(diff_cell) is None
+        window.close()
+
+    def test_room_overlay_geometry_reflects_door_and_vent_state(self, qapp):
+        """Pure-function unit test: room_overlay_geometry's door segment
+        grows with the wide-door state, and its vent colors track
+        open/closed/HVAC -- the same proportional placement
+        SchematicWidget._paint draws, just as physical-coordinate numbers."""
+        from schematic import room_overlay_geometry
+
+        narrow = room_overlay_geometry(door=0, vod=0, voc=0)
+        wide = room_overlay_geometry(door=1, vod=0, voc=0)
+        narrow_h = narrow["door"][3] - narrow["door"][1]
+        wide_h = wide["door"][3] - wide["door"][1]
+        assert wide_h > narrow_h
+
+        geo = room_overlay_geometry(door=1, vod=1, voc=0)  # vod closed, voc open
+        (_seg0, state0), (_seg1, state1) = geo["vents"]
+        assert state0 == "closed" and state1 == "open"
+
+    def test_room_overlay_vent_and_door_positions_match_real_fds_geometry(self, qapp):
+        """Bug found live: vents were drawn at placeholder fractions (34%/
+        64% evenly across the ceiling) that didn't match reality -- most
+        visibly wrong for VOC, drawn mid-ceiling when the real opening
+        (confirmed by reading fds/sim/*/*.fds's &HOLE lines) sits right
+        next to the candle at the room's far edge, so a real fire plume
+        visibly passed the drawn vent without seeming to go through it.
+        Pins the fix to the exact real coordinates so it can't regress."""
+        from schematic import room_overlay_geometry
+        geo = room_overlay_geometry(door=0, vod=0, voc=0)
+        (vod_seg, _vod_state), (voc_seg, _voc_state) = geo["vents"]
+        assert (vod_seg[0], vod_seg[2]) == pytest.approx((0.32, 0.40))
+        assert (voc_seg[0], voc_seg[2]) == pytest.approx((0.86, 0.94))
+
+        narrow = room_overlay_geometry(door=0, vod=0, voc=0)
+        wide = room_overlay_geometry(door=1, vod=0, voc=0)
+        assert narrow["door"][1] == pytest.approx(0.0)         # reaches the floor
+        assert narrow["door"][3] - narrow["door"][1] == pytest.approx(0.06)
+        assert wide["door"][3] - wide["door"][1] == pytest.approx(0.16)
+
+    def test_heatmap_plot_scales_with_ui_scale(self, qapp):
+        """Bug found live: nothing inside a matplotlib canvas (colorbar
+        ticks/label, the room overlay's line widths, ...) responded to
+        View -> UI Scale at all -- only the Qt-side chrome (QSS fonts/
+        padding) did, so the plot itself looked completely unaffected by
+        the setting. Fixed via MplCanvas.set_dpi_scale: raising the
+        figure's DPI packs more rendered detail into the same on-screen
+        widget footprint, scaling every point-sized artist together
+        (fonts, line widths, markers) instead of hand-tuning one overlay
+        in isolation."""
+        from widgets import MplCanvas
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        canvas = window.view_grid.active_cell().view.canvas
+        window._set_ui_scale(1.0)
+        assert canvas.fig.dpi == pytest.approx(MplCanvas.DEFAULT_DPI)
+        window._set_ui_scale(2.0)
+        assert canvas.fig.dpi == pytest.approx(MplCanvas.DEFAULT_DPI * 2.0)
+        window._set_ui_scale(1.0)  # QSettings is shared with the real app -- restore default
+        window.close()
+
     def test_plain_language_labels_present_no_bare_jargon(self, qapp):
         """Every scenario-toggle section must carry a plain-language label,
         not just the raw VOD/VOC variable name (M1.6.4, core requirement)."""
@@ -1664,7 +1795,11 @@ class TestEventTimeline:
         assert all(0 <= frame < n for frame, _l in markers)
         window.close()
 
-    def test_velocity_quantity_clears_markers(self, qapp):
+    def test_velocity_quantity_keeps_markers(self, qapp):
+        """Fire events are always computed from TEMPERATURE (see
+        _fire_events_for_case), independent of which quantity the cell
+        currently displays -- switching to VELOCITY must not blank the
+        scrubber's event markers."""
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo:
@@ -1675,10 +1810,11 @@ class TestEventTimeline:
         if velocity_idx is None:
             window.close()
             return
+        before = window.timeline.marker_bar.markers
         window.quantity_combo.setCurrentIndex(velocity_idx)
         _drain_workers(qapp, window.controller._prefetch_workers)
         qapp.processEvents()
-        assert window.timeline.marker_bar.markers == []
+        assert window.timeline.marker_bar.markers == before
         window.close()
 
     def test_marker_click_seeks_playback(self, qapp):
@@ -2109,7 +2245,10 @@ class TestFireStory:
         assert "Now:" in window.inspector.phase_label.text()
         window.close()
 
-    def test_story_cleared_for_non_temperature_quantity(self, qapp):
+    def test_story_kept_for_non_temperature_quantity(self, qapp):
+        """The fire story is always TEMPERATURE-derived (see
+        _fire_events_for_case), independent of the cell's displayed
+        quantity -- switching to VELOCITY must not blank it."""
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo:
@@ -2120,10 +2259,11 @@ class TestFireStory:
         if vel_idx is None:
             window.close()
             return
+        before = window.inspector.story_list.count()
         window.quantity_combo.setCurrentIndex(vel_idx)
         _drain_workers(qapp, window.controller._prefetch_workers)
         qapp.processEvents()
-        assert window.inspector.story_list.count() == 0
+        assert window.inspector.story_list.count() == before
         window.close()
 
 
@@ -4270,4 +4410,176 @@ class TestMultiPlaneLinkedCrossSections:
         sel = window.selection_bus.current
         assert sel.point[0] == pytest.approx(0.7)
         assert sel.depth == pytest.approx(0.4)
+        window.close()
+
+
+class TestMultiCellInspector:
+    """V6 polish: comparing 2+ scenarios used to only ever show the active
+    cell's stats in the Inspector -- InspectorStack gives each visible cell
+    its own full section instead."""
+
+    def test_1x1_layout_has_one_visible_section(self, qapp):
+        window = MainWindow(load_simulation_data())
+        assert window.inspector_stack.count() == 1
+        assert window.inspector_stack.section(0) is window.inspector
+        window.close()
+
+    def test_1x2_layout_grows_a_second_section_with_its_own_scenario(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window._set_grid_layout("1x2")
+        cells = window.view_grid.visible_cells()
+        assert len(cells) == 2
+        cells[1].scenario_combo.setCurrentIndex(5)  # a distinct scenario for cell 2
+        qapp.processEvents()
+        window._on_time_changed(0)
+
+        assert window.inspector_stack.count() == 2
+        sec0, sec1 = window.inspector_stack.section(0), window.inspector_stack.section(1)
+        assert sec0 is not sec1
+        assert sec0._static_labels["Scenario"].text() == window._scenario_label(cells[0].case_index)
+        assert sec1._static_labels["Scenario"].text() == window._scenario_label(cells[1].case_index)
+        assert sec1._static_labels["Scenario"].text() != sec0._static_labels["Scenario"].text()
+        window.close()
+
+    def test_both_sections_populate_sparkline_hrr_and_story(self, qapp):
+        """Each section is a real InspectorPanel, so the earlier fix (peak-
+        temperature sparkline/HRR/fire-story available for any slice cell,
+        not just the active one) applies to every section, not just the
+        first."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window._set_grid_layout("1x2")
+        cells = window.view_grid.visible_cells()
+        vel_idx = next((i for i, info in enumerate(window.quantity_infos)
+                       if info.key.quantity == "VELOCITY"), None)
+        if vel_idx is not None:
+            cells[1].quantity_combo.setCurrentIndex(vel_idx)
+            qapp.processEvents()
+        window._on_time_changed(5)
+
+        for i in range(2):
+            section = window.inspector_stack.section(i)
+            assert len(section._series) > 0
+            assert section.story_list.count() > 0
+        window.close()
+
+    def test_shrinking_back_to_1x1_hides_but_keeps_second_section(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window._set_grid_layout("1x2")
+        window._on_time_changed(0)
+        second = window.inspector_stack.section(1)
+        window._set_grid_layout("1x1")
+        assert window.inspector_stack.count() == 2  # never destroyed
+        assert not second.isVisible()
+        window.close()
+
+    def test_hover_probe_updates_the_hovered_cells_own_section_only(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window._set_grid_layout("1x2")
+        cells = window.view_grid.visible_cells()
+        window._on_cell_probe(cells[1], 0.3, 0.2, 123.4)
+        assert "123.4" in window.inspector_stack.section(1).probe_label.text()
+        assert "Hover the plot" in window.inspector_stack.section(0).probe_label.text()
+        window.close()
+
+    def test_single_cell_inspector_stays_full_detail(self, qapp):
+        """The plain Live Viewer (1x1, by far the common case) must show
+        everything it always has -- sparkline/HRR/narration/Fire story --
+        unchanged. Compact mode is only for comparing 2+ scenarios (see
+        test_comparison_grid_switches_inspector_to_compact below)."""
+        window = MainWindow(load_simulation_data())
+        window.show()
+        panel = window.inspector
+        assert panel._compact is False
+        assert panel.sparkline.isVisible()
+        assert panel.hrr_gauge.isVisible()
+        assert panel.story_list.isVisible()
+        assert panel.narration_label.isVisible()
+        assert panel.frame_label.isVisible()
+        assert panel.probe_label.isVisible()
+        window.close()
+
+    def test_comparison_grid_switches_inspector_to_compact(self, qapp):
+        """Live-polish request: when comparing 2+ scenarios, each section
+        shows just Scenario/Quantity/Grid size/Slice/Duration/Frames + the
+        Live readout + the peak-temperature sparkline (kept visible even
+        compact, per a follow-up request) -- the HRR gauge/narration/Fire
+        story are hidden (not removed; they still compute underneath, see
+        InspectorPanel.set_compact), so both fit without heavy scrolling.
+        Dropping back to a single cell restores full detail."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        window.show()
+        if sim_data.is_demo:
+            window.close()
+            return
+        window._set_grid_layout("2x1")
+        for i in range(window.inspector_stack.count()):
+            section = window.inspector_stack.section(i)
+            assert section._compact is True
+            assert section.sparkline.isVisible()
+            assert not section.hrr_gauge.isVisible()
+            assert not section.story_list.isVisible()
+        window._set_grid_layout("1x1")
+        assert window.inspector._compact is False
+        assert window.inspector.sparkline.isVisible()
+        window.close()
+
+    def test_2x1_layout_auto_links_color_scales(self, qapp):
+        """The stacked layout exists to compare two scenarios directly --
+        unlinked color scales would let equal values render as different
+        colors between them. Switching to "2x1" turns on "Link color
+        scales" automatically (still a normal toggle afterward)."""
+        window = MainWindow(load_simulation_data())
+        assert getattr(window, "_link_clim", False) is False
+        window._set_grid_layout("2x1")
+        assert window._link_clim is True
+        assert window.link_clim_action.isChecked()
+        window.close()
+
+
+class TestQuantityDropdownTooltips:
+    """Live-polish request: technical/coordinate-heavy quantity labels
+    (e.g. "Dynamic pressure", "Smoke — doorway (x = 0.25 m)") get the
+    registry's own plain-language "interpretation" as a per-item dropdown
+    tooltip, reusing quantities_panel.py's existing explanatory text
+    instead of requiring a trip to that separate panel."""
+
+    def test_main_quantity_combo_items_carry_interpretation_tooltips(self, qapp):
+        window = MainWindow(load_simulation_data())
+        from registry import get_quantity
+        found_any = False
+        for i, info in enumerate(window._combo_quantity_list):
+            interpretation = get_quantity(info.key.quantity).interpretation
+            tip = window.quantity_combo.itemData(i, QtCore.Qt.ToolTipRole)
+            if interpretation:
+                found_any = True
+                assert interpretation in tip
+        assert found_any, "at least one real quantity should have an interpretation"
+        window.close()
+
+    def test_grid_cell_quantity_combo_items_carry_tooltips(self, qapp):
+        window = MainWindow(load_simulation_data())
+        cell = window.view_grid.active_cell()
+        from registry import get_quantity
+        for i, (_label, key) in enumerate(cell._quantity_options):
+            interpretation = get_quantity(key.quantity).interpretation
+            if interpretation:
+                tip = cell.quantity_combo.itemData(i, QtCore.Qt.ToolTipRole)
+                assert tip
         window.close()

@@ -370,7 +370,7 @@ class VelocityPanel(QtWidgets.QWidget):
                     # below renders exactly as before (graceful fallback).
                     xs, zs, us, ws, vs = field.quiver_at_3d(
                         frame_index, density=self.density_spin.value())
-                    q3d = ax.quiver(xs, zs, us, ws, vs, cmap="coolwarm",
+                    q3d = ax.quiver(xs, zs, us, ws, vs, cmap=get_quantity("V-VELOCITY").cmap,
                                     angles="xy", scale_units="xy", width=0.004)
                     self.canvas.fig.colorbar(q3d, ax=ax, fraction=0.046, pad=0.04,
                                              label="V-VELOCITY (m/s, through-plane)")

@@ -16,6 +16,7 @@ from PyQt5 import QtCore, QtWidgets
 
 from widgets import MplCanvas
 from config import QUANTITY_DISPLAY, FRAMES_PER_SECOND
+from registry import get_quantity
 from theme import RADIUS
 from cinema.pipeline import EffectsPipeline
 from cinema.interp import lerp_frames
@@ -33,6 +34,21 @@ _NOMINAL_TICK_MS = 1000.0 / FRAMES_PER_SECOND
 # only reads as "fire floating in a dark room" against a near-black axes
 # background, not the plot area's normal white (MplCanvas.PLOT_BG).
 CINEMA_BG = "#0B0D12"
+
+# Room overlay vent colors (Live polish): matches schematic.py's own
+# open/closed/HVAC semantics (palette.success/text_disabled/warning),
+# but as fixed hex values -- the overlay sits on a science heatmap, not
+# app chrome, so it uses the same "always-legible regardless of theme"
+# convention as the heatmap's other fixed-color overlays (device markers,
+# hover ring), not the app's light/dark palette.
+_VENT_STATE_COLORS = {"open": "#22C55E", "closed": "#94A3B8", "HVAC": "#F59E0B"}
+
+# Room overlay base line widths at ui_scale=1.0 -- SliceView.set_ui_scale
+# multiplies these, so both init_plot (construction) and set_ui_scale
+# (later changes) agree on the same unscaled numbers.
+_ROOM_WALL_LW = 1.4
+_ROOM_DOOR_LW = 2.6
+_ROOM_VENT_LW = 4.0
 
 
 class PlotView(Protocol):
@@ -144,6 +160,21 @@ class SliceView:
         # panel (e.g. the Context Panel) hovers a device/probe row. Never
         # touches selection_bus -- a pure visual highlight, not a selection.
         self.hover_highlight = None
+        # Room overlay (Live polish): the enclosed room's physical boundary
+        # (schematic.py's room_overlay_geometry/ROOM_X/ROOM_Z, the same
+        # single source of truth the sidebar diagram already draws door/
+        # vent openings from), so it reads clearly on the heatmap regardless
+        # of how the current quantity's colormap happens to render near-
+        # zero/wall-adjacent cells. Three artists, not one plain rectangle,
+        # so the door gap and vent states are visible too, not just a closed
+        # box: room_walls (solid boundary minus the door gap), room_door
+        # (the opening, its own color), room_vents (2 short segments,
+        # colored by open/closed/HVAC). Only meaningful on the y-normal
+        # plane those constants describe; set_room_outline(None) hides all
+        # three for any other plane.
+        self.room_walls = None
+        self.room_door = None
+        self.room_vents = None
 
     def widget(self) -> QtWidgets.QWidget:
         return self.canvas
@@ -185,6 +216,15 @@ class SliceView:
         # ember_scatter/device_scatter above.
         self.hover_highlight = self.ax.scatter([], [], s=220, marker="o", facecolors="none",
                                                edgecolors="#FDE047", linewidths=2.0, zorder=10)
+        # Room overlay: empty until set_room_outline() gives it real
+        # segments, same "always present, empty by default" convention.
+        self.room_walls = LineCollection([], linewidths=_ROOM_WALL_LW, linestyle="--",
+                                         colors="#FFFFFF", zorder=6)
+        self.ax.add_collection(self.room_walls)
+        self.room_door = LineCollection([], linewidths=_ROOM_DOOR_LW, colors="#38BDF8", zorder=6)
+        self.ax.add_collection(self.room_door)
+        self.room_vents = LineCollection([], linewidths=_ROOM_VENT_LW, zorder=6)
+        self.ax.add_collection(self.room_vents)
         self.ax.set_xticks([])
         self.ax.set_yticks([])
         self.canvas.fig.subplots_adjust(top=0.97, bottom=0.03, left=0.02, right=0.95)
@@ -254,12 +294,45 @@ class SliceView:
 
     def _animated_artists(self) -> list:
         artists = [self.heatmap, self.ember_scatter, self.device_scatter,
-                  self.streamline_collection, self.hover_highlight]
+                  self.streamline_collection, self.hover_highlight,
+                  self.room_walls, self.room_door, self.room_vents]
         if self.velocity_quiver is not None:
             artists.append(self.velocity_quiver)
         if self.true_vector_quiver is not None:
             artists.append(self.true_vector_quiver)
         return artists
+
+    def set_room_outline(self, geometry) -> None:
+        """`geometry` is schematic.room_overlay_geometry()'s return dict
+        (walls minus the door gap, the door opening, the two vents with
+        their open/closed/HVAC state) in the same physical-meter
+        coordinates as this view's extent, or None to hide -- MainWindow
+        only ever passes real geometry on the y-normal plane ROOM_X/ROOM_Z
+        describe, matching this app's gating convention of never drawing
+        something that isn't actually known for the current plane."""
+        if geometry is None:
+            self.room_walls.set_segments([])
+            self.room_door.set_segments([])
+            self.room_vents.set_segments([])
+            return
+        self.room_walls.set_segments([[(x0, z0), (x1, z1)] for x0, z0, x1, z1 in geometry["walls"]])
+        dx0, dz0, dx1, dz1 = geometry["door"]
+        self.room_door.set_segments([[(dx0, dz0), (dx1, dz1)]])
+        vent_segs, vent_colors = [], []
+        for (x0, z0, x1, z1), state in geometry["vents"]:
+            vent_segs.append([(x0, z0), (x1, z1)])
+            vent_colors.append(_VENT_STATE_COLORS.get(state, "#94A3B8"))
+        self.room_vents.set_segments(vent_segs)
+        self.room_vents.set_color(vent_colors)
+
+    def set_ui_scale(self, scale: float) -> None:
+        """View -> UI Scale (accessibility zoom): delegates to the canvas's
+        DPI scaling (see MplCanvas.set_dpi_scale), which scales everything
+        in the figure together -- colorbar ticks/label, the room overlay's
+        line widths, any other point-sized artist -- instead of hand-tuning
+        one overlay's line widths in isolation (which would now double-
+        scale on top of the DPI change if left in place)."""
+        self.canvas.set_dpi_scale(scale)
 
     def set_device_markers(self, markers: list) -> None:
         """markers: [(x, z, color), ...] physical positions (V6-M2 Virtual
@@ -1195,8 +1268,14 @@ class GridCell(QtWidgets.QWidget):
         combo = QtWidgets.QComboBox()
         combo.setAccessibleName("Cell quantity")
         combo.setToolTip("Which quantity this cell displays")
-        for label, _key in self._quantity_options:
+        for i, (label, key) in enumerate(self._quantity_options):
             combo.addItem(label)
+            # Registry's own plain-language "interpretation" (same text
+            # quantities_panel.py shows) as a per-item dropdown tooltip, so
+            # a technical label doesn't require visiting that panel separately.
+            interpretation = get_quantity(key.quantity).interpretation
+            if interpretation:
+                combo.setItemData(i, interpretation, QtCore.Qt.ToolTipRole)
         combo.setEnabled(len(self._quantity_options) > 1)
         idx = next((i for i, (_l, k) in enumerate(self._quantity_options) if k == self.quantity_key), 0)
         combo.setCurrentIndex(idx)
@@ -1242,6 +1321,12 @@ class GridCell(QtWidgets.QWidget):
         self._header_layout.addWidget(self.scenario_combo_a, 1)
         self._header_layout.addWidget(QtWidgets.QLabel("−"))
         self._header_layout.addWidget(self.scenario_combo_b, 1)
+        # A difference cell's quantity combo picks WHICH quantity to
+        # difference, not a raw value -- the "Δ" makes that explicit next to
+        # the A−B scenario pickers, since the plot itself uses a diverging
+        # colormap (not the quantity's own sequential one) and could
+        # otherwise read as an inconsistent palette for the "same quantity".
+        self._header_layout.addWidget(QtWidgets.QLabel("Δ"))
         self._header_layout.addWidget(self.quantity_combo, 1)
 
     def _build_ensemble_header(self):
@@ -1341,6 +1426,7 @@ class ViewGrid(QtWidgets.QWidget):
     LAYOUTS = {
         "1x1": (1, 1),
         "1x2": (1, 2),
+        "2x1": (2, 1),
         "1x3": (1, 3),
         "2x2": (2, 2),
         "3x3": (3, 3),

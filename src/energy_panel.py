@@ -111,8 +111,6 @@ class EnergyBudgetPanel(QtWidgets.QWidget):
         fig.clear()
         if table is None:
             ax = fig.add_subplot(111)
-            ax.text(0.5, 0.5, "No *_hrr.csv found for this scenario",
-                     ha="center", va="center", fontsize=9)
             ax.set_xticks([])
             ax.set_yticks([])
             self.metrics_label.setText("")

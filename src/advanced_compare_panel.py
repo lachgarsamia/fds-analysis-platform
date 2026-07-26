@@ -16,7 +16,7 @@ from __future__ import annotations
 import numpy as np
 from PyQt5 import QtCore, QtWidgets
 
-from widgets import MplCanvas
+from widgets import MplCanvas, plot_fg_color
 from registry import get_quantity, AMBIENT_C
 from insight import InsightList
 from descriptors import compute_descriptors
@@ -179,7 +179,7 @@ class AdvancedComparePanel(QtWidgets.QWidget):
                 ax.axvline(cursor_t, color="#00E5FF", linewidth=1.4)
         else:
             ax.text(0.5, 0.5, "Pick two different scenarios.", ha="center",
-                    va="center", fontsize=9, transform=ax.transAxes)
+                    va="center", fontsize=9, transform=ax.transAxes, color=plot_fg_color())
         ax.set_xlabel("time (s)", fontsize=8)
         ax.tick_params(labelsize=7)
         fig.subplots_adjust(top=0.96, bottom=0.2, left=0.12, right=0.97)
