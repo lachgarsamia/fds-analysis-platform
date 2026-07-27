@@ -80,6 +80,7 @@ from analysis_panel_base import bind_to_bus
 from study_panel import StudyPanel
 from sensitivity_panel import SensitivityPanel
 from hazard_panel import HazardPanel
+from hazard_tenability_panel import HazardTenabilityPanel
 from dashboard_panel import DashboardPanel
 from spacetime_panel import SpaceTimePanel
 from narrative_panel import NarrativePanel
@@ -866,9 +867,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self.hazard_panel = HazardPanel(
                 self.quantity_provider, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
+            # Hazard & Tenability (Analysis-improvement roadmap Phase B): a
+            # mode-toggle wrapper, not a rewrite -- both panels keep their
+            # own full functionality/bus wiring/disclaimers unchanged, this
+            # only merges two overlapping top-level tabs into one.
+            self.hazard_tenability_panel = HazardTenabilityPanel(
+                self.hazard_panel, self.tenability_panel)
             self.dashboard_panel = DashboardPanel(
                 self.controller.store, self.sim_data.manifest,
-                self.sim_data.timesteps_per_second)
+                self.sim_data.timesteps_per_second, energy_content=self.energy_panel)
             # Space-time cube (V5-M4/P4) + Fire Narrative++ (V5-M5); V6-M5
             # multi-plane cross-sections -- takes the provider (not the raw
             # store) so an unavailable X/Z-normal plane raises
@@ -907,7 +914,8 @@ class MainWindow(QtWidgets.QMainWindow):
             # experiment. Needs the factor axes + computed summaries.
             self.study_panel = (
                 StudyPanel(getattr(self, "_scenario_summaries", None) or [],
-                           self.sim_data.manifest)
+                           self.sim_data.manifest,
+                           factor_effects_content=self.factor_effects_panel)
                 if self.is_factorial else None)
             # Sensitivity explorer (V5-M3): interpolate responses across the
             # existing factorial ("what-if"); estimates only, never a new run.
@@ -940,6 +948,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.quantities_panel = None
             self.assistant_panel = None
             self.hazard_panel = None
+            self.hazard_tenability_panel = None
             self.dashboard_panel = None
             self.spacetime_panel = None
             self.narrative_panel = None
@@ -970,9 +979,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 forecasting_content=ForecastingPanel(
                     self.prediction_store, self.controller.store, self.sim_data.manifest),
                 timeseries_content=self.timeseries_panel,
-                energy_content=self.energy_panel,
-                factor_effects_content=self.factor_effects_panel,
-                tenability_content=self.tenability_panel,
                 fire_mri_content=self.fire_mri_panel,
                 query_content=self.query_panel,
                 state_space_content=self.state_space_panel,
@@ -985,7 +991,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 advanced_compare_content=self.advanced_compare_panel,
                 study_content=self.study_panel,
                 sensitivity_content=self.sensitivity_panel,
-                hazard_content=self.hazard_panel,
+                hazard_tenability_content=self.hazard_tenability_panel,
                 dashboard_content=self.dashboard_panel,
                 spacetime_content=self.spacetime_panel,
                 narrative_content=self.narrative_panel,
@@ -1131,7 +1137,7 @@ class MainWindow(QtWidgets.QMainWindow):
     # cares about, so every quantity-aware panel follows (via the M1 binder).
     _WORKSPACE = {
         "Overview": ("dashboard_panel", None),
-        "Temperature study": ("hazard_panel", "TEMPERATURE"),
+        "Temperature study": ("hazard_tenability_panel", "TEMPERATURE"),
         "Ventilation study": ("sensitivity_panel", "VELOCITY"),
         "Smoke study": ("height_panel", "TEMPERATURE"),
         "Study analytics": ("study_panel", None),

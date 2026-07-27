@@ -29,9 +29,6 @@ class AnalysisPage(Page):
                  playback_bar: QtWidgets.QWidget = None,
                  forecasting_content: QtWidgets.QWidget = None,
                  timeseries_content: QtWidgets.QWidget = None,
-                 energy_content: QtWidgets.QWidget = None,
-                 factor_effects_content: QtWidgets.QWidget = None,
-                 tenability_content: QtWidgets.QWidget = None,
                  fire_mri_content: QtWidgets.QWidget = None,
                  query_content: QtWidgets.QWidget = None,
                  state_space_content: QtWidgets.QWidget = None,
@@ -44,7 +41,7 @@ class AnalysisPage(Page):
                  advanced_compare_content: QtWidgets.QWidget = None,
                  study_content: QtWidgets.QWidget = None,
                  sensitivity_content: QtWidgets.QWidget = None,
-                 hazard_content: QtWidgets.QWidget = None,
+                 hazard_tenability_content: QtWidgets.QWidget = None,
                  dashboard_content: QtWidgets.QWidget = None,
                  spacetime_content: QtWidgets.QWidget = None,
                  narrative_content: QtWidgets.QWidget = None,
@@ -81,7 +78,7 @@ class AnalysisPage(Page):
         sections = [
             ("Context", context_content),
             ("Dashboard", dashboard_content),
-            ("Hazard", hazard_content),
+            ("Hazard & Tenability", hazard_tenability_content),
             ("Narrative", narrative_content),
             ("Space-time", spacetime_content),
             ("Ensemble analytics", content),
@@ -106,10 +103,7 @@ class AnalysisPage(Page):
             ("Study", study_content),
             ("Sensitivity", sensitivity_content),
             ("Ensemble", ensemble_content),
-            ("Factor effects", factor_effects_content),
-            ("Tenability", tenability_content),
             ("Time series", timeseries_content),
-            ("Energy budget", energy_content),
             ("Forecasting", forecasting_content),
         ]
         available = [(label, w) for label, w in sections if w is not None]

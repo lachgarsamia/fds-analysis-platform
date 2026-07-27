@@ -36,7 +36,8 @@ WORKSPACE_PRESETS = ("Overview", "Temperature study", "Ventilation study",
 class DashboardPanel(QtWidgets.QWidget):
     workspace_requested = QtCore.pyqtSignal(str)   # preset name (MainWindow resolves)
 
-    def __init__(self, store, manifest: list, fps: int, parent=None):
+    def __init__(self, store, manifest: list, fps: int,
+                 energy_content: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self._store = store
         self._manifest = sorted(manifest, key=lambda e: e.case_index)
@@ -45,6 +46,7 @@ class DashboardPanel(QtWidgets.QWidget):
         self._models = {}
         self._bus = None
         self._current_ci = None
+        self._energy_panel = energy_content
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -99,6 +101,16 @@ class DashboardPanel(QtWidgets.QWidget):
             val.setWordWrap(True)
             fl.addWidget(cap)
             fl.addWidget(val)
+            if name == "Heat release rate" and self._energy_panel is not None:
+                # Energy budget (Analysis-improvement roadmap Phase B):
+                # the full Q_* HRR budget breakdown, folded in as an
+                # expandable detail on this card instead of a standalone
+                # tab -- the panel itself (CSV read, scenario_combo) is
+                # unchanged, just shown in a dialog instead of a tab.
+                detail_button = QtWidgets.QPushButton("Full energy budget…")
+                detail_button.setAccessibleName("Show full energy budget detail")
+                detail_button.clicked.connect(self._show_energy_detail)
+                fl.addWidget(detail_button)
             grid.addWidget(frame, i // 3, i % 3)
             self._cards[name] = val
         layout.addLayout(grid)
@@ -115,6 +127,30 @@ class DashboardPanel(QtWidgets.QWidget):
 
     def _on_preset(self, _i) -> None:
         self.workspace_requested.emit(self.preset_combo.currentText())
+
+    def _show_energy_detail(self) -> None:
+        """Opens the (unchanged) EnergyBudgetPanel in a dialog, pre-selected
+        to the currently-selected scenario -- Phase B fold-in keeps the
+        panel itself intact, just not a permanently-visible standalone tab."""
+        if self._energy_panel is None:
+            return
+        self._energy_panel.ensure_loaded()
+        if self._current_ci is not None:
+            idx = self._energy_panel.scenario_combo.findData(self._current_ci)
+            if idx >= 0:
+                self._energy_panel.scenario_combo.setCurrentIndex(idx)
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Full energy budget")
+        dialog.resize(700, 500)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._energy_panel)
+        dialog.exec_()
+        # Reparent back so main_window still owns it (a QDialog taking a
+        # widget reparents it; nothing else references self._energy_panel
+        # while the dialog is closed).
+        layout.removeWidget(self._energy_panel)
+        self._energy_panel.setParent(self)
 
     def _on_jump_to_peak(self) -> None:
         if self._bus is None or self._current_ci is None:

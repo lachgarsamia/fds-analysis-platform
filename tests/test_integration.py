@@ -2521,6 +2521,26 @@ class TestDashboardJumpToPeak:
         assert window.selection_bus.current.time_s == pytest.approx(expected_peak_t)
         window.close()
 
+    def test_energy_budget_detail_button_opens_current_scenario(self, qapp, monkeypatch):
+        """Analysis-improvement roadmap Phase B: Energy budget folded into
+        this card as an expandable detail (no standalone tab) -- the panel
+        itself is unchanged, just shown pre-selected to the current
+        scenario instead of living in its own tab."""
+        monkeypatch.setattr(QtWidgets.QDialog, "exec_", lambda self: 0)
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        panel = window.dashboard_panel
+        assert panel._energy_panel is window.energy_panel
+        target_case = sim_data.manifest[3].case_index
+        window.selection_bus.update(origin=None, scenario=target_case)
+        panel._show_energy_detail()
+        assert window.energy_panel.scenario_combo.currentData() == target_case
+        assert window.energy_panel.parent() is panel  # reparented back after the dialog closes
+        window.close()
+
 
 class TestZonePanel:
     """V4-M4: named region / zone statistics."""
@@ -3048,6 +3068,24 @@ class TestStudyPanel:
         assert panel.scenario_combo.currentData() == 9
         window.close()
 
+    def test_factor_effects_folded_in_as_a_sub_tab(self, qapp):
+        """Analysis-improvement roadmap Phase B: Factor effects' actual
+        spatial diverging-field view is a sub-tab here now, complementing
+        this panel's own scalar "Factor influence" ranking -- not a
+        structurally-separate top-level tab. The panel itself (store
+        access, lazy-load, bus wiring) is unchanged."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        panel = window.study_panel
+        labels = [panel.tabs.tabText(i) for i in range(panel.tabs.count())]
+        assert "Factor effects" in labels
+        idx = labels.index("Factor effects")
+        assert panel.tabs.widget(idx) is window.factor_effects_panel
+        window.close()
+
 
 class TestSensitivityPanel:
     """V5-M3: sensitivity explorer + bus hand-off."""
@@ -3101,9 +3139,12 @@ class TestResearchWorkspace:
         window.selection_bus.update(origin=None, scenario=2)
         assert panel.scenario_combo.currentData() == 2
         # RC polish: time sync only drives the visible analysis tab. Show it.
+        # Phase B: hazard_panel is nested inside the Hazard & Tenability
+        # mode-toggle wrapper now -- reveal the wrapper's tab, not the panel
+        # directly (it's no longer a direct QTabWidget child itself).
         window.show()
         window._navigate_to("analysis")
-        window.pages["analysis"].show_tab(panel)
+        window.pages["analysis"].show_tab(window.hazard_tenability_panel)
         QtWidgets.QApplication.processEvents()
         window.selection_bus.update(origin=None, time_s=10.0)
         assert panel.frame_slider.value() == int(round(10.0 * window.time_controller.timesteps_per_second))
@@ -3367,7 +3408,7 @@ class TestAnalysisPlayback:
         QtWidgets.QApplication.processEvents()
         window._on_seek_requested(80)
         assert window.height_panel.frame_slider.value() == 80        # visible follows
-        ap.show_tab(window.hazard_panel)
+        ap.show_tab(window.hazard_tenability_panel)
         window.hazard_panel.ensure_loaded()
         QtWidgets.QApplication.processEvents()
         frozen = window.height_panel.frame_slider.value()
@@ -4193,6 +4234,51 @@ class _SyntheticCOProvider:
         if key.quantity == "CARBON MONOXIDE VOLUME FRACTION":
             return self._real.get_extent(scenario, SliceKey("TEMPERATURE", key.direction, key.offset))
         return self._real.get_extent(scenario, key)
+
+
+class TestHazardTenabilityMerge:
+    """Analysis-improvement roadmap Phase B: Hazard and Tenability were two
+    separate top-level tabs classifying the same field into hazard bands
+    via overlapping engines -- now one "Hazard & Tenability" tab with a
+    mode toggle. A thin wrapper only, so both panels keep their full
+    existing functionality/disclaimers unchanged."""
+
+    def test_wrapper_holds_both_panels_and_defaults_to_map_view(self, qapp):
+        window = MainWindow(load_simulation_data())
+        wrapper = window.hazard_tenability_panel
+        if wrapper is None:
+            window.close()
+            return
+        assert wrapper.hazard_widget is window.hazard_panel
+        assert wrapper.tenability_widget is window.tenability_panel
+        assert wrapper.stack.currentWidget() is window.hazard_panel
+        window.close()
+
+    def test_mode_toggle_switches_between_panels(self, qapp):
+        window = MainWindow(load_simulation_data())
+        wrapper = window.hazard_tenability_panel
+        if wrapper is None:
+            window.close()
+            return
+        wrapper.mode_combo.setCurrentIndex(1)
+        assert wrapper.stack.currentWidget() is window.tenability_panel
+        wrapper.mode_combo.setCurrentIndex(0)
+        assert wrapper.stack.currentWidget() is window.hazard_panel
+        window.close()
+
+    def test_showing_wrapper_loads_both_panels_not_just_visible_one(self, qapp):
+        window = MainWindow(load_simulation_data())
+        wrapper = window.hazard_tenability_panel
+        if wrapper is None:
+            window.close()
+            return
+        window.show()
+        window._navigate_to("analysis")
+        window.pages["analysis"].show_tab(wrapper)
+        QtWidgets.QApplication.processEvents()
+        assert window.hazard_panel._loaded
+        assert window.tenability_panel._loaded
+        window.close()
 
 
 class TestFullFED:

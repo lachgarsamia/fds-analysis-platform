@@ -22,7 +22,8 @@ import study_analytics as sa
 
 
 class StudyPanel(QtWidgets.QWidget):
-    def __init__(self, summaries: list, manifest: list, parent=None):
+    def __init__(self, summaries: list, manifest: list,
+                 factor_effects_content: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self._summaries = sorted(summaries or [], key=lambda s: s.case_index)
         self._table = sa.build_table(self._summaries)
@@ -91,6 +92,15 @@ class StudyPanel(QtWidgets.QWidget):
         self.stats_label.setTextFormat(QtCore.Qt.RichText)
         cv.addWidget(self.stats_label)
         self.tabs.addTab(corr, "Correlation & outliers")
+        # Factor effects (Analysis-improvement roadmap Phase B): the actual
+        # spatial diverging-field view, complementing this tab's own
+        # scalar "Factor influence" ranking above -- folded in as a sub-
+        # tab rather than a structurally-separate top-level one, since
+        # this panel already reuses factor_effects' axis-order convention.
+        # A thin slot, not a rewrite: the panel keeps its own store access,
+        # lazy-load (showEvent), and SelectionBus wiring unchanged.
+        if factor_effects_content is not None:
+            self.tabs.addTab(factor_effects_content, "Factor effects")
         layout.addWidget(self.tabs, 1)
 
         self.scenario_combo.currentIndexChanged.connect(self._render_parallel)
