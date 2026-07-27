@@ -84,7 +84,6 @@ from sensitivity_panel import SensitivityPanel
 from hazard_panel import HazardPanel
 from dashboard_panel import DashboardPanel
 from spacetime_panel import SpaceTimePanel
-from multiplane_panel import MultiPlanePanel
 from narrative_panel import NarrativePanel
 from ensemble_panel import EnsemblePanel
 from graph_panel import GraphPanel
@@ -891,12 +890,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.spacetime_panel = SpaceTimePanel(
                 self.quantity_provider, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
-            # Multi-plane linked cross-sections (V6-M7): XY/XZ/YZ at once,
-            # each independently plane-gated (V6-M5's mechanism); only XZ
-            # (y-normal) has real data today.
-            self.multiplane_panel = MultiPlanePanel(
-                self.quantity_provider, self.sim_data.manifest,
-                self.sim_data.timesteps_per_second)
             self.narrative_panel = NarrativePanel(
                 self.controller.store, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
@@ -965,7 +958,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.hazard_panel = None
             self.dashboard_panel = None
             self.spacetime_panel = None
-            self.multiplane_panel = None
             self.narrative_panel = None
             self.ensemble_panel = None
             self.graph_panel = None
@@ -1014,7 +1006,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 hazard_content=self.hazard_panel,
                 dashboard_content=self.dashboard_panel,
                 spacetime_content=self.spacetime_panel,
-                multiplane_content=self.multiplane_panel,
                 narrative_content=self.narrative_panel,
                 ensemble_content=self.ensemble_panel,
                 graph_content=self.graph_panel,
@@ -1090,7 +1081,7 @@ class MainWindow(QtWidgets.QMainWindow):
                      "energy_panel", "forecasting_panel", "quantities_panel",
                      "advanced_compare_panel", "study_panel", "hazard_panel",
                      "spacetime_panel", "narrative_panel", "ensemble_panel", "device_panel",
-                     "velocity_panel", "multiplane_panel"):
+                     "velocity_panel"):
             panel = getattr(self, attr, None)
             if panel is not None:
                 bind_to_bus(panel, self.selection_bus, fps)
@@ -1107,10 +1098,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # V5-M4: the space-time panel publishes/reacts to the selected point.
         if self.spacetime_panel is not None:
             self.spacetime_panel.set_bus(self.selection_bus)
-        # V6-M7: the multi-plane cross-section panel publishes/reacts to
-        # the selected point/height (the reused third coordinate) and time.
-        if self.multiplane_panel is not None:
-            self.multiplane_panel.set_bus(self.selection_bus)
         # V5-M5: a narrative step publishes its Insight's selection (seek + sync).
         if self.narrative_panel is not None:
             self.narrative_panel.event_activated.connect(self._on_insight_activated)
