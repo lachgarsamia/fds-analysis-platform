@@ -2521,6 +2521,32 @@ class TestDashboardJumpToPeak:
         assert window.selection_bus.current.time_s == pytest.approx(expected_peak_t)
         window.close()
 
+    def test_scenario_combo_drives_the_shared_bus_not_a_second_state(self, qapp):
+        """UX consolidation pass, item 1 (Global Analysis Scenario Control):
+        Dashboard shows a per-scenario "Scenario" card but previously had no
+        way to change it directly -- its scenario_combo must be wired
+        through the same generic bind_to_bus mechanism every other analysis
+        panel uses, so picking a scenario here updates the one shared
+        SelectionBus (and every other synced panel), not a private copy."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        panel = window.dashboard_panel
+        target = sim_data.manifest[-1].case_index
+        idx = panel.scenario_combo.findData(target)
+        panel.scenario_combo.setCurrentIndex(idx)
+        assert window.selection_bus.current.scenario == target
+        assert panel._current_ci == target
+        assert panel._cards["Scenario"].text() == sim_data.manifest[-1].folder
+        # a scenario picked elsewhere syncs this combo right back (single
+        # shared state, not an independent one).
+        other = sim_data.manifest[0].case_index
+        window.selection_bus.update(origin=None, scenario=other)
+        assert panel.scenario_combo.currentData() == other
+        window.close()
+
     def test_energy_budget_detail_button_opens_current_scenario(self, qapp, monkeypatch):
         """Analysis-improvement roadmap Phase B: Energy budget folded into
         this card as an expandable detail (no standalone tab) -- the panel
@@ -3962,67 +3988,50 @@ class TestTrueVelocity:
 
 class TestUnifiedWorkspace:
     """V6-M4: connecting existing capabilities into one investigation
-    workflow -- Context Panel, cross-navigation, Knowledge Graph expansion,
-    Investigation History, and performance (no expensive work per tick)."""
+    workflow -- cross-navigation, Knowledge Graph expansion, Investigation
+    History, and performance (no expensive work per tick). The standalone
+    Context Panel tab this was originally built around was removed in the
+    UX consolidation pass as low-value; context.gather_context (the data
+    layer) and Investigation History remain and are tested directly."""
 
-    def test_context_panel_shows_placed_device(self, qapp):
+    def test_history_back_and_forward_shortcuts(self, qapp):
+        """UX consolidation pass: the removed Context Panel's back/forward
+        buttons were the only UI for Investigation History -- Alt+Left/
+        Alt+Right keep it reachable without dedicating screen space to it."""
         window = MainWindow(load_simulation_data())
         if window.sim_data.is_demo:
             window.close()
             return
-        window.show()
-        dp = window.device_panel
-        dp.ensure_loaded()
-        dp.type_combo.setCurrentIndex(dp.type_combo.findData("thermocouple"))
-        dp._place(1.0, 1.0)
-        case_index = dp.scenario_combo.currentData()
-        window.selection_bus.update(origin=None, scenario=case_index)
-        QtWidgets.QApplication.processEvents()
-        assert window.context_panel.devices_list.count() == 1
-        window.close()
-
-    def test_context_panel_ignores_pure_time_ticks(self, qapp, monkeypatch):
-        """Performance (objective 8): playback publishes time_s every tick
-        (main_window._on_time_changed) -- the Context Panel must not
-        re-gather (a filesystem scan) on a time-only change."""
-        window = MainWindow(load_simulation_data())
-        if window.sim_data.is_demo:
-            window.close()
-            return
-        window.show()
-        calls = []
-        import context_panel as cp_mod
-        real_gather = cp_mod.gather_context
-        def counting_gather(app, sel):
-            calls.append(sel)
-            return real_gather(app, sel)
-        monkeypatch.setattr(cp_mod, "gather_context", counting_gather)
         window.selection_bus.update(origin=None, scenario=0)
-        n_after_scenario = len(calls)
-        assert n_after_scenario >= 1
-        for t in (1.0, 2.0, 3.0):
-            window.selection_bus.update(origin=window, time_s=t)   # mirrors the tick's own origin
-        assert len(calls) == n_after_scenario   # no new gather_context calls from time-only changes
+        window.selection_bus.update(origin=None, scenario=1)
+        window._history_back()
+        assert window.selection_bus.current.scenario == 0
+        window._history_forward()
+        assert window.selection_bus.current.scenario == 1
         window.close()
 
     def test_point_story_combines_measurement_and_cause_chain(self, qapp):
         """Analysis-improvement roadmap Phase C: the synthesized point-story
         pulls a local measurement reading (already-cached, no new store
         read) and the Cause Explorer's last-traced chain (only when it's
-        near the selected point) into one paragraph."""
+        near the selected point) into one paragraph. UX consolidation pass:
+        the standalone Context tab that used to display this was removed
+        as low-value, but context.gather_context (the data layer) is kept
+        -- still exercised directly here, and reusable by future consumers
+        (e.g. the Assistant restructure)."""
         import measure as mz
         from insight import Insight
+        from selection import Selection
+        from context import gather_context
         window = MainWindow(load_simulation_data())
         if window.sim_data.is_demo:
             window.close()
             return
-        window.show()
         case_index = window.sim_data.manifest[0].case_index
         window.measurement_panel._measurements.append(
             mz.Measurement(kind="probe", points=[(1.0, 1.0)], label="P1", readout="123 degC"))
-        window.selection_bus.update(origin=None, scenario=case_index, point=(1.0, 1.0))
-        QtWidgets.QApplication.processEvents()
-        story = window.context_panel.point_story.text()
+        sel = Selection(scenario=case_index, point=(1.0, 1.0))
+        story = gather_context(window, sel)["point_story"]
         assert "P1: 123 degC" in story
         # Cause chain absent until traced near this point -> no cause-trace clause yet.
         assert "Cause trace" not in story
@@ -4031,9 +4040,8 @@ class TestUnifiedWorkspace:
         cp._last_point = (1.0, 1.0)
         cp._last_insights = [Insight("It traces back to the hottest connected point (400 °C).",
                                      category="cause", quantity="TEMPERATURE")]
-        window.selection_bus.update(origin=None, time_s=1.0, point=(1.0, 1.0001))
-        QtWidgets.QApplication.processEvents()
-        story = window.context_panel.point_story.text()
+        sel2 = Selection(scenario=case_index, time_s=1.0, point=(1.0, 1.0001))
+        story = gather_context(window, sel2)["point_story"]
         assert "Cause trace" in story and "hottest connected point" in story
         window.close()
 
@@ -4157,19 +4165,11 @@ class TestUnifiedWorkspace:
         assert group.currentWidget() is window.study_panel
         window.close()
 
-    def test_context_panel_session_reveal_shows_sessions_tab(self, qapp):
-        window = MainWindow(load_simulation_data())
-        if window.sessions_panel is None:
-            window.close()
-            return
-        window.show()
-        window._on_context_session_reveal("/tmp/whatever-session.json")
-        assert window._active_page_key == "analysis"
-        group = window.pages["analysis"].tabs.currentWidget()
-        assert group.currentWidget() is window.sessions_panel
-        window.close()
-
     def test_hover_highlight_sets_and_clears_without_touching_selection(self, qapp):
+        """UX consolidation pass: the removed Context Panel was the only
+        caller of SliceView.set_hover_highlight -- the primitive itself is
+        kept (reusable rendering infra, e.g. for a future Assistant
+        "reveal in viewer" action) and exercised directly here."""
         window = MainWindow(load_simulation_data())
         if window.sim_data.is_demo:
             window.close()
@@ -4177,10 +4177,12 @@ class TestUnifiedWorkspace:
         window.show()
         cell = window.view_grid.active_cell()
         before = window.selection_bus.current
-        window._on_context_hover((cell.case_index, (1.0, 1.0)))
+        cell.view.set_hover_highlight((1.0, 1.0))
+        cell.view.redraw_overlays_now()
         assert len(cell.view.hover_highlight.get_offsets()) == 1
         assert window.selection_bus.current == before   # hover never touches selection
-        window._on_context_hover(None)
+        cell.view.set_hover_highlight(None)
+        cell.view.redraw_overlays_now()
         assert len(cell.view.hover_highlight.get_offsets()) == 0
         window.close()
 

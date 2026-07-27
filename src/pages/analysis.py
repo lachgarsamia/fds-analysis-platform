@@ -30,7 +30,7 @@ from pages.base import Page
 # lower-confidence/exploratory tools (Experimental, collapsed by default).
 _GROUPS = [
     ("Core Investigation", [
-        "Context", "Dashboard", "Hazard & Tenability", "Narrative", "Space-time",
+        "Dashboard", "Hazard & Tenability", "Narrative", "Space-time",
         "Height", "Zones", "Intervals", "Measure", "Time series", "Calculator",
         "Devices", "Velocity"]),
     ("Study-Level", [
@@ -109,7 +109,6 @@ class AnalysisPage(Page):
                  calculator_content: QtWidgets.QWidget = None,
                  devices_content: QtWidgets.QWidget = None,
                  velocity_content: QtWidgets.QWidget = None,
-                 context_content: QtWidgets.QWidget = None,
                  experiments_content: QtWidgets.QWidget = None,
                  quantities_content: QtWidgets.QWidget = None,
                  assistant_content: QtWidgets.QWidget = None,
@@ -135,7 +134,6 @@ class AnalysisPage(Page):
         # pane at once. Only supplied (non-None) surfaces get a tab; demo
         # mode supplies none.
         sections = [
-            ("Context", context_content),
             ("Dashboard", dashboard_content),
             ("Hazard & Tenability", hazard_tenability_content),
             ("Narrative", narrative_content),

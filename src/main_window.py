@@ -87,7 +87,6 @@ from spacetime_panel import SpaceTimePanel
 from narrative_panel import NarrativePanel
 from ensemble_panel import EnsemblePanel
 from graph_panel import GraphPanel
-from context_panel import ContextPanel
 from history import InvestigationHistory
 from calculator_panel import CalculatorPanel
 import field_calculator as field_calculator_mod
@@ -901,12 +900,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.graph_panel = GraphPanel(
                 self.controller.store, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second, app=self)
-            # Context Panel (V6-M4): the unified "what's related to this
-            # selection" hub -- constructed after every panel it duck-types
-            # against (device_panel/velocity_panel/evidence_dock/zone_panel/
-            # measurement_panel/graph_panel), same placement rule graph_panel
-            # itself already follows.
-            self.context_panel = ContextPanel(app=self)
             # Named analysis sessions (V4-M6): save/browse/reload/export the
             # whole investigation. Pure UI; main_window collects/applies state.
             self.sessions_panel = SessionsPanel()
@@ -961,7 +954,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.narrative_panel = None
             self.ensemble_panel = None
             self.graph_panel = None
-            self.context_panel = None
             self.sessions_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
@@ -1003,7 +995,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 narrative_content=self.narrative_panel,
                 ensemble_content=self.ensemble_panel,
                 graph_content=self.graph_panel,
-                context_content=self.context_panel,
                 calculator_content=self.calculator_panel,
                 devices_content=self.device_panel,
                 velocity_content=self.velocity_panel,
@@ -1075,7 +1066,7 @@ class MainWindow(QtWidgets.QMainWindow):
                      "energy_panel", "forecasting_panel", "quantities_panel",
                      "advanced_compare_panel", "study_panel", "hazard_panel",
                      "spacetime_panel", "narrative_panel", "ensemble_panel", "device_panel",
-                     "velocity_panel", "calculator_panel"):
+                     "velocity_panel", "calculator_panel", "dashboard_panel"):
             panel = getattr(self, attr, None)
             if panel is not None:
                 bind_to_bus(panel, self.selection_bus, fps)
@@ -1116,15 +1107,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.velocity_panel is not None:
             self.velocity_panel.probes_changed.connect(self._refresh_vector_field)
             self.velocity_panel.probe_activated.connect(self._on_insight_activated)
-        # V6-M4: the Context Panel reacts to the shared selection like the
-        # graph panel; its Insight-shaped rows (devices/probes/notebook/
-        # zones/measurements) reuse the same _on_insight_activated every
-        # other feature already converges on -- no new dispatch code.
-        if self.context_panel is not None:
-            self.context_panel.set_bus(self.selection_bus)
-            self.context_panel.insight_activated.connect(self._on_insight_activated)
-            self.context_panel.session_reveal_requested.connect(self._on_context_session_reveal)
-            self.context_panel.hover_changed.connect(self._on_context_hover)
         # V6-M4 Investigation History: records every *meaningful* selection
         # (skips its own back/forward replay via the `self.history` sentinel
         # origin, and MainWindow's own playback-tick echo via `self` -- time_s
@@ -1168,23 +1150,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._navigate_to("analysis")
         self.pages["analysis"].show_tab(panel)
 
-    def _on_context_hover(self, payload) -> None:
-        """Linked hover (V6-M4 objective 4): highlight a Context Panel graph
-        node's location on the matching Live Viewer cell, without touching
-        selection_bus -- a temporary visual, not a navigation."""
-        scenario, point = payload if payload is not None else (None, None)
-        for cell in self.view_grid.visible_cells():
-            if cell.cell_type == "slice":
-                cell.view.set_hover_highlight(point if cell.case_index == scenario else None)
-                cell.view.redraw_overlays_now()
-
-    def _on_context_session_reveal(self, path: str) -> None:
-        """V6-M4: the Context Panel's "reveal a related session" action --
-        a session isn't Insight-shaped, so it can't ride the shared
-        insight_activated path; it reuses _reveal instead."""
-        if self.sessions_panel is not None:
-            self._reveal(self.sessions_panel)
-
     def _on_history_changed(self, selection, origin) -> None:
         """V6-M4 Investigation History: record every selection except a
         replay of the history itself (`origin is self.history`) or
@@ -1193,6 +1158,22 @@ class MainWindow(QtWidgets.QMainWindow):
         if origin is self.history or origin is self:
             return
         self.history.record(selection)
+
+    def _history_back(self) -> None:
+        history = getattr(self, "history", None)
+        if history is None or getattr(self, "selection_bus", None) is None:
+            return
+        sel = history.back()
+        if sel is not None:
+            self.selection_bus.set(sel, origin=history)
+
+    def _history_forward(self) -> None:
+        history = getattr(self, "history", None)
+        if history is None or getattr(self, "selection_bus", None) is None:
+            return
+        sel = history.forward()
+        if sel is not None:
+            self.selection_bus.set(sel, origin=history)
 
     def _on_bus_changed(self, selection, origin) -> None:
         """React to the shared selection in the Live Viewer: seek playback to
@@ -4016,6 +3997,12 @@ class MainWindow(QtWidgets.QMainWindow):
         QtWidgets.QShortcut(QtGui.QKeySequence("Space"), self, activated=self._toggle_play_pause)
         QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+R"), self, activated=self._restart_simulation)
         QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Q"), self, activated=self.close)
+        # Investigation History (V6-M4): back/forward through recorded
+        # selections -- previously only reachable via the removed Context
+        # Panel's buttons (UX consolidation pass); browser-style shortcuts
+        # keep the feature reachable without dedicating screen space to it.
+        QtWidgets.QShortcut(QtGui.QKeySequence("Alt+Left"), self, activated=self._history_back)
+        QtWidgets.QShortcut(QtGui.QKeySequence("Alt+Right"), self, activated=self._history_forward)
         # M1.4.3: frame/second stepping while paused or playing.
         QtWidgets.QShortcut(QtGui.QKeySequence("Left"), self, activated=lambda: self.time_controller.step(-1))
         QtWidgets.QShortcut(QtGui.QKeySequence("Right"), self, activated=lambda: self.time_controller.step(1))

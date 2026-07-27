@@ -56,6 +56,20 @@ class DashboardPanel(QtWidgets.QWidget):
         title = QtWidgets.QLabel("Mission control")
         title.setProperty("role", "section-title")
         header.addWidget(title)
+        header.addSpacing(16)
+        # Global Analysis scenario control: Dashboard is the one panel that
+        # displays a per-scenario "Scenario" card yet had no way to change
+        # it directly -- this combo is wired the same way every other
+        # analysis panel's own scenario_combo is (main_window's generic
+        # bind_to_bus loop), so it is never a second, independent scenario
+        # state; it just gives the shared SelectionBus scenario a visible,
+        # editable home on this tab too.
+        header.addWidget(QtWidgets.QLabel("Scenario:"))
+        self.scenario_combo = QtWidgets.QComboBox()
+        self.scenario_combo.setAccessibleName("Dashboard scenario")
+        for entry in self._manifest:
+            self.scenario_combo.addItem(entry.folder, entry.case_index)
+        header.addWidget(self.scenario_combo)
         header.addStretch(1)
         header.addWidget(QtWidgets.QLabel("Workspace:"))
         self.preset_combo = QtWidgets.QComboBox()
