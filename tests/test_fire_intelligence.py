@@ -1430,3 +1430,18 @@ class TestGraphModel:
     def test_no_devices_or_probes_is_unaffected(self):
         g = gmod.build_graph(self._scenarios())
         assert g.nodes_of("device") == [] and g.nodes_of("vector_probe") == []
+
+    def test_pinned_hypotheses_become_graph_nodes(self):
+        """Analysis-improvement roadmap Phase C: a pinned Sensitivity
+        what-if is navigable only via the nearest existing scenario it was
+        pinned against (an interpolated estimate isn't itself a real run)."""
+        h = {"id": "whatif-0", "label": "HRR ~ 12.3 kW at (candles=1.0)", "nearest_scenario": 2}
+        g = gmod.build_graph(self._scenarios(), hypotheses=[h])
+        nodes = g.nodes_of("hypothesis")
+        assert len(nodes) == 1
+        assert nodes[0].label == h["label"]
+        assert nodes[0].to_selection().scenario == 2
+
+    def test_no_hypotheses_is_unaffected(self):
+        g = gmod.build_graph(self._scenarios())
+        assert g.nodes_of("hypothesis") == []

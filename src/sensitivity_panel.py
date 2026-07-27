@@ -34,6 +34,7 @@ class SensitivityPanel(QtWidgets.QWidget):
             if self._table else {p: [0.0] for p in sa.PARAMS}
         self._bus = None
         self._syncing = False
+        self._hypotheses: list = []   # pinned what-if estimates (Phase C -> Knowledge Graph)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -93,7 +94,19 @@ class SensitivityPanel(QtWidgets.QWidget):
         selrow.addStretch(1)
         self.fx_combo.currentIndexChanged.connect(self._update)
         self.fy_combo.currentIndexChanged.connect(self._update)
+        selrow.addWidget(QtWidgets.QLabel("|"))
+        self.pin_button = QtWidgets.QPushButton("Pin what-if to Knowledge Graph")
+        self.pin_button.setAccessibleName("sensitivity-pin-hypothesis")
+        self.pin_button.setToolTip(
+            "Pin the current interpolated estimate as a hypothesis node in the Knowledge Graph")
+        self.pin_button.clicked.connect(self._pin_hypothesis)
+        selrow.addWidget(self.pin_button)
         layout.addLayout(selrow)
+
+        self.pin_status = QtWidgets.QLabel("")
+        self.pin_status.setWordWrap(True)
+        self.pin_status.setProperty("role", "caption")
+        layout.addWidget(self.pin_status)
 
         self.tabs = QtWidgets.QTabWidget()
         self.surface_canvas = MplCanvas(self)
@@ -172,6 +185,30 @@ class SensitivityPanel(QtWidgets.QWidget):
         self._render_whatif(settings)
         self._render_surface(settings)
         self._render_tornado(settings)
+
+    def _pin_hypothesis(self) -> None:
+        """Pin the current interpolated estimate as a hypothesis node in the
+        Knowledge Graph (Analysis-improvement roadmap Phase C) -- the
+        graph_panel reads `self._hypotheses` the same way it already reads
+        zones/measurements/devices/vector_probes, no new wiring needed."""
+        if not self._table:
+            return
+        settings = self._settings()
+        response = self.response_combo.currentData()
+        value = se.predict(self._table, response, settings)
+        ci, _dist = se.nearest_scenario(self._table, settings)
+        setting_text = ", ".join(f"{sa.PARAM_LABELS[p]}={settings[p]:.1f}" for p in sa.PARAMS)
+        label = (f"{sa.RESPONSE_LABEL[response]} ≈ {value:.1f} {sa.RESPONSE_UNIT[response]} "
+                 f"at ({setting_text})")
+        self._hypotheses.append({
+            "id": f"whatif-{len(self._hypotheses)}",
+            "label": label,
+            "settings": dict(settings),
+            "response": response,
+            "value": value,
+            "nearest_scenario": ci,
+        })
+        self.pin_status.setText(f"Pinned: {label} — see it in the Knowledge Graph tab.")
 
     def _render_whatif(self, settings) -> None:
         preds = se.predict_all(self._table, settings)

@@ -4057,6 +4057,25 @@ class TestUnifiedWorkspace:
         assert len(window.graph_panel._graph.nodes_of("device")) == 1
         window.close()
 
+    def test_graph_gains_hypothesis_node_after_pinning_a_whatif(self, qapp):
+        """Analysis-improvement roadmap Phase C: "Pin what-if to Knowledge
+        Graph" from Sensitivity -- the graph_panel picks up pinned estimates
+        the same way it already picks up devices/vector probes."""
+        window = MainWindow(load_simulation_data())
+        if window.sensitivity_panel is None:
+            window.close()
+            return
+        window.show()
+        sp = window.sensitivity_panel
+        sp._pin_hypothesis()
+        assert len(sp._hypotheses) == 1
+        assert sp.pin_status.text() != ""
+        window.graph_panel._rebuild()
+        nodes = window.graph_panel._graph.nodes_of("hypothesis")
+        assert len(nodes) == 1
+        assert nodes[0].scenario == sp._hypotheses[0]["nearest_scenario"]
+        window.close()
+
     def test_reveal_helper_used_by_workspace_preset_and_experiment_compare(self, qapp):
         """Regression check for the _reveal refactor (V6-M4): both existing
         call sites must still raise the Analysis page and the right tab."""

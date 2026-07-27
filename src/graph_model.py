@@ -20,12 +20,14 @@ from typing import Optional, Tuple
 
 # Column order for the layered layout / grouping in the browser.
 NODE_TYPES = ("tag", "experiment", "session", "scenario", "event",
-              "insight", "zone", "measurement", "device", "vector_probe")
+              "insight", "zone", "measurement", "device", "vector_probe",
+              "hypothesis")
 TYPE_COLOR = {
     "tag": "#8E24AA", "experiment": "#1565C0", "session": "#00838F",
     "scenario": "#E8622C", "event": "#F9A825", "insight": "#2E7D32",
     "zone": "#6D4C41", "measurement": "#455A64",
     "device": "#C2185B", "vector_probe": "#00695C",   # V6-M4
+    "hypothesis": "#5E35B1",   # Analysis-improvement roadmap Phase C
 }
 
 
@@ -89,14 +91,19 @@ _FACTORS = ("candles", "door", "vod", "voc")
 
 def build_graph(scenarios, notebook=None, zones=None, measurements=None,
                 experiments=None, sessions=None, events_by_scenario=None,
-                devices=None, vector_probes=None) -> Graph:
+                devices=None, vector_probes=None, hypotheses=None) -> Graph:
     """Assemble the graph from the current artifacts. `scenarios` are manifest
     entries; the rest are optional and default to empty.
 
     `devices`/`vector_probes` (V6-M4): Device/VectorProbe instances
     (devices.py/velocity.py) -- placed instrumentation becomes graph nodes
     the same way zones/measurements already do, linked to nothing else
-    (their `scenario` alone makes them navigable via `to_selection()`)."""
+    (their `scenario` alone makes them navigable via `to_selection()`).
+
+    `hypotheses` (Analysis-improvement roadmap Phase C): pinned Sensitivity
+    what-if estimates (dicts: id/label/nearest_scenario) -- an interpolated
+    estimate isn't itself a real run, so its only navigable dimension is the
+    nearest existing scenario it was pinned against."""
     g = Graph()
 
     def tag(name: str) -> str:
@@ -158,6 +165,11 @@ def build_graph(scenarios, notebook=None, zones=None, measurements=None,
     for p in vector_probes or []:
         g.add(Node(f"vector_probe:{p.id}", "vector_probe", p.name,
                    scenario=p.scenario, point=tuple(p.position)))
+
+    # pinned Sensitivity what-if hypotheses (Phase C)
+    for h in hypotheses or []:
+        g.add(Node(f"hypothesis:{h.get('id')}", "hypothesis", h.get("label", "what-if"),
+                   scenario=h.get("nearest_scenario")))
 
     # narrative events for the given scenarios -> their scenario
     for case_index, evs in (events_by_scenario or {}).items():
