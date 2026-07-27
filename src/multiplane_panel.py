@@ -35,9 +35,11 @@ from PyQt5 import QtCore, QtWidgets
 
 from widgets import MplCanvas
 from registry import get_quantity
+from schematic import room_overlay_geometry
 from slice_key import SliceKey, AXIS_TO_DIRECTION
 from quantity_provider import GatedQuantityError
 from timeseries import phys_to_index
+from views import _VENT_STATE_COLORS
 
 # name, direction, (x_axis_label, y_axis_label) -- XZ is the app's one
 # verified plane (row=z top-down, col=x, the convention every other view
@@ -215,12 +217,35 @@ class MultiPlanePanel(QtWidgets.QWidget):
                           aspect="auto", extent=extent)
                 ax.set_xlabel(xl, fontsize=8)
                 ax.set_ylabel(yl, fontsize=8)
+                if name == "XZ":
+                    # The app's one verified y-normal plane -- the same
+                    # plane schematic.py's room geometry describes, so draw
+                    # the room boundary/door/vents here too, matching the
+                    # Live Viewer heatmap (views.py) instead of looking
+                    # inconsistent with it.
+                    self._draw_room_overlay(ax, case_index)
                 self._draw_crosshair(ax, name)
             ax.set_title(f"{name} (t = {self._time_s:.1f} s)", fontsize=8, fontweight="bold")
             fig.subplots_adjust(top=0.90, bottom=0.14, left=0.14, right=0.97)
             canvas.draw_idle()
         self.status.setText("" if any_real else
                             "All three planes are gated for this scenario -- see caption.")
+
+    def _draw_room_overlay(self, ax, case_index: int) -> None:
+        """Same room_overlay_geometry() views.py's Live Viewer heatmap
+        uses -- one source of truth for the real &HOLE/&VENT positions
+        read from the FDS input deck, not a second guess."""
+        entry = next((e for e in self._manifest if e.case_index == case_index), None)
+        if entry is None:
+            return
+        geo = room_overlay_geometry(entry.door, entry.vod, entry.voc)
+        for x0, z0, x1, z1 in geo["walls"]:
+            ax.plot([x0, x1], [z0, z1], "--", color="#FFFFFF", linewidth=1.2, zorder=6)
+        dx0, dz0, dx1, dz1 = geo["door"]
+        ax.plot([dx0, dx1], [dz0, dz1], "-", color="#38BDF8", linewidth=2.2, zorder=6)
+        for (x0, z0, x1, z1), state in geo["vents"]:
+            color = _VENT_STATE_COLORS.get(state, "#94A3B8")
+            ax.plot([x0, x1], [z0, z1], "-", color=color, linewidth=3.4, zorder=6)
 
     def _draw_crosshair(self, ax, name: str) -> None:
         if self._point is None and self._depth is None:

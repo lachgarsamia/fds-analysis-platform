@@ -4318,6 +4318,24 @@ class TestMultiPlaneLinkedCrossSections:
         assert yz_data is None and isinstance(yz_reason, str)
         window.close()
 
+    def test_xz_pane_draws_the_same_room_overlay_as_the_live_viewer(self, qapp):
+        """Live polish: XZ is the app's one verified y-normal plane, the
+        same plane the Live Viewer heatmap's room overlay (views.py) is
+        drawn on -- without this, the two looked inconsistent (one had a
+        room boundary/door/vents, the other a plain heatmap)."""
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        mp = window.multiplane_panel
+        mp.ensure_loaded()
+        ax = mp._axes["XZ"]
+        lines = ax.get_lines()
+        # 5 wall segments + 1 door segment + 2 vent segments = 8, plus
+        # whatever the crosshair itself contributes (0 or 1 more).
+        assert len(lines) >= 8
+        window.close()
+
     def test_render_does_not_crash_with_mixed_gating(self, qapp):
         """One real plane + two gated planes rendered together must not
         raise (the exact failure mode fixed in V6-M5: an uncaught exception
