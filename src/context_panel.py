@@ -66,6 +66,20 @@ class ContextPanel(QtWidgets.QWidget):
         self.summary.setProperty("role", "value")
         layout.addWidget(self.summary)
 
+        # Synthesized point-story (Analysis-improvement roadmap Phase C):
+        # nearest narrative event + local measurement/zone reading + cause
+        # chain, combined into one paragraph -- pure reuse via
+        # context.gather_context, nothing computed here.
+        self.point_story = QtWidgets.QLabel("")
+        self.point_story.setAccessibleName("Point story")
+        self.point_story.setToolTip(
+            "A synthesized summary of what's known about the selected point: the "
+            "nearest narrative event, a local measurement/zone reading, and the "
+            "Cause Explorer's chain (if already traced nearby).")
+        self.point_story.setWordWrap(True)
+        self.point_story.setProperty("role", "caption")
+        layout.addWidget(self.point_story)
+
         history_row = QtWidgets.QHBoxLayout()
         self.back_button = QtWidgets.QPushButton("← Back")
         self.back_button.setAccessibleName("History back")
@@ -153,6 +167,7 @@ class ContextPanel(QtWidgets.QWidget):
         if self._selection is None:
             return
         ctx = gather_context(self._app, self._selection)
+        self.point_story.setText(ctx["point_story"])
 
         device_insights = [ins for ins in (d.summary_insight() for d in ctx["devices"]) if ins is not None]
         self.devices_list.set_insights(device_insights)

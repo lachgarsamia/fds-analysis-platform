@@ -3971,6 +3971,38 @@ class TestUnifiedWorkspace:
         assert len(calls) == n_after_scenario   # no new gather_context calls from time-only changes
         window.close()
 
+    def test_point_story_combines_measurement_and_cause_chain(self, qapp):
+        """Analysis-improvement roadmap Phase C: the synthesized point-story
+        pulls a local measurement reading (already-cached, no new store
+        read) and the Cause Explorer's last-traced chain (only when it's
+        near the selected point) into one paragraph."""
+        import measure as mz
+        from insight import Insight
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        case_index = window.sim_data.manifest[0].case_index
+        window.measurement_panel._measurements.append(
+            mz.Measurement(kind="probe", points=[(1.0, 1.0)], label="P1", readout="123 degC"))
+        window.selection_bus.update(origin=None, scenario=case_index, point=(1.0, 1.0))
+        QtWidgets.QApplication.processEvents()
+        story = window.context_panel.point_story.text()
+        assert "P1: 123 degC" in story
+        # Cause chain absent until traced near this point -> no cause-trace clause yet.
+        assert "Cause trace" not in story
+        cp = window.cause_panel
+        cp.ensure_loaded()
+        cp._last_point = (1.0, 1.0)
+        cp._last_insights = [Insight("It traces back to the hottest connected point (400 °C).",
+                                     category="cause", quantity="TEMPERATURE")]
+        window.selection_bus.update(origin=None, time_s=1.0, point=(1.0, 1.0001))
+        QtWidgets.QApplication.processEvents()
+        story = window.context_panel.point_story.text()
+        assert "Cause trace" in story and "hottest connected point" in story
+        window.close()
+
     def test_study_panel_parallel_click_propagates_to_bus(self, qapp):
         import numpy as np
         import study_analytics as sa

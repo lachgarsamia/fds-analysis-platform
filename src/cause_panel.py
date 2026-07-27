@@ -38,6 +38,11 @@ class CausePanel(QtWidgets.QWidget):
         self._data = None
         self._extent = None
         self._ax = None
+        # Cached for the Context Panel's synthesized point-story (Analysis-
+        # improvement roadmap Phase C): the last traced point/chain, so a
+        # nearby selection can reuse it without a fresh store read.
+        self._last_point = None
+        self._last_insights = []
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -146,4 +151,6 @@ class CausePanel(QtWidgets.QWidget):
         row, col = phys_to_index(self._extent, frame.shape, event.xdata, event.ydata)
         insights, path = ce.explain(frame, self._extent, idx / self._fps, row, col)
         self.chain.set_insights(insights)
+        self._last_point = (float(event.xdata), float(event.ydata))
+        self._last_insights = insights
         self._render(trace=path)
