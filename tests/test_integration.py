@@ -3676,6 +3676,30 @@ class TestVirtualDeviceNetwork:
         assert window.time_controller.index == expected
         window.close()
 
+    def test_compare_across_scenarios_evaluates_same_device_everywhere(self, qapp):
+        """Analysis-improvement roadmap Phase C: the Zones cross-scenario
+        pattern, reused for Devices -- place once, "Compare" evaluates the
+        same position/type/parameters at every scenario."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        window._navigate_to("analysis")
+        p = window.device_panel
+        window.pages["analysis"].show_tab(p)
+        QtWidgets.QApplication.processEvents()
+        p.type_combo.setCurrentIndex(p.type_combo.findData("thermocouple"))
+        p._place(1.0, 1.0)
+        p.list.setCurrentRow(0)
+        p._compare_across_scenarios()
+        assert p.compare_table.isVisible()
+        assert p.compare_table.rowCount() == len(sim_data.manifest)
+        assert p.compare_table.item(0, 0).text() == sim_data.manifest[0].folder
+        assert p.compare_table.item(0, 1).text() != ""
+        window.close()
+
     def test_session_round_trip_preserves_devices_and_results(self, qapp, tmp_path):
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)

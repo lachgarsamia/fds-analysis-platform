@@ -96,7 +96,8 @@ class DevicePanel(QtWidgets.QWidget):
         self.caption = QtWidgets.QLabel(
             "Click the map to place the selected device type at that point. Playback "
             "runs once; a device's history is computed at placement and cached -- "
-            "results save with the session.")
+            "results save with the session. \"Compare\" evaluates the same device "
+            "(position, type, parameters) across every scenario.")
         self.caption.setWordWrap(True)
         self.caption.setProperty("role", "caption")
         layout.addWidget(self.caption)
@@ -126,6 +127,7 @@ class DevicePanel(QtWidgets.QWidget):
             "device-rename": "Rename the selected device",
             "device-edit": "Edit RTI/activation-temperature parameters and recompute",
             "device-jump": "Reveal this device's result across the app (Live Viewer, Graph, Context)",
+            "device-compare": "Evaluate this device across every scenario",
             "device-export": "Export this device's time series as CSV",
             "device-delete": "Delete the selected device",
         }
@@ -133,6 +135,7 @@ class DevicePanel(QtWidgets.QWidget):
                 ("Rename", self._rename, "device-rename"),
                 ("Edit parameters", self._edit_parameters, "device-edit"),
                 ("Jump to", self._jump_to, "device-jump"),
+                ("Compare", self._compare_across_scenarios, "device-compare"),
                 ("Export CSV", self._export, "device-export"),
                 ("Delete", self._delete, "device-delete")):
             b = QtWidgets.QPushButton(text)
@@ -143,6 +146,12 @@ class DevicePanel(QtWidgets.QWidget):
         btns.addStretch(1)
         list_row.addLayout(btns)
         layout.addLayout(list_row)
+
+        self.compare_table = QtWidgets.QTableWidget()
+        self.compare_table.setAccessibleName("Device comparison table")
+        self.compare_table.setMaximumHeight(150)
+        self.compare_table.setVisible(False)
+        layout.addWidget(self.compare_table)
 
         self.scenario_combo.currentIndexChanged.connect(self._reload)
         self.canvas.mpl_connect("button_press_event", self._on_press)
@@ -283,8 +292,33 @@ class DevicePanel(QtWidgets.QWidget):
         if 0 <= i < len(self._devices):
             del self._devices[i]
             self._refresh_list()
+            self.compare_table.setVisible(False)
             self._render()
             self.devices_changed.emit()
+
+    def _compare_across_scenarios(self) -> None:
+        """Cross-scenario comparison (Analysis-improvement roadmap Phase C):
+        the exact pattern Zone Statistics already has -- place a device
+        once, then evaluate its type/position/parameters/plane at every
+        scenario in one click, streaming one scenario at a time."""
+        d = self._current()
+        if d is None:
+            return
+        self.compare_table.clear()
+        self.compare_table.setColumnCount(2)
+        self.compare_table.setRowCount(len(self._manifest))
+        self.compare_table.setHorizontalHeaderLabels(["Scenario", "Result"])
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            pairs = dv.compare_across_scenarios(d, self._provider, self._manifest, self._fps)
+            for r, (entry, computed) in enumerate(pairs):
+                text = self._headline(computed) if computed is not None else "gated (plane unavailable)"
+                self.compare_table.setItem(r, 0, QtWidgets.QTableWidgetItem(entry.folder))
+                self.compare_table.setItem(r, 1, QtWidgets.QTableWidgetItem(text))
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        self.compare_table.resizeColumnsToContents()
+        self.compare_table.setVisible(True)
 
     def _jump_to(self) -> None:
         d = self._current()
