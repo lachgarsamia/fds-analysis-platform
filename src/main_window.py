@@ -60,13 +60,11 @@ from figure_export import (PublicationExportDialog, export_publication_figure,
 from report_builder import (build_scenario_report, build_comparison_report,
                             build_session_report, write_report)
 from semantic_diff import compare as compare_scenarios, difference_statements
-from semantic_diff_panel import SemanticDiffPanel
 from query_panel import QueryPanel
 from state_space_panel import StateSpacePanel
 from attention_panel import AttentionPanel
 from cause_panel import CausePanel
 from height_panel import HeightPanel
-from linked_panel import LinkedInspectionPanel
 from zone_panel import ZonePanel
 from time_window_panel import TimeWindowPanel
 from measurement_panel import MeasurementPanel
@@ -532,7 +530,6 @@ class MainWindow(QtWidgets.QMainWindow):
     _BUNDLE_FIGURES = [
         ("height_panel", "plot_canvas", "height_profile", "Vertical temperature profile and layer/plume/ceiling over time."),
         ("zone_panel", "plot_canvas", "zone_stats", "Named-zone temperature and thermal-dose over time."),
-        ("linked_panel", "plots_canvas", "linked_inspection", "Linked temperature, HRR, smoke layer, and speed at one moment."),
         ("hazard_panel", "timeline_canvas", "hazard_timeline", "Hazard-class fractions over time (temperature-only partial screen)."),
         ("study_panel", "parallel_canvas", "study_parallel", "Parameter-vs-response parallel coordinates across the factorial."),
         ("sensitivity_panel", "surface_canvas", "sensitivity_surface", "Estimated response surface (interpolated from existing scenarios)."),
@@ -808,12 +805,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.fire_mri_panel = FireMRIPanel(
                 self.controller.store, self.sim_data.manifest,
                 self._quantity_options(), self.sim_data.timesteps_per_second)
-            # Semantic diff (V3-M3): physics-difference report between two
-            # scenarios. Needs at least two scenarios to compare.
-            self.semantic_diff_panel = (
-                SemanticDiffPanel(self.controller.store, self.sim_data.manifest,
-                                  self._quantity_options(), self.sim_data.timesteps_per_second)
-                if len(self.sim_data.manifest) >= 2 else None)
             # Physics query engine (V3-M4).
             self.query_panel = QueryPanel(
                 self.controller.store, self.sim_data.manifest, self.sim_data.timesteps_per_second)
@@ -833,11 +824,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.height_panel = HeightPanel(
                 self.controller.store, self.sim_data.manifest,
                 self._quantity_options(), self.sim_data.timesteps_per_second)
-            # Linked multi-quantity inspection (V4-M3): one moment across
-            # temperature / HRR / smoke layer / velocity, shared time cursor.
-            self.linked_panel = LinkedInspectionPanel(
-                self.controller.store, self.sim_data.manifest,
-                self.sim_data.timesteps_per_second)
             # Named region / zone statistics (V4-M4): persistent zones with
             # a full stats bundle, compared across scenarios, session-saved.
             self.zone_panel = ZonePanel(
@@ -941,13 +927,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.sensitivity_panel = None
             self.tenability_panel = None
             self.fire_mri_panel = None
-            self.semantic_diff_panel = None
             self.query_panel = None
             self.state_space_panel = None
             self.attention_panel = None
             self.cause_panel = None
             self.height_panel = None
-            self.linked_panel = None
             self.zone_panel = None
             self.time_window_panel = None
             self.measurement_panel = None
@@ -990,13 +974,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 factor_effects_content=self.factor_effects_panel,
                 tenability_content=self.tenability_panel,
                 fire_mri_content=self.fire_mri_panel,
-                semantic_diff_content=self.semantic_diff_panel,
                 query_content=self.query_panel,
                 state_space_content=self.state_space_panel,
                 attention_content=self.attention_panel,
                 cause_content=self.cause_panel,
                 height_content=self.height_panel,
-                linked_content=self.linked_panel,
                 zone_content=self.zone_panel,
                 interval_content=self.time_window_panel,
                 measurement_content=self.measurement_panel,
@@ -1074,14 +1056,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.controller.store, fps=self.time_controller.timesteps_per_second)
         self._seek_from_bus = False
         fps = self.time_controller.timesteps_per_second
-        for attr in ("height_panel", "zone_panel", "linked_panel", "time_window_panel",
-                     "measurement_panel", "fire_mri_panel", "semantic_diff_panel",
+        for attr in ("height_panel", "zone_panel", "time_window_panel",
+                     "measurement_panel", "fire_mri_panel",
                      "query_panel", "state_space_panel", "attention_panel", "cause_panel",
                      "factor_effects_panel", "tenability_panel", "timeseries_panel",
                      "energy_panel", "forecasting_panel", "quantities_panel",
                      "advanced_compare_panel", "study_panel", "hazard_panel",
                      "spacetime_panel", "narrative_panel", "ensemble_panel", "device_panel",
-                     "velocity_panel"):
+                     "velocity_panel", "calculator_panel"):
             panel = getattr(self, attr, None)
             if panel is not None:
                 bind_to_bus(panel, self.selection_bus, fps)
@@ -1351,12 +1333,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.evidence_dock.hide()
         for panel_attr, list_attr in (
             ("inspector", "story_list"), ("height_panel", "insights"),
-            ("linked_panel", "insights"), ("zone_panel", "insights"),
+            ("zone_panel", "insights"),
             ("time_window_panel", "insights"),
             ("advanced_compare_panel", "temporal_list"),
             ("advanced_compare_panel", "spatial_list"),
             ("advanced_compare_panel", "physics_list"),
-            ("query_panel", "results"), ("semantic_diff_panel", "list"),
+            ("advanced_compare_panel", "semantic_diff_list"),
+            ("query_panel", "results"),
             ("cause_panel", "chain"),
         ):
             panel = getattr(self, panel_attr, None)
@@ -3027,11 +3010,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_schematic()
 
     def _open_browser_scenario(self, case_index: int):
-        """Double-click in the experiment browser: load into active cell."""
+        """Double-click in the experiment browser, or a PCA-scatter click in
+        Ensemble analytics (Analysis-improvement roadmap Phase A -- that
+        panel had zero SelectionBus wiring, a dead-end scatter plot): load
+        into the active cell AND publish to the bus, so every other panel
+        follows too, not just the Live Viewer."""
         cell = self.view_grid.active_cell()
         if cell.cell_type != "slice":
             cell.set_cell_type("slice")
         self._apply_manifest_case_to_controller(case_index)
+        if getattr(self, "selection_bus", None) is not None:
+            self.selection_bus.update(origin=self, scenario=case_index)
 
     def _open_browser_grid(self, case_indices: list):
         """Open up to nine browser-selected scenarios in the grid."""

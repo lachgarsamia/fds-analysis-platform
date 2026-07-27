@@ -24,7 +24,7 @@ from events import detect_events
 from layer_height import smoke_layer_height_series
 from summary_stats import read_hrr_table
 from linked_inspection import value_at_time
-from linked_panel import _fmt_hrr
+from summary_stats import fmt_hrr as _fmt_hrr
 import hazard_spaces as hz
 
 # Preset names only; main_window owns the tab+quantity focus (it holds the
@@ -44,6 +44,7 @@ class DashboardPanel(QtWidgets.QWidget):
         self._fps = max(1, fps)
         self._models = {}
         self._bus = None
+        self._current_ci = None
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -62,6 +63,16 @@ class DashboardPanel(QtWidgets.QWidget):
         self.preset_combo.activated.connect(self._on_preset)
         header.addWidget(self.preset_combo)
         layout.addLayout(header)
+
+        # Jump to peak moment (Analysis-improvement roadmap Phase A, folded
+        # in from the removed Inspect Moment tab): that panel's whole value
+        # was "click a temperature peak, see everything at that instant" --
+        # this dashboard already reads the current instant's HRR/layer/
+        # hazard, so the only missing piece was a way to jump *to* the peak.
+        self.jump_to_peak_button = QtWidgets.QPushButton("Jump to peak moment")
+        self.jump_to_peak_button.setAccessibleName("Jump to this scenario's peak-temperature moment")
+        self.jump_to_peak_button.clicked.connect(self._on_jump_to_peak)
+        layout.addWidget(self.jump_to_peak_button)
 
         self.caption = QtWidgets.QLabel(
             "Synchronized to the current selection. Hazard is a temperature-only "
@@ -105,6 +116,15 @@ class DashboardPanel(QtWidgets.QWidget):
     def _on_preset(self, _i) -> None:
         self.workspace_requested.emit(self.preset_combo.currentText())
 
+    def _on_jump_to_peak(self) -> None:
+        if self._bus is None or self._current_ci is None:
+            return
+        m = self._models.get(self._current_ci)
+        if m is None:
+            return
+        peak_frame = int(np.argmax(m["peakT"]))
+        self._bus.update(origin=self, time_s=peak_frame / self._fps)
+
     # --------------------------------------------------------------- model
     def _model(self, case_index):
         if case_index in self._models:
@@ -143,6 +163,7 @@ class DashboardPanel(QtWidgets.QWidget):
         m = self._model(ci) if ci is not None else None
         if m is None:
             return
+        self._current_ci = ci
         t = selection.time_s if selection.time_s is not None else 0.0
         frame = min(max(int(round(t * self._fps)), 0), m["n"] - 1)
 

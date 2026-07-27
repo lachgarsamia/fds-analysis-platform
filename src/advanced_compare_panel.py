@@ -21,6 +21,7 @@ from registry import get_quantity, AMBIENT_C
 from insight import InsightList
 from descriptors import compute_descriptors
 import advanced_compare as ac
+import semantic_diff as sd
 
 
 class AdvancedComparePanel(QtWidgets.QWidget):
@@ -59,9 +60,11 @@ class AdvancedComparePanel(QtWidgets.QWidget):
         layout.addLayout(header)
 
         self.caption = QtWidgets.QLabel(
-            "Three comparison axes. Temporal: when the danger lead flips. "
+            "Four comparison axes. Temporal: when the danger lead flips. "
             "Spatial: which region differs most. Physics: the descriptors most "
-            "associated with the difference (association, not proven cause).")
+            "associated with the difference (association, not proven cause). "
+            "Semantic diff: the ranked physics-difference report -- click a row "
+            "to see the A − B field at the moment it matters.")
         self.caption.setWordWrap(True)
         self.caption.setProperty("role", "caption")
         layout.addWidget(self.caption)
@@ -76,10 +79,23 @@ class AdvancedComparePanel(QtWidgets.QWidget):
         self.physics_list = self._axis_list(
             layout, "Physics — associated drivers (not proven cause)")
 
+        # Semantic diff (merged in, Analysis-improvement roadmap Phase A):
+        # was its own tab with an identical two-scenario+quantity shape --
+        # same "GitHub diff for CFD" ranked-differences report, now a 4th
+        # axis here instead of a structurally duplicate sibling tab.
+        self.semantic_diff_list = self._axis_list(
+            layout, "Semantic diff — ranked differences (click for evidence)")
+        self.semantic_diff_canvas = MplCanvas(self)
+        self.semantic_diff_canvas.setAccessibleName("Semantic diff evidence field")
+        self.semantic_diff_canvas.setMinimumHeight(150)
+        layout.addWidget(self.semantic_diff_canvas, 1)
+        self._sd_cache: dict = {}
+
         self.combo_a.currentIndexChanged.connect(self._recompute)
         self.combo_b.currentIndexChanged.connect(self._recompute)
         self.quantity_combo.currentIndexChanged.connect(self._recompute)
         self.temporal_list.insight_activated.connect(self._on_temporal)
+        self.semantic_diff_list.insight_activated.connect(self._show_semantic_evidence)
 
     def _axis_list(self, layout, title: str) -> InsightList:
         label = QtWidgets.QLabel(title)
@@ -136,7 +152,8 @@ class AdvancedComparePanel(QtWidgets.QWidget):
         if ca is None or cb is None or key is None:
             return
         if ca == cb:
-            for lst in (self.temporal_list, self.spatial_list, self.physics_list):
+            for lst in (self.temporal_list, self.spatial_list, self.physics_list,
+                       self.semantic_diff_list):
                 lst.set_insights([])
             self._metric = None
             self._render(None)
@@ -160,6 +177,55 @@ class AdvancedComparePanel(QtWidgets.QWidget):
         self.spatial_list.set_insights(result["spatial"])
         self.physics_list.set_insights(result["physics"])
         self._render(None)
+
+        if cache_key not in self._sd_cache:
+            data_a = np.asarray(self._store.get(ca, key))
+            data_b = np.asarray(self._store.get(cb, key))
+            extent = self._store.get_extent(ca, key)
+            self._sd_cache[cache_key] = sd.compare(
+                data_a, data_b, extent, self._fps, key.quantity,
+                self._label(ca), self._label(cb),
+                self._summaries.get(ca), self._summaries.get(cb))
+        sd_insights = self._sd_cache[cache_key]
+        self.semantic_diff_list.set_insights(sd_insights)
+        if sd_insights:
+            self._show_semantic_evidence(sd_insights[0])
+        else:
+            self.semantic_diff_canvas.fig.clear()
+            self.semantic_diff_canvas.draw_idle()
+
+    def _show_semantic_evidence(self, insight) -> None:
+        """Semantic diff's own evidence render (merged in, Phase A): the
+        A - B field at the instant the clicked difference row evidences."""
+        ca, cb = self.combo_a.currentData(), self.combo_b.currentData()
+        key = self._key
+        if ca is None or cb is None or key is None:
+            return
+        data_a = np.asarray(self._store.get(ca, key))
+        data_b = np.asarray(self._store.get(cb, key))
+        n = min(data_a.shape[0], data_b.shape[0])
+        idx = insight.frame_index(self._fps)
+        idx = min(idx if idx is not None else 0, n - 1)
+        diff = data_a[idx] - data_b[idx]
+        vmax = float(np.max(np.abs(diff))) or 1.0
+        extent = self._store.get_extent(ca, key)
+        display = get_quantity(key.quantity)
+
+        fig = self.semantic_diff_canvas.fig
+        fig.clear()
+        ax = fig.add_subplot(111)
+        image = ax.imshow(diff, cmap="RdBu_r", vmin=-vmax, vmax=vmax,
+                          aspect="auto", extent=extent if extent else None)
+        ax.set_xticks([]); ax.set_yticks([])
+        ax.set_title(f"A − B at t = {idx / self._fps:.1f} s", fontsize=9, fontweight="bold")
+        cbar = fig.colorbar(image, ax=ax, fraction=0.046, pad=0.02)
+        cbar.set_label(f"Δ{display.label} ({display.unit})", fontsize=8)
+        if insight.location is not None and extent is not None:
+            ax.plot(insight.location[0], insight.location[1], "o",
+                    markersize=12, markerfacecolor="none", markeredgecolor="#00E5FF",
+                    markeredgewidth=2)
+        fig.subplots_adjust(top=0.92, bottom=0.03, left=0.02, right=0.95)
+        self.semantic_diff_canvas.draw_idle()
 
     def _on_temporal(self, insight) -> None:
         self._render(insight.primary_time())

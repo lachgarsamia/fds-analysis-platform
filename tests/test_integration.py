@@ -1715,6 +1715,10 @@ class TestIntegration:
         panel._on_click(FakeEvent())
 
         assert window.controller.current_case_index() == target_case
+        # Analysis-improvement roadmap Phase A: a PCA click used to be a
+        # dead end for every other panel (analytics_panel had zero
+        # SelectionBus wiring) -- now it publishes too.
+        assert window.selection_bus.current.scenario == target_case
         window.close()
 
     def test_browser_selection_shows_auto_summary(self, qapp):
@@ -2268,23 +2272,25 @@ class TestFireStory:
 
 
 class TestSemanticDiffPanel:
-    """V3-M3: semantic diff panel + report integration."""
+    """V3-M3, merged into Compare Axes (Analysis-improvement roadmap Phase
+    A): semantic diff was a structurally-duplicate sibling tab (same two-
+    scenario+quantity shape as Advanced Comparison) -- now its 4th axis."""
 
     def test_panel_lists_differences_and_shows_evidence(self, qapp):
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo:
-            assert getattr(window, "semantic_diff_panel", None) is None
+            assert getattr(window, "advanced_compare_panel", None) is None
             window.close()
             return
-        panel = window.semantic_diff_panel
+        panel = window.advanced_compare_panel
         assert panel is not None
         panel.ensure_loaded()
-        assert panel.list.count() >= 1
+        assert panel.semantic_diff_list.count() >= 1
         # clicking a difference renders the A - B evidence field
-        first = panel._insights[0]
-        panel._show_evidence(first)
-        assert panel._image is not None
+        first = panel._sd_cache[list(panel._sd_cache.keys())[0]][0]
+        panel._show_semantic_evidence(first)
+        assert panel.semantic_diff_canvas.fig.axes
         window.close()
 
     def test_comparison_report_includes_key_differences(self, qapp, tmp_path, monkeypatch):
@@ -2488,33 +2494,31 @@ class TestEvidenceNotebookIntegration:
         window.close()
 
 
-class TestLinkedInspectionPanel:
-    """V4-M3: linked multi-quantity inspection."""
+class TestDashboardJumpToPeak:
+    """V4-M3's linked multi-quantity inspection was folded into the
+    Dashboard's "Jump to peak moment" button (Analysis-improvement roadmap
+    Phase A): same "one moment across temperature/HRR/smoke layer" value,
+    without a structurally-redundant sibling tab (Dashboard already shows
+    all of those cards for the current instant)."""
 
     def test_fmt_hrr_uses_watts_when_sub_kilowatt(self):
-        from linked_panel import _fmt_hrr
-        assert _fmt_hrr(0.077) == "77 W"    # candle: sub-kW reads in W, not "0 kW"
-        assert _fmt_hrr(1500.0) == "1500.0 kW"
+        from summary_stats import fmt_hrr
+        assert fmt_hrr(0.077) == "77 W"    # candle: sub-kW reads in W, not "0 kW"
+        assert fmt_hrr(1500.0) == "1500.0 kW"
 
-    def test_panel_links_quantities_at_one_instant(self, qapp):
+    def test_jump_to_peak_seeks_bus_time_to_the_peak_frame(self, qapp):
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo:
-            assert getattr(window, "linked_panel", None) is None
             window.close()
             return
-        panel = window.linked_panel
-        panel.ensure_loaded()
-        assert panel.scenario_combo.count() == len(sim_data.manifest)
-        assert panel.insights.count() >= 1  # at least the temperature-peak moment
+        panel = window.dashboard_panel
+        ci = panel._current_ci
+        m = panel._model(ci)
         import numpy as np
-        pk = int(np.argmax(panel._series["peak_t"]))
-        panel.frame_slider.setValue(pk)
-        # the readout reports several quantities at the one selected instant
-        assert "peak T" in panel.readout.text() and "smoke layer" in panel.readout.text()
-        # and a saved moment lands in the Evidence Notebook (M2 wiring)
-        panel.insights.insight_saved.emit(panel.insights.item(0).data(QtCore.Qt.UserRole))
-        assert len(window.evidence_dock.notebook) == 1
+        expected_peak_t = int(np.argmax(m["peakT"])) / panel._fps
+        panel._on_jump_to_peak()
+        assert window.selection_bus.current.time_s == pytest.approx(expected_peak_t)
         window.close()
 
 
@@ -2849,8 +2853,7 @@ class TestPublicationExport:
             window.close()
             return
         for name, canvas_attr in (("height_panel", "plot_canvas"),
-                                   ("zone_panel", "plot_canvas"),
-                                   ("linked_panel", "plots_canvas")):
+                                   ("zone_panel", "plot_canvas")):
             panel = getattr(window, name)
             panel.ensure_loaded()
             assert hasattr(panel, "export_button")
@@ -2981,12 +2984,12 @@ class TestSharedSelectionModel:
             window.close()
             return
         window.height_panel.ensure_loaded()
-        window.linked_panel.ensure_loaded()
+        window.zone_panel.ensure_loaded()
         # changing one panel's scenario publishes it; the other panel follows
         # (scenario sync is not visibility-gated).
         window.height_panel.scenario_combo.setCurrentIndex(3)
         assert window.selection_bus.current.scenario == window.height_panel.scenario_combo.currentData()
-        assert window.linked_panel.scenario_combo.currentData() == window.selection_bus.current.scenario
+        assert window.zone_panel.scenario_combo.currentData() == window.selection_bus.current.scenario
         # RC polish: time sync is visibility-gated (only the shown analysis tab
         # animates live). Show the height panel, then a published time syncs its
         # frame slider.
@@ -3391,6 +3394,28 @@ class TestFieldCalculator:
     def teardown_method(self):
         import field_calculator as fc
         fc.clear()
+
+    def test_preview_scenario_combo_is_bus_bound(self, qapp):
+        """Analysis-improvement roadmap Phase A: the "Preview on:" combo was
+        a disconnected local picker -- now it follows (and publishes to)
+        the SelectionBus like every other panel's scenario_combo, via the
+        same generic bind_to_bus every other panel already uses."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        p = window.calculator_panel
+        if p.scenario_combo.count() < 2:
+            window.close()
+            return
+        p.scenario_combo.setCurrentIndex(1)
+        assert window.selection_bus.current.scenario == p.scenario_combo.currentData()
+        other_case = next(c for c in window.sim_data.data_matrix.flatten()
+                          if c != p.scenario_combo.currentData())
+        window.selection_bus.update(origin=None, scenario=int(other_case))
+        assert p.scenario_combo.currentData() == int(other_case)
+        window.close()
 
     def test_create_field_registers_and_provider_computes(self, qapp):
         import numpy as np

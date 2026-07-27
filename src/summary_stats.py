@@ -283,3 +283,9 @@ def build_summary_index(entries: list, store, fps: int, cache_path: str) -> list
     ]
     _write_cache(cache_path, summaries)
     return summaries
+
+
+def fmt_hrr(v: float) -> str:
+    """Present HRR in the unit that shows its real magnitude -- a candle
+    fire peaks well under 1 kW, so kW-rounded reads as a misleading 0."""
+    return f"{v * 1000:.0f} W" if abs(v) < 1.0 else f"{v:.1f} kW"
