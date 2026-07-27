@@ -1,14 +1,20 @@
-"""Measurement Tools panel (V4-M7), an Analysis-page tab.
+"""Measurement Tools panel (V4-M7; reduced in the UX consolidation pass),
+an Analysis-page tab.
 
 On-field measurement over its own locator canvas (the Live viewer's
-cinematic pipeline is left untouched): pick a tool -- Distance, Path,
-Rectangle, or Probe -- and measure directly on the field. Distances and
-path lengths read out in metres with Delta-x / Delta-z; the rectangle
-reports physical area plus min/mean/max of the current quantity; the probe
-reads the bilinearly-interpolated value at a point. Measurements can be
-taken at the current time or averaged over a V4-M5 interval, snap to grid
-cells, overlay on the canvas, and are labelled/deleted in the list. They
-save with the Named Session (V4-M6) and print in its report.
+cinematic pipeline is left untouched): pick Rectangle or Probe and measure
+directly on the field. The rectangle reports physical area plus
+min/mean/max of the current quantity; the probe reads the
+bilinearly-interpolated value at a point (heatmap probing). Measurements
+can be taken at the current time or averaged over a V4-M5 interval, snap
+to grid cells, overlay on the canvas, and are labelled/deleted in the
+list. They save with the Named Session (V4-M6) and print in its report.
+
+Distance and path (straight-line / polyline length) were removed from the
+tool set as generic geometry with no scientific quantity attached -- a
+session saved before this change with such entries still loads, still
+renders on the locator canvas, and still prints in its report (see
+measure.py); only the tool to create new ones is gone.
 
 Static/lazy; reuses the store, the extent/coordinate convention, the
 measure.py engine, and the registry.
@@ -37,7 +43,6 @@ class MeasurementPanel(QtWidgets.QWidget):
         self._data = None
         self._extent = None
         self._measurements = []     # list[mz.Measurement]
-        self._pending = []          # in-progress click points (distance/path)
         self._press = None          # rect drag corner
         self._loc_ax = None
 
@@ -64,12 +69,8 @@ class MeasurementPanel(QtWidgets.QWidget):
         tools = QtWidgets.QHBoxLayout()
         self.tool_combo = QtWidgets.QComboBox()
         self.tool_combo.setAccessibleName("Measurement tool")
-        self.tool_combo.addItems(["Distance", "Path", "Rectangle", "Probe"])
+        self.tool_combo.addItems(["Rectangle", "Probe"])
         tools.addWidget(self.tool_combo)
-        self.finish_button = QtWidgets.QPushButton("Finish path")
-        self.finish_button.setAccessibleName("Finish path")
-        self.finish_button.clicked.connect(self._finish_path)
-        tools.addWidget(self.finish_button)
         self.snap_check = QtWidgets.QCheckBox("Snap to grid")
         tools.addWidget(self.snap_check)
         self.overlay_check = QtWidgets.QCheckBox("Show overlays")
@@ -92,8 +93,8 @@ class MeasurementPanel(QtWidgets.QWidget):
         layout.addLayout(interval_row)
 
         self.caption = QtWidgets.QLabel(
-            "Distance/Probe: click point(s). Path: click points then Finish. "
-            "Rectangle: drag a box. Readout below; measurements save with the session.")
+            "Rectangle: drag a box for area + min/mean/max of the current quantity. "
+            "Probe: click a point for its value. Readout below; measurements save with the session.")
         self.caption.setWordWrap(True)
         self.caption.setProperty("role", "caption")
         layout.addWidget(self.caption)
@@ -194,7 +195,6 @@ class MeasurementPanel(QtWidgets.QWidget):
         for spin in (self.t0_spin, self.t1_spin):
             spin.setRange(0.0, t_end)
         self.t1_spin.setValue(t_end)
-        self._pending = []
         self._render()
 
     def _on_frame(self, _v) -> None:
@@ -202,8 +202,7 @@ class MeasurementPanel(QtWidgets.QWidget):
         self._render()
 
     def _on_tool_changed(self, _idx) -> None:
-        self._pending = []
-        self.finish_button.setEnabled(self._tool == "path")
+        self._press = None
         self._render()
 
     # ----------------------------------------------------------- interaction
@@ -237,22 +236,6 @@ class MeasurementPanel(QtWidgets.QWidget):
             self._press = None
         elif tool == "probe":
             self._add(mz.Measurement("probe", [(x, z)]))
-        elif tool == "distance":
-            self._pending.append((x, z))
-            if len(self._pending) == 2:
-                self._add(mz.Measurement("distance", list(self._pending)))
-                self._pending = []
-            else:
-                self._render()
-        elif tool == "path":
-            self._pending.append((x, z))
-            self._render()
-
-    def _finish_path(self) -> None:
-        if self._tool == "path" and len(self._pending) >= 2:
-            self._add(mz.Measurement("path", list(self._pending)))
-        self._pending = []
-        self._render()
 
     # --------------------------------------------------------------- compute
     def _interval_indices(self):
@@ -271,14 +254,6 @@ class MeasurementPanel(QtWidgets.QWidget):
         i0, i1 = self._interval_indices()
         when = (f"averaged {self.t0_spin.value():.1f}–{self.t1_spin.value():.1f} s"
                 if i0 is not None else f"at t = {fi / self._fps:.1f} s")
-        if m.kind == "distance":
-            total = mz.distance(m.points[0], m.points[1])
-            dx = abs(m.points[1][0] - m.points[0][0])
-            dz = abs(m.points[1][1] - m.points[0][1])
-            return f"{total:.3f} m  (Δx {dx:.3f} m, Δz {dz:.3f} m)"
-        if m.kind == "path":
-            total, segs = mz.polyline_length(m.points)
-            return f"{total:.3f} m over {len(segs)} segment(s)"
         if m.kind == "rect":
             (x0, z0), (x1, z1) = m.points
             st = mz.rect_stats(self._data, self._extent, x0, x1, z0, z1,
@@ -352,17 +327,14 @@ class MeasurementPanel(QtWidgets.QWidget):
         if self.overlay_check.isChecked():
             for m in self._measurements:
                 self._draw_measurement(ax, m, "#00E5FF")
-        # in-progress points
-        for (px, pz) in self._pending:
-            ax.plot(px, pz, "o", color="#FDE047", markersize=4)
-        if len(self._pending) >= 2:
-            xs = [p[0] for p in self._pending]; zs = [p[1] for p in self._pending]
-            ax.plot(xs, zs, "-", color="#FDE047", linewidth=1.0)
         fig.subplots_adjust(top=0.92, bottom=0.03, left=0.03, right=0.97)
         self.canvas.draw_idle()
 
     @staticmethod
     def _draw_measurement(ax, m: mz.Measurement, color: str) -> None:
+        # "distance"/"path" can no longer be created via the tool set, but a
+        # session saved before this change may still carry one -- still
+        # rendered here so it doesn't silently vanish from a reopened session.
         if m.kind in ("distance", "path"):
             xs = [p[0] for p in m.points]; zs = [p[1] for p in m.points]
             ax.plot(xs, zs, "-o", color=color, markersize=3, linewidth=1.2)

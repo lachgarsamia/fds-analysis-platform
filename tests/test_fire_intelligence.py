@@ -902,15 +902,12 @@ import measure as mzt  # noqa: E402
 
 
 class TestMeasure:
+    """UX consolidation pass: distance/polyline (generic geometry, no
+    scientific quantity attached) were removed from the tool set along
+    with mz.distance/mz.polyline_length (their only callers). probe/rect
+    (heatmap probing + region stats) are unaffected."""
+
     EXT = (0.0, 1.0, 0.0, 1.0)
-
-    def test_distance(self):
-        assert mzt.distance((0.0, 0.0), (3.0, 4.0)) == pytest.approx(5.0)
-
-    def test_polyline_length(self):
-        total, segs = mzt.polyline_length([(0, 0), (0, 0.3), (0.4, 0.3)])
-        assert total == pytest.approx(0.7)
-        assert segs == pytest.approx([0.3, 0.4])
 
     def test_probe_bilinear(self):
         # 2x2 frame, row 0 = top (z1). corners exact, centre = mean.

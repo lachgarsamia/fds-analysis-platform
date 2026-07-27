@@ -2728,7 +2728,20 @@ class TestNamedSessions:
 
 
 class TestMeasurementPanel:
-    """V4-M7: on-canvas measurement tools."""
+    """V4-M7: on-canvas measurement tools. UX consolidation pass: distance
+    and path (generic geometry, no scientific quantity attached) were
+    removed from the tool set -- only Rectangle (area + min/mean/max) and
+    Probe (heatmap probing) remain."""
+
+    def test_tool_set_is_reduced_to_rect_and_probe(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.measurement_panel is None:
+            window.close()
+            return
+        panel = window.measurement_panel
+        items = [panel.tool_combo.itemText(i) for i in range(panel.tool_combo.count())]
+        assert items == ["Rectangle", "Probe"]
+        window.close()
 
     def test_tools_readouts_and_session_roundtrip(self, qapp, tmp_path):
         import measure as mz, session_store
@@ -2741,24 +2754,47 @@ class TestMeasurementPanel:
         panel = window.measurement_panel
         panel.ensure_loaded()
         assert panel.scenario_combo.count() == len(sim_data.manifest)
-        panel._add(mz.Measurement("distance", [(0.0, 0.24), (1.0, 0.24)]))
         panel._add(mz.Measurement("probe", [(0.9, 0.05)]))
         panel._add(mz.Measurement("rect", [(0.8, 0.0), (1.0, 0.3)]))
-        assert len(panel._measurements) == 3
-        assert "m" in panel._measurements[0].readout  # distance in metres
-        assert "area" in panel._measurements[2].readout
+        assert len(panel._measurements) == 2
+        assert "area" in panel._measurements[1].readout
         # save/restore via a named session
         window._sessions_dir = str(tmp_path)
-        window._on_session_save("Measure study", "ruler+probe+rect")
+        window._on_session_save("Measure study", "probe+rect")
         info = session_store.list_sessions(str(tmp_path))[0]
         panel.set_measurements([])
         assert len(panel._measurements) == 0
         window._on_session_load(info.path)
-        assert len(panel._measurements) == 3
+        assert len(panel._measurements) == 2
         # report includes the measurements
         from report_builder import build_session_report
         html = build_session_report(session_store.load_session(info.path))
         assert "Measurements" in html and "area" in html
+        window.close()
+
+    def test_legacy_distance_and_path_measurements_still_load_and_report(self, qapp):
+        """A session saved before the tool was removed must still load,
+        render, and print in reports -- only creating new ones is gone."""
+        import measure as mz
+        window = MainWindow(load_simulation_data())
+        if window.measurement_panel is None:
+            window.close()
+            return
+        panel = window.measurement_panel
+        panel.ensure_loaded()
+        legacy = [
+            mz.Measurement("distance", [(0.0, 0.24), (1.0, 0.24)], label="old ruler",
+                           readout="1.000 m  (Δx 1.000 m, Δz 0.000 m)").to_dict(),
+            mz.Measurement("path", [(0.0, 0.0), (0.5, 0.5)], label="old path",
+                           readout="0.707 m over 1 segment(s)").to_dict(),
+        ]
+        panel.set_measurements(legacy)
+        assert len(panel._measurements) == 2
+        panel._render()   # must not raise for the legacy kinds
+        from report_builder import build_session_report
+        session = {"name": "legacy", "measurements": legacy}
+        html = build_session_report(session)
+        assert "old ruler" in html and "old path" in html
         window.close()
 
     def test_interval_average_measurement(self, qapp):

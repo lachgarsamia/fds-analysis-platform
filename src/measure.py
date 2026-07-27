@@ -1,13 +1,21 @@
-"""On-canvas measurement tools (V4-M7).
+"""On-canvas measurement tools (V4-M7; reduced in the UX consolidation
+pass -- see below).
 
-Deterministic geometric + value measurement over the 2D slice field:
+Deterministic value measurement over the 2D slice field:
 
-- distance / polyline: straight-line and multi-segment lengths in metres,
-  with the Delta-x / Delta-z components a fire scientist reads for flame
-  width, layer depth, or plume reach;
-- probe: the bilinearly-interpolated value at a physical point;
+- probe: the bilinearly-interpolated value at a physical point (heatmap
+  probing);
 - rectangle: physical area plus min / mean / max of the quantity inside
   the box, at one instant or averaged over a V4-M5 interval.
+
+Distance and path (straight-line / polyline length) were removed from the
+user-facing tool set: generic geometry with no scientific quantity
+attached, which a CFD researcher has little reason to reach for over the
+quantity-bearing probe/rectangle tools or the named, persistent Zone
+Statistics panel. `Measurement.kind` is still a free string, so a session
+saved before this change with "distance"/"path" entries still loads,
+still renders on the locator canvas, and still prints in reports -- only
+the tool to create new ones is gone.
 
 A `Measurement` is the saved unit -- a kind, its physical points, a label,
 and the human-readable readout captured when it was measured -- so it
@@ -24,19 +32,7 @@ from scipy.ndimage import map_coordinates
 
 from timeseries import phys_to_index
 
-KINDS = ("distance", "path", "rect", "probe")
-
-
-def distance(p0, p1) -> float:
-    """Straight-line physical distance between two (x, z) points."""
-    return float(np.hypot(p1[0] - p0[0], p1[1] - p0[1]))
-
-
-def polyline_length(points):
-    """(total_length, [segment_lengths]) for an ordered list of points."""
-    pts = list(points)
-    segs = [distance(pts[i], pts[i + 1]) for i in range(len(pts) - 1)]
-    return float(sum(segs)), segs
+KINDS = ("rect", "probe")
 
 
 def _fractional_index(extent, shape, x: float, z: float):
