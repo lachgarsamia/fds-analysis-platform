@@ -4281,6 +4281,50 @@ class TestHazardTenabilityMerge:
         window.close()
 
 
+class TestAssistantQueryMerge:
+    """Analysis-improvement roadmap Phase B: Ask (the physics-query grammar)
+    was a separate top-level tab from the Assistant -- both are "ask
+    something, get a computed answer" surfaces, now one "Assistant" tab
+    with a mode toggle. A thin wrapper only, so both panels keep their full
+    existing functionality/wiring unchanged."""
+
+    def test_wrapper_holds_both_panels_and_defaults_to_guided_view(self, qapp):
+        window = MainWindow(load_simulation_data())
+        wrapper = window.assistant_query_panel
+        if wrapper is None:
+            window.close()
+            return
+        assert wrapper.assistant_widget is window.assistant_panel
+        assert wrapper.query_widget is window.query_panel
+        assert wrapper.stack.currentWidget() is window.assistant_panel
+        window.close()
+
+    def test_mode_toggle_switches_between_panels(self, qapp):
+        window = MainWindow(load_simulation_data())
+        wrapper = window.assistant_query_panel
+        if wrapper is None:
+            window.close()
+            return
+        wrapper.mode_combo.setCurrentIndex(1)
+        assert wrapper.stack.currentWidget() is window.query_panel
+        wrapper.mode_combo.setCurrentIndex(0)
+        assert wrapper.stack.currentWidget() is window.assistant_panel
+        window.close()
+
+    def test_showing_wrapper_loads_the_query_panel_not_just_visible_one(self, qapp):
+        window = MainWindow(load_simulation_data())
+        wrapper = window.assistant_query_panel
+        if wrapper is None:
+            window.close()
+            return
+        window.show()
+        window._navigate_to("analysis")
+        window.pages["analysis"].show_tab(wrapper)
+        QtWidgets.QApplication.processEvents()
+        assert window.query_panel._loaded
+        window.close()
+
+
 class TestFullFED:
     """V6-M6: full FED (toxic-gas + convected-heat dose). CO is registry-
     gated on the real dataset -- these tests verify the honest gated

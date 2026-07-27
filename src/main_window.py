@@ -72,6 +72,7 @@ from advanced_compare_panel import AdvancedComparePanel
 from experiments_panel import ExperimentsPanel
 from quantities_panel import QuantitiesPanel
 from assistant_panel import AssistantPanel
+from assistant_query_panel import AssistantQueryPanel
 import assistant as assistant_mod
 import experiment as experiment_mod
 from selection import Selection, SelectionBus
@@ -860,6 +861,11 @@ class MainWindow(QtWidgets.QMainWindow):
             # Safe Assistant (V4-M12): bounded, deterministic organization of
             # computed evidence; main_window supplies context and runs it.
             self.assistant_panel = AssistantPanel()
+            # Ask (Analysis-improvement roadmap Phase B): merged into the
+            # Assistant tab as a second mode -- both panels unchanged, only
+            # the tab-level presentation is consolidated (same pattern as
+            # Hazard & Tenability).
+            self.assistant_query_panel = AssistantQueryPanel(self.assistant_panel, self.query_panel)
             # Research workspace (V5-M4): hazard spaces + mission-control
             # dashboard. Per-scenario, so any study (not just the factorial).
             # V6-M6: takes the provider (not the raw store) so a CO read
@@ -947,6 +953,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.experiments_panel = None
             self.quantities_panel = None
             self.assistant_panel = None
+            self.assistant_query_panel = None
             self.hazard_panel = None
             self.hazard_tenability_panel = None
             self.dashboard_panel = None
@@ -980,7 +987,6 @@ class MainWindow(QtWidgets.QMainWindow):
                     self.prediction_store, self.controller.store, self.sim_data.manifest),
                 timeseries_content=self.timeseries_panel,
                 fire_mri_content=self.fire_mri_panel,
-                query_content=self.query_panel,
                 state_space_content=self.state_space_panel,
                 attention_content=self.attention_panel,
                 cause_content=self.cause_panel,
@@ -1003,7 +1009,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 velocity_content=self.velocity_panel,
                 experiments_content=self.experiments_panel,
                 quantities_content=self.quantities_panel,
-                assistant_content=self.assistant_panel,
+                assistant_content=self.assistant_query_panel,
                 sessions_content=self.sessions_panel),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
