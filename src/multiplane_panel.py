@@ -33,7 +33,7 @@ from __future__ import annotations
 import numpy as np
 from PyQt5 import QtCore, QtWidgets
 
-from widgets import MplCanvas
+from widgets import MplCanvas, plot_fg_color
 from registry import get_quantity
 from schematic import room_overlay_geometry
 from slice_key import SliceKey, AXIS_TO_DIRECTION
@@ -208,6 +208,14 @@ class MultiPlanePanel(QtWidgets.QWidget):
             ax = fig.add_subplot(111)
             self._axes[name] = ax
             if data is None:
+                # Unlike a transient/toggleable gate elsewhere in the app,
+                # XY/YZ are *permanently* gated for this dataset (no X/Z-
+                # normal .sf slices exist at all) -- a silent blank pane
+                # read as "not expressive" (nothing to look at, no sense
+                # of why), so this one spot gets a short label instead of
+                # relying on the caption above the three panes.
+                ax.text(0.5, 0.5, "Gated:\nno data for this plane", ha="center", va="center",
+                       fontsize=8, wrap=True, transform=ax.transAxes, color=plot_fg_color())
                 ax.set_xticks([]); ax.set_yticks([])
             else:
                 any_real = True

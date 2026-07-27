@@ -4318,6 +4318,24 @@ class TestMultiPlaneLinkedCrossSections:
         assert yz_data is None and isinstance(yz_reason, str)
         window.close()
 
+    def test_gated_panes_show_a_label_not_a_silent_blank(self, qapp):
+        """Live-polish follow-up: unlike a transient/toggleable gate
+        elsewhere in the app, XY/YZ are *permanently* gated for this
+        dataset -- a silently blank pane read as unexpressive, so it gets
+        a short in-pane label instead of relying solely on the panel's
+        own caption above the three panes."""
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            window.close()
+            return
+        mp = window.multiplane_panel
+        mp.ensure_loaded()
+        for name in ("XY", "YZ"):
+            texts = [t.get_text() for t in mp._axes[name].texts]
+            assert any("gated" in t.lower() for t in texts)
+        assert len(mp._axes["XZ"].texts) == 0   # real data -- no placeholder text
+        window.close()
+
     def test_xz_pane_draws_the_same_room_overlay_as_the_live_viewer(self, qapp):
         """Live polish: XZ is the app's one verified y-normal plane, the
         same plane the Live Viewer heatmap's room overlay (views.py) is
