@@ -3674,7 +3674,9 @@ class MainWindow(QtWidgets.QMainWindow):
             devices=(self.device_panel.get_devices()
                      if self.device_panel is not None else []),
             vector_probes=(self.velocity_panel.get_probes()
-                          if self.velocity_panel is not None else []))
+                          if self.velocity_panel is not None else []),
+            comparisons=(self.advanced_compare_panel.get_comparisons()
+                        if self.advanced_compare_panel is not None else []))
 
     # --------------------------------------------------- named sessions (M6)
     def _refresh_sessions(self) -> None:
@@ -3762,6 +3764,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.velocity_panel is not None:
             self.velocity_panel.set_probes(session.get("vector_probes", []))
             self._refresh_vector_field()
+        # Analysis-improvement roadmap Phase C: restore pinned Compare Axes results.
+        if self.advanced_compare_panel is not None:
+            self.advanced_compare_panel.set_comparisons(session.get("comparisons", []))
         # V5-M1: restore the shared selection (absent in older sessions -> empty).
         if getattr(self, "selection_bus", None) is not None:
             self.selection_bus.set(Selection.from_dict(session.get("selection", {})))

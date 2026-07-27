@@ -186,6 +186,19 @@ def _measurements_block(measurements: list) -> str:
     return f"<h2>Measurements</h2><ul>{items}</ul>"
 
 
+def _comparisons_block(comparisons: list) -> str:
+    """Analysis-improvement roadmap Phase C: comparisons pinned from Compare
+    Axes -- reuses _differences_block's exact rendering for each pinned
+    pair's ranked semantic-diff statements."""
+    if not comparisons:
+        return ""
+    items = []
+    for c in comparisons:
+        header = f"<h3>{_esc(c.get('label_a', ''))} vs {_esc(c.get('label_b', ''))}</h3>"
+        items.append(header + _differences_block(c.get("differences", [])))
+    return f"<h2>Comparisons</h2>{''.join(items)}"
+
+
 def _devices_block(devices: list) -> str:
     """V6-M4: session.py has persisted devices (V6-M2) since they were
     added, but this report never rendered them until now."""
@@ -272,6 +285,7 @@ def build_session_report(session: dict, timeline_png: bytes = None) -> str:
         f"<h2>Evidence Notebook</h2>{_notebook_block(session.get('notebook', []))}"
         f"{_zones_block(session.get('zones', []))}"
         f"{_measurements_block(session.get('measurements', []))}"
+        f"{_comparisons_block(session.get('comparisons', []))}"
         f"{_devices_block(session.get('devices', []))}"
         f"{_vector_probes_block(session.get('vector_probes', []))}")
     return _document(f"Session — {name}", body)

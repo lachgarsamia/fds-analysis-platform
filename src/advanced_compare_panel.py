@@ -37,6 +37,7 @@ class AdvancedComparePanel(QtWidgets.QWidget):
         self._loaded = False
         self._cache = {}
         self._metric = None      # (times, smax_a, smax_b) for the temporal plot
+        self._pinned_comparisons: list = []   # Phase C -> session report
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -91,6 +92,23 @@ class AdvancedComparePanel(QtWidgets.QWidget):
         layout.addWidget(self.semantic_diff_canvas, 1)
         self._sd_cache: dict = {}
 
+        # Add comparison to session report (Analysis-improvement roadmap
+        # Phase C): pins the current pair's ranked semantic-diff statements,
+        # reusing report_builder's existing differences rendering.
+        report_row = QtWidgets.QHBoxLayout()
+        self.add_to_report_button = QtWidgets.QPushButton("Add comparison to session report")
+        self.add_to_report_button.setAccessibleName("compare-add-to-session-report")
+        self.add_to_report_button.setToolTip(
+            "Pin the current A/B comparison's ranked differences into the active session report")
+        self.add_to_report_button.clicked.connect(self._add_to_session_report)
+        report_row.addWidget(self.add_to_report_button)
+        report_row.addStretch(1)
+        layout.addLayout(report_row)
+        self.report_status = QtWidgets.QLabel("")
+        self.report_status.setWordWrap(True)
+        self.report_status.setProperty("role", "caption")
+        layout.addWidget(self.report_status)
+
         self.combo_a.currentIndexChanged.connect(self._recompute)
         self.combo_b.currentIndexChanged.connect(self._recompute)
         self.quantity_combo.currentIndexChanged.connect(self._recompute)
@@ -131,6 +149,13 @@ class AdvancedComparePanel(QtWidgets.QWidget):
     def _label(self, case_index) -> str:
         return next((e.folder for e in self._manifest if e.case_index == case_index),
                     str(case_index))
+
+    # -------------------------------------------------- session hooks (Phase C)
+    def get_comparisons(self) -> list:
+        return [dict(c) for c in self._pinned_comparisons]
+
+    def set_comparisons(self, data: list) -> None:
+        self._pinned_comparisons = [dict(c) for c in (data or []) if isinstance(c, dict)]
 
     def set_scenarios(self, case_a, case_b) -> None:
         """Select A and B by case index (V4-M9 comparison hand-off)."""
@@ -226,6 +251,26 @@ class AdvancedComparePanel(QtWidgets.QWidget):
                     markeredgewidth=2)
         fig.subplots_adjust(top=0.92, bottom=0.03, left=0.02, right=0.95)
         self.semantic_diff_canvas.draw_idle()
+
+    def _add_to_session_report(self) -> None:
+        """Pin the current A/B comparison into the active session report
+        (Analysis-improvement roadmap Phase C): reuses the semantic-diff
+        statements already computed for this pair -- report_builder's
+        _comparisons_block renders them with the exact same "Key
+        differences" list markup build_comparison_report already uses."""
+        ca, cb = self.combo_a.currentData(), self.combo_b.currentData()
+        key = self._key
+        if ca is None or cb is None or ca == cb or key is None:
+            return
+        cache_key = (ca, cb, key.quantity)
+        differences = [ins.statement for ins in self._sd_cache.get(cache_key, [])]
+        la, lb = self._label(ca), self._label(cb)
+        self._pinned_comparisons.append({
+            "label_a": la, "label_b": lb,
+            "case_a": int(ca), "case_b": int(cb),
+            "quantity": key.quantity, "differences": differences,
+        })
+        self.report_status.setText(f"Added {la} vs {lb} to the session report.")
 
     def _on_temporal(self, insight) -> None:
         self._render(insight.primary_time())

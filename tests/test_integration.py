@@ -2793,6 +2793,40 @@ class TestAdvancedComparePanel:
         assert panel.physics_list.count() == 0
         window.close()
 
+    def test_add_to_session_report_pins_comparison_and_survives_round_trip(self, qapp, tmp_path):
+        """Analysis-improvement roadmap Phase C: "Add comparison to session
+        report" pins the current pair's semantic-diff differences, and the
+        session report picks them up via report_builder's reused
+        _differences_block rendering."""
+        import session_store
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if window.advanced_compare_panel is None:
+            window.close()
+            return
+        panel = window.advanced_compare_panel
+        panel.ensure_loaded()
+        panel._add_to_session_report()
+        assert len(panel._pinned_comparisons) == 1
+        assert "Added" in panel.report_status.text()
+        c = panel._pinned_comparisons[0]
+        assert c["case_a"] == panel.combo_a.currentData()
+        assert c["case_b"] == panel.combo_b.currentData()
+
+        session = window._collect_session_dict("s", "")
+        assert session["comparisons"] == panel.get_comparisons()
+        from report_builder import build_session_report
+        html = build_session_report(session)
+        assert c["label_a"] in html and c["label_b"] in html
+
+        session_store.save_session(str(tmp_path), session)
+        loaded = session_store.load_session(
+            session_store.list_sessions(str(tmp_path))[0].path)
+        window.advanced_compare_panel.set_comparisons([])
+        window._apply_analysis_session(loaded)
+        assert window.advanced_compare_panel.get_comparisons() == panel.get_comparisons()
+        window.close()
+
 
 class TestExperimentsPanel:
     """V4-M9: experiment management."""

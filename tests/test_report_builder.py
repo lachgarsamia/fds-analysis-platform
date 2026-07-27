@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from report_builder import (  # noqa: E402
     build_scenario_report, build_comparison_report, write_report,
     build_session_report, _devices_block, _vector_probes_block,
+    _comparisons_block,
 )
 
 
@@ -149,3 +150,36 @@ class TestSessionReportIncludesDevicesAndProbes:
     def test_absent_devices_and_probes_omit_sections(self):
         html = build_session_report({"name": "s"})
         assert "Virtual devices" not in html and "Vector probes" not in html
+
+
+class TestComparisonsBlock:
+    """Analysis-improvement roadmap Phase C: comparisons pinned from
+    Compare Axes -- reuses _differences_block's exact rendering."""
+
+    def test_empty_renders_nothing(self):
+        assert _comparisons_block([]) == ""
+
+    def test_pinned_comparison_shows_labels_and_differences(self):
+        c = {"label_a": "c0_d0", "label_b": "c1_d1", "case_a": 0, "case_b": 1,
+            "quantity": "TEMPERATURE", "differences": ["A peaks 40% hotter than B."]}
+        html = _comparisons_block([c])
+        assert "c0_d0" in html and "c1_d1" in html
+        assert "A peaks 40% hotter than B." in html
+
+    def test_no_differences_omits_list_but_keeps_header(self):
+        c = {"label_a": "c0_d0", "label_b": "c1_d1", "differences": []}
+        html = _comparisons_block([c])
+        assert "c0_d0 vs c1_d1" in html
+        assert "<ul>" not in html
+
+
+class TestSessionReportIncludesComparisons:
+    def test_comparisons_render_when_present(self):
+        session = {"name": "s", "comparisons": [
+            {"label_a": "A", "label_b": "B", "differences": ["A is hotter."]}]}
+        html = build_session_report(session)
+        assert "A is hotter." in html
+
+    def test_absent_comparisons_omits_section(self):
+        html = build_session_report({"name": "s"})
+        assert "Comparisons" not in html
