@@ -4151,7 +4151,10 @@ class TestUnifiedWorkspace:
             return
         window._on_workspace_preset("Study analytics")
         assert window._active_page_key == "analysis"
-        assert window.pages["analysis"].tabs.currentWidget() is window.study_panel
+        # Phase D: tabs are grouped -- the outer tab now holds the "Study-Level"
+        # group's own inner QTabWidget, which must be showing study_panel.
+        group = window.pages["analysis"].tabs.currentWidget()
+        assert group.currentWidget() is window.study_panel
         window.close()
 
     def test_context_panel_session_reveal_shows_sessions_tab(self, qapp):
@@ -4162,7 +4165,8 @@ class TestUnifiedWorkspace:
         window.show()
         window._on_context_session_reveal("/tmp/whatever-session.json")
         assert window._active_page_key == "analysis"
-        assert window.pages["analysis"].tabs.currentWidget() is window.sessions_panel
+        group = window.pages["analysis"].tabs.currentWidget()
+        assert group.currentWidget() is window.sessions_panel
         window.close()
 
     def test_hover_highlight_sets_and_clears_without_touching_selection(self, qapp):

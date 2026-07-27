@@ -1133,10 +1133,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.selection_bus.changed.connect(self._on_history_changed)
         self.selection_bus.changed.connect(self._on_bus_changed)
         # RC polish: switching analysis tabs re-syncs the newly-shown panel to
-        # the current selection/time.
-        analysis_tabs = getattr(self.pages.get("analysis"), "tabs", None)
-        if analysis_tabs is not None:
-            analysis_tabs.currentChanged.connect(lambda _i: self.selection_bus.resend())
+        # the current selection/time. Phase D: AnalysisPage.tab_shown covers
+        # every level a panel can go from hidden to visible at (the outer
+        # group tabs, a group's own inner tabs, or expanding Experimental).
+        analysis_page = self.pages.get("analysis")
+        if analysis_page is not None and hasattr(analysis_page, "tab_shown"):
+            analysis_page.tab_shown.connect(self.selection_bus.resend)
 
     # Adaptive Workspace presets (V5-M4/P4): each focuses the app on a task by
     # raising its primary analysis tab and publishing the quantity that task

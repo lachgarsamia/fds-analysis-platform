@@ -20,9 +20,69 @@ from PyQt5 import QtCore, QtWidgets
 
 from pages.base import Page
 
+# Analysis-improvement roadmap Phase D: the tab list grew to ~28 flat tabs
+# (Phase A-C folded several redundant ones in, but didn't reduce the total
+# count) -- re-grouped by investigation stage so a researcher scans five
+# named groups instead of one long strip. Membership follows the audit:
+# per-scenario/point tools (Core Investigation), whole-factorial tools
+# (Study-Level), the one pairwise-scenario tool (Comparison), evidence-
+# organizing/reference tools (Interpretation & Communication), and the
+# lower-confidence/exploratory tools (Experimental, collapsed by default).
+_GROUPS = [
+    ("Core Investigation", [
+        "Context", "Dashboard", "Hazard & Tenability", "Narrative", "Space-time",
+        "Height", "Zones", "Intervals", "Measure", "Time series", "Calculator",
+        "Devices", "Velocity"]),
+    ("Study-Level", [
+        "Ensemble analytics", "Experiments", "State space", "Study",
+        "Sensitivity", "Ensemble"]),
+    ("Comparison", ["Compare axes"]),
+    ("Interpretation & Communication", ["Graph", "Quantities", "Assistant", "Sessions"]),
+]
+# Fire MRI, Attention, Why is it hot?, and Forecasting are each individually
+# gated/heuristic/exploratory (per-panel disclaimers already say so) --
+# grouped together and collapsed by default rather than competing for
+# attention with the core workflow.
+_EXPERIMENTAL = ["Fire MRI", "Attention", "Why is it hot?", "Forecasting"]
+
+
+class _CollapsibleGroup(QtWidgets.QWidget):
+    """A tab-group that starts collapsed (Phase D: the Experimental group)
+    -- a checkable toggle button shows/hides the inner QTabWidget, instead
+    of it competing for attention with the four always-open groups."""
+
+    def __init__(self, inner_tabs: QtWidgets.QTabWidget, parent=None):
+        super().__init__(parent)
+        self.tabs = inner_tabs
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self.toggle = QtWidgets.QPushButton("▶ Show experimental panels")
+        self.toggle.setCheckable(True)
+        self.toggle.setChecked(False)
+        self.toggle.toggled.connect(self._on_toggled)
+        layout.addWidget(self.toggle)
+        inner_tabs.setVisible(False)
+        layout.addWidget(inner_tabs, 1)
+
+    def _on_toggled(self, checked: bool) -> None:
+        self.tabs.setVisible(checked)
+        self.toggle.setText("▼ Hide experimental panels" if checked
+                            else "▶ Show experimental panels")
+
+    def expand(self) -> None:
+        self.toggle.setChecked(True)
+
 
 class AnalysisPage(Page):
     title = "Analysis"
+    # Phase D: a tab switch at ANY level (outer group, or a group's own
+    # inner tab, or expanding the collapsed Experimental group) must still
+    # trigger the RC-polish "resend the current selection" catch-up
+    # (main_window.py's freeze-while-hidden mechanism) -- previously that
+    # was one flat QTabWidget's currentChanged; grouping adds two more
+    # places a panel can go from hidden to visible.
+    tab_shown = QtCore.pyqtSignal()
 
     def __init__(self, content: QtWidgets.QWidget = None,
                  on_shown: Optional[Callable[[], None]] = None,
@@ -104,6 +164,7 @@ class AnalysisPage(Page):
             ("Time series", timeseries_content),
             ("Forecasting", forecasting_content),
         ]
+        by_label = dict(sections)
         available = [(label, w) for label, w in sections if w is not None]
         if not available:
             # Demo mode: no manifest, nothing to analyze.
@@ -114,17 +175,62 @@ class AnalysisPage(Page):
             layout.addWidget(available[0][1], 1)
         else:
             self.tabs = QtWidgets.QTabWidget()
-            for label, w in available:
-                self.tabs.addTab(w, label)
+            self.tabs.currentChanged.connect(lambda _i: self.tab_shown.emit())
+
+            def add_group(group_label: str, member_labels: list) -> None:
+                members = [(lbl, by_label[lbl]) for lbl in member_labels
+                          if by_label.get(lbl) is not None]
+                if not members:
+                    return
+                inner = QtWidgets.QTabWidget()
+                inner.currentChanged.connect(lambda _i: self.tab_shown.emit())
+                for lbl, w in members:
+                    inner.addTab(w, lbl)
+                self.tabs.addTab(inner, group_label)
+
+            for group_label, member_labels in _GROUPS:
+                add_group(group_label, member_labels)
+
+            experimental = [(lbl, by_label[lbl]) for lbl in _EXPERIMENTAL
+                            if by_label.get(lbl) is not None]
+            if experimental:
+                inner = QtWidgets.QTabWidget()
+                inner.currentChanged.connect(lambda _i: self.tab_shown.emit())
+                for lbl, w in experimental:
+                    inner.addTab(w, lbl)
+                collapsible = _CollapsibleGroup(inner)
+                collapsible.toggle.toggled.connect(
+                    lambda checked: self.tab_shown.emit() if checked else None)
+                self.tabs.addTab(collapsible, "Experimental")
+
             layout.addWidget(self.tabs, 1)
 
     def show_tab(self, widget: QtWidgets.QWidget) -> None:
-        """Raise the tab hosting `widget` (V4-M9 comparison hand-off)."""
+        """Raise the tab hosting `widget` (V4-M9 comparison hand-off).
+        Phase D: tabs are grouped into an outer QTabWidget of QTabWidgets
+        (or, for Experimental, a collapsible wrapper around one) -- search
+        one level deeper when `widget` isn't a direct child, expanding a
+        collapsed group so the revealed tab is actually visible."""
         tabs = getattr(self, "tabs", None)
-        if tabs is not None and widget is not None:
-            idx = tabs.indexOf(widget)
-            if idx >= 0:
-                tabs.setCurrentIndex(idx)
+        if tabs is None or widget is None:
+            return
+        idx = tabs.indexOf(widget)
+        if idx >= 0:
+            tabs.setCurrentIndex(idx)
+            return
+        for i in range(tabs.count()):
+            group = tabs.widget(i)
+            inner = group if isinstance(group, QtWidgets.QTabWidget) else getattr(group, "tabs", None)
+            if inner is None:
+                continue
+            j = inner.indexOf(widget)
+            if j >= 0:
+                tabs.setCurrentIndex(i)
+                inner.setCurrentIndex(j)
+                expand = getattr(group, "expand", None)
+                if callable(expand):
+                    expand()
+                return
 
     def on_enter(self) -> None:
         if self._on_shown is not None:
