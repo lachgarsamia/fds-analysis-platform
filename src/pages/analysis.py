@@ -34,7 +34,7 @@ _GROUPS = [
         "Height", "Zones", "Intervals", "Measure", "Time series", "Calculator",
         "Devices", "Velocity"]),
     ("Study-Level", [
-        "Ensemble analytics", "Experiments", "State space", "Study",
+        "Ensemble analytics", "State space", "Study",
         "Sensitivity", "Ensemble"]),
     ("Comparison", ["Compare axes"]),
     ("Interpretation & Communication", ["Graph", "Quantities", "Assistant", "Sessions"]),
@@ -109,7 +109,6 @@ class AnalysisPage(Page):
                  calculator_content: QtWidgets.QWidget = None,
                  devices_content: QtWidgets.QWidget = None,
                  velocity_content: QtWidgets.QWidget = None,
-                 experiments_content: QtWidgets.QWidget = None,
                  quantities_content: QtWidgets.QWidget = None,
                  assistant_content: QtWidgets.QWidget = None,
                  sessions_content: QtWidgets.QWidget = None, parent=None):
@@ -144,7 +143,6 @@ class AnalysisPage(Page):
             ("Intervals", interval_content),
             ("Measure", measurement_content),
             ("Graph", graph_content),
-            ("Experiments", experiments_content),
             ("Quantities", quantities_content),
             ("Calculator", calculator_content),
             ("Devices", devices_content),

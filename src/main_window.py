@@ -69,12 +69,10 @@ from zone_panel import ZonePanel
 from time_window_panel import TimeWindowPanel
 from measurement_panel import MeasurementPanel
 from advanced_compare_panel import AdvancedComparePanel
-from experiments_panel import ExperimentsPanel
 from quantities_panel import QuantitiesPanel
 from assistant_panel import AssistantPanel
 from assistant_query_panel import AssistantQueryPanel
 import assistant as assistant_mod
-import experiment as experiment_mod
 from selection import Selection, SelectionBus
 from quantity_provider import QuantityProvider
 from analysis_panel_base import bind_to_bus
@@ -848,12 +846,6 @@ class MainWindow(QtWidgets.QMainWindow):
                     self._quantity_options(), self.sim_data.timesteps_per_second,
                     summaries=getattr(self, "_scenario_summaries", None))
                 if len(self.sim_data.manifest) >= 2 else None)
-            # Experiment management (V4-M9): named, tagged batches of
-            # scenarios with a baseline; self-contained CRUD, only the
-            # comparison hand-off comes back to main_window.
-            self.experiments_panel = ExperimentsPanel(
-                self.controller.store, self.sim_data.manifest,
-                experiment_mod.default_experiments_dir())
             # Quantity reference/breadth (V4-M11): available / derived / gated.
             self.quantities_panel = QuantitiesPanel(
                 self.controller.store, self.sim_data.manifest)
@@ -943,7 +935,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.time_window_panel = None
             self.measurement_panel = None
             self.advanced_compare_panel = None
-            self.experiments_panel = None
             self.quantities_panel = None
             self.assistant_panel = None
             self.assistant_query_panel = None
@@ -998,7 +989,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 calculator_content=self.calculator_panel,
                 devices_content=self.device_panel,
                 velocity_content=self.velocity_panel,
-                experiments_content=self.experiments_panel,
                 quantities_content=self.quantities_panel,
                 assistant_content=self.assistant_query_panel,
                 sessions_content=self.sessions_panel),
@@ -1145,8 +1135,8 @@ class MainWindow(QtWidgets.QMainWindow):
         """Raise the Analysis page and show `panel`'s tab (V6-M4): the one
         cross-navigation primitive every "reveal in Analysis" interaction
         should share, instead of each feature re-deriving the same two
-        lines (previously duplicated in _on_workspace_preset and
-        _on_experiment_compare)."""
+        lines (previously duplicated in _on_workspace_preset and the
+        now-removed Experiments panel's comparison hand-off)."""
         self._navigate_to("analysis")
         self.pages["analysis"].show_tab(panel)
 
@@ -1217,10 +1207,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sessions_panel.delete_requested.connect(self._on_session_delete)
         self.sessions_panel.export_requested.connect(self._on_session_export)
         self._refresh_sessions()
-        # V4-M9: an experiment hands a baseline-vs-scenario pair to the
-        # Advanced Comparison panel and raises that tab.
-        if self.experiments_panel is not None:
-            self.experiments_panel.compare_requested.connect(self._on_experiment_compare)
         # V4-M12: the Safe Assistant runs on computed context supplied here.
         if self.assistant_panel is not None:
             self.assistant_panel.action_requested.connect(self._on_assistant_action)
@@ -1303,16 +1289,6 @@ class MainWindow(QtWidgets.QMainWindow):
             first_line[:200], category="query",
             basis="assistant: organized from computed evidence (no cause inferred)"))
         self.statusBar().showMessage("Saved assistant output to the Evidence Notebook", 4000)
-
-    def _on_experiment_compare(self, baseline_folder: str, other_folder: str) -> None:
-        if self.advanced_compare_panel is None:
-            return
-        by_folder = {e.folder: e.case_index for e in self.sim_data.manifest}
-        ca, cb = by_folder.get(baseline_folder), by_folder.get(other_folder)
-        if ca is None or cb is None:
-            return
-        self.advanced_compare_panel.set_scenarios(ca, cb)
-        self._reveal(self.advanced_compare_panel)
 
     def _build_evidence_notebook(self) -> None:
         """Evidence Notebook (V4-M2): a dockable, session-backed collection

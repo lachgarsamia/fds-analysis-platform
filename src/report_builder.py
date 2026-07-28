@@ -327,41 +327,6 @@ def build_publication_manifest(figures: list, notebook: list, metadata: dict) ->
     return _document("Publication bundle", body)
 
 
-def build_experiment_report(exp: dict, status: dict = None) -> str:
-    """Self-contained HTML summary of an experiment (V4-M9): description,
-    tags, baseline, shared parameters, and the scenario list with its
-    availability status. These are pre-computed cluster runs, stated as
-    such -- no simulation is launched from the app."""
-    name = exp.get("name") or "Experiment"
-    tags = ", ".join(exp.get("tags", []) or [])
-    params = exp.get("shared_params", {}) or {}
-    statuses = (status or {}).get("statuses", {})
-    rows = "".join(
-        f"<tr><td>{_esc(s)}</td>"
-        f"<td>{'baseline' if s == exp.get('baseline') else ''}</td>"
-        f"<td>{_esc(statuses.get(s, 'unknown'))}</td></tr>"
-        for s in exp.get("scenarios", []) or [])
-    param_rows = "".join(
-        f"<tr><td>{_esc(k)}</td><td>{_esc(v)}</td></tr>" for k, v in params.items())
-    completion = ""
-    if status:
-        completion = (f"<p class='prose'>{status.get('ready', 0)} of "
-                      f"{status.get('total', 0)} scenarios ready "
-                      f"({status.get('completion', 0.0) * 100:.0f}%).</p>")
-    body = (
-        f"<h1>{_esc(name)}</h1>"
-        f"<p class='prose'>{_esc(exp.get('description', '') or '(no description)')}</p>"
-        + (f"<p class='provenance'>Tags: {_esc(tags)}</p>" if tags else "")
-        + completion
-        + (f"<h2>Shared parameters</h2><table><tbody>{param_rows}</tbody></table>"
-           if param_rows else "")
-        + "<h2>Scenarios</h2><table><thead><tr><th>Scenario</th><th>Role</th>"
-          f"<th>Status</th></tr></thead><tbody>{rows}</tbody></table>"
-        + "<p class='provenance'>Scenarios are pre-computed cluster runs; "
-          "status reflects data availability, not an in-app simulation.</p>")
-    return _document(f"Experiment — {name}", body)
-
-
 def write_report(path: str, html_text: str) -> None:
     with open(path, "w", encoding="utf-8") as f:
         f.write(html_text)
