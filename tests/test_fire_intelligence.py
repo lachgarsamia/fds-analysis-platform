@@ -1179,6 +1179,20 @@ class TestStudyAnalytics:
         ranking = sam.influence_ranking(t, "max_temp_c")
         assert ranking[0][0] == "vod" and ranking[0][2] == pytest.approx(1.0)
 
+    def test_response_curve_gives_the_per_level_means_factor_influence_summarizes(self):
+        """UX consolidation pass (Study-Level interpretation, item 6): the
+        shared building block behind factor_influence's spread-of-means --
+        directly answers "how does changing X affect Y" as a level/mean
+        curve, not just the overall spread."""
+        t = sam.build_table(self._summaries())
+        curve = sam.response_curve(t, "max_temp_c", "vod")
+        assert [row["level"] for row in curve] == [0.0, 1.0]
+        assert [row["mean"] for row in curve] == pytest.approx([100.0, 300.0])
+        assert all(row["n"] == 2 for row in curve)
+        # a factor with no influence still returns a (flat) curve, not an error.
+        flat = sam.response_curve(t, "max_temp_c", "door")
+        assert [row["mean"] for row in flat] == pytest.approx([200.0, 200.0])
+
     def test_study_statistics(self):
         st = sam.study_statistics(sam.build_table(self._summaries()))["max_temp_c"]
         assert st["min"] == 100.0 and st["max"] == 300.0 and st["mean"] == 200.0 and st["n"] == 4

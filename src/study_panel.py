@@ -79,6 +79,36 @@ class StudyPanel(QtWidgets.QWidget):
         self.influence_canvas.setAccessibleName("Factor influence")
         iv.addWidget(self.influence_canvas, 1)
         self.tabs.addTab(infl, "Factor influence")
+        # --- response curve (UX consolidation pass, Study-Level interpretation) ---
+        # Factor influence (above) ranks all four factors' overall spread for
+        # one response; this answers the more concrete question a researcher
+        # actually asks -- "how does changing ventilation affect
+        # temperature?" -- as a level-by-level curve for one factor x one
+        # response, picked explicitly rather than inferred.
+        curve_widget = QtWidgets.QWidget()
+        cw = QtWidgets.QVBoxLayout(curve_widget)
+        cw.setContentsMargins(0, 0, 0, 0)
+        curve_row = QtWidgets.QHBoxLayout()
+        curve_row.addWidget(QtWidgets.QLabel("Factor:"))
+        self.curve_factor_combo = QtWidgets.QComboBox()
+        self.curve_factor_combo.setAccessibleName("Response-curve factor")
+        for p in sa.PARAMS:
+            self.curve_factor_combo.addItem(sa.PARAM_LABELS[p], p)
+        self.curve_factor_combo.currentIndexChanged.connect(self._render_response_curve)
+        curve_row.addWidget(self.curve_factor_combo)
+        curve_row.addWidget(QtWidgets.QLabel("Response:"))
+        self.curve_response_combo = QtWidgets.QComboBox()
+        self.curve_response_combo.setAccessibleName("Response-curve response")
+        for key in sa.RESPONSE_KEYS:
+            self.curve_response_combo.addItem(sa.RESPONSE_LABEL[key], key)
+        self.curve_response_combo.currentIndexChanged.connect(self._render_response_curve)
+        curve_row.addWidget(self.curve_response_combo)
+        curve_row.addStretch(1)
+        cw.addLayout(curve_row)
+        self.curve_canvas = MplCanvas(self)
+        self.curve_canvas.setAccessibleName("Response curve")
+        cw.addWidget(self.curve_canvas, 1)
+        self.tabs.addTab(curve_widget, "Response curve")
         # --- correlation + outliers ---
         corr = QtWidgets.QWidget()
         cv = QtWidgets.QVBoxLayout(corr)
@@ -116,6 +146,7 @@ class StudyPanel(QtWidgets.QWidget):
     def _render_all(self) -> None:
         self._render_parallel()
         self._render_influence()
+        self._render_response_curve()
         self._render_correlation()
 
     def _render_parallel(self) -> None:
@@ -180,6 +211,33 @@ class StudyPanel(QtWidgets.QWidget):
         ax.tick_params(labelsize=7)
         fig.subplots_adjust(top=0.9, bottom=0.16, left=0.28, right=0.96)
         self.influence_canvas.draw_idle()
+
+    def _render_response_curve(self) -> None:
+        fig = self.curve_canvas.fig
+        fig.clear()
+        ax = fig.add_subplot(111)
+        factor = self.curve_factor_combo.currentData() or sa.PARAMS[0]
+        response = self.curve_response_combo.currentData() or sa.RESPONSE_KEYS[0]
+        curve = sa.response_curve(self._table, response, factor)
+        if not curve:
+            ax.text(0.5, 0.5, "Not enough data.", ha="center", va="center",
+                    transform=ax.transAxes, fontsize=9)
+            self.curve_canvas.draw_idle()
+            return
+        levels = [row["level"] for row in curve]
+        means = [row["mean"] for row in curve]
+        stds = [row["std"] for row in curve]
+        ax.errorbar(levels, means, yerr=stds, marker="o", color="#2563EB",
+                    ecolor="#93C5FD", capsize=3, linewidth=1.6)
+        unit = sa.RESPONSE_UNIT[response]
+        ax.set_xlabel(f"{sa.PARAM_LABELS[factor]} level", fontsize=8)
+        ax.set_ylabel(sa.RESPONSE_LABEL[response] + (f" ({unit})" if unit else ""), fontsize=8)
+        ax.set_title(f"How does {sa.PARAM_LABELS[factor]} affect "
+                    f"{sa.RESPONSE_LABEL[response]}?", fontsize=9, fontweight="bold")
+        ax.set_xticks(levels)
+        ax.tick_params(labelsize=7)
+        fig.subplots_adjust(top=0.88, bottom=0.16, left=0.16, right=0.96)
+        self.curve_canvas.draw_idle()
 
     def _render_correlation(self) -> None:
         fig = self.corr_canvas.fig

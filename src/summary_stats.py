@@ -17,7 +17,8 @@ import numpy as np
 
 from slice_key import DEFAULT_SLICE_KEY
 from layer_height import smoke_layer_height_series
-from tenability import TENABILITY_THRESHOLD_C
+from tenability import TENABILITY_THRESHOLD_C, fed_heat_dose
+from hazard_spaces import band_thresholds, classify_series, critical_fraction
 from config import AMBIENT_C
 
 
@@ -53,6 +54,16 @@ class ScenarioSummary:
     # tenability threshold (partial hazard screen, temperature only -- no
     # CO/FED). None if never reached.
     time_to_untenable_s: float | None
+    # UX consolidation pass (Study-Level interpretation, item 6): four more
+    # study-level responses, each a reduction of an already-computed engine
+    # (never a new physics model) -- HRR timing, smoke-layer dynamics,
+    # convected-heat dose, and total time (not just onset) spent hazardous.
+    # Defaulted so older callers (tests, cached payloads) need no changes;
+    # compute_scenario_summary always supplies real values.
+    time_to_peak_hrr_s: float | None = None
+    smoke_descent_rate_m_s: float | None = None
+    peak_heat_fed: float | None = None
+    hazard_duration_s: float | None = None
 
 
 def _source_files(entries: list) -> list:
@@ -81,9 +92,10 @@ def _summary_from_payload(payload: dict) -> list:
 def _write_cache(cache_path: str, summaries: list[ScenarioSummary]) -> None:
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
     payload = {
-        # v4 (V2 roadmap M3.2): added time_to_untenable_s. Old caches fail
-        # the version check below and are silently rebuilt.
-        "version": 4,
+        # v5 (UX consolidation pass): added time_to_peak_hrr_s/
+        # smoke_descent_rate_m_s/peak_heat_fed/hazard_duration_s. Old
+        # caches fail the version check below and are silently rebuilt.
+        "version": 5,
         "thresholds_c": list(THRESHOLDS_C),
         "summaries": [asdict(summary) for summary in summaries],
     }
@@ -97,7 +109,7 @@ def load_cached_summaries(cache_path: str, entries: list) -> list[ScenarioSummar
     try:
         with open(cache_path, "r") as f:
             payload = json.load(f)
-        if payload.get("version") != 4:
+        if payload.get("version") != 5:
             return None
         summaries = _summary_from_payload(payload)
         expected_cases = [e.case_index for e in sorted(entries, key=lambda e: e.case_index)]
@@ -235,19 +247,39 @@ def compute_scenario_summary(entry, store, fps: int) -> ScenarioSummary:
         extent = None
     if extent is None:
         layer_min_height_m = None
+        smoke_descent_rate_m_s = None
     else:
-        layer_min_height_m = float(np.min(smoke_layer_height_series(data, extent, AMBIENT_C)))
+        layer_series = smoke_layer_height_series(data, extent, AMBIENT_C)
+        layer_min_height_m = float(np.min(layer_series))
+        # Steepest drop between consecutive frames (m/s, reported as a
+        # positive rate) -- how fast the layer fell at its worst moment,
+        # complementing the existing "how low did it get" minimum.
+        smoke_descent_rate_m_s = (float(-np.min(np.diff(layer_series)) * fps)
+                                  if layer_series.size >= 2 else 0.0)
+        smoke_descent_rate_m_s = max(0.0, smoke_descent_rate_m_s)
 
     hrr_data = _read_hrr_csv(entry.path)
     if hrr_data is None:
         peak_hrr_kw = None
         total_energy_kj = None
         growth_alpha_kw_s2 = None
+        time_to_peak_hrr_s = None
     else:
         hrr_t, hrr_kw = hrr_data
         peak_hrr_kw = float(np.max(hrr_kw))
         total_energy_kj = float(np.trapz(hrr_kw, hrr_t))
         growth_alpha_kw_s2 = fit_growth_alpha(hrr_t, hrr_kw)
+        time_to_peak_hrr_s = float(hrr_t[int(np.argmax(hrr_kw))])
+
+    # Peak convected-heat FED (tenability.py) anywhere in the slice -- a
+    # thermal-dose response distinct from a bare peak temperature (>=1.0
+    # conventionally marks incapacitation, ISO 13571).
+    peak_heat_fed = float(np.max(fed_heat_dose(data, fps)))
+    # Total time (not just onset) with any cell at Critical/Untenable
+    # (hazard_spaces.py) -- complements time_to_untenable_s (first crossing
+    # of the much lower 60 °C warning band) with how long the hazard lasted.
+    classes = classify_series(data, band_thresholds("TEMPERATURE"), fps)
+    hazard_duration_s = float(np.sum(critical_fraction(classes) > 0) / fps)
 
     return ScenarioSummary(
         case_index=entry.case_index,
@@ -269,6 +301,10 @@ def compute_scenario_summary(entry, store, fps: int) -> ScenarioSummary:
         # Same max-by-frame first-crossing as the threshold times above,
         # at the convected-heat tenability limit (tenability.py).
         time_to_untenable_s=_first_threshold_time(max_by_frame, fps, TENABILITY_THRESHOLD_C),
+        time_to_peak_hrr_s=time_to_peak_hrr_s,
+        smoke_descent_rate_m_s=smoke_descent_rate_m_s,
+        peak_heat_fed=peak_heat_fed,
+        hazard_duration_s=hazard_duration_s,
     )
 
 

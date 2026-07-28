@@ -3096,6 +3096,31 @@ class TestStudyPanel:
         assert panel.scenario_combo.currentData() == 9
         window.close()
 
+    def test_response_curve_answers_factor_times_response(self, qapp):
+        """UX consolidation pass (Study-Level interpretation, item 6): pick
+        a factor and a response and get the per-level mean curve directly
+        -- e.g. "how does ventilation (vod) affect peak temperature?"."""
+        import study_analytics as sa
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        panel = window.study_panel
+        labels = [panel.tabs.tabText(i) for i in range(panel.tabs.count())]
+        assert "Response curve" in labels
+        idx = panel.curve_factor_combo.findData("vod")
+        panel.curve_factor_combo.setCurrentIndex(idx)
+        jdx = panel.curve_response_combo.findData("max_temp_c")
+        panel.curve_response_combo.setCurrentIndex(jdx)
+        expected = sa.response_curve(panel._table, "max_temp_c", "vod")
+        assert len(expected) >= 2   # this study varies vod
+        assert panel.curve_canvas.fig.axes
+        ax = panel.curve_canvas.fig.axes[0]
+        assert "vod" in ax.get_xlabel().lower() or "VOD" in ax.get_xlabel()
+        assert ax.get_title() != ""
+        window.close()
+
     def test_factor_effects_folded_in_as_a_sub_tab(self, qapp):
         """Analysis-improvement roadmap Phase B: Factor effects' actual
         spatial diverging-field view is a sub-tab here now, complementing
