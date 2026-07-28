@@ -67,7 +67,7 @@ class TestAnalysisPageGrouping:
         page = AnalysisPage(
             height_content=QtWidgets.QLabel("Height"),
             study_content=QtWidgets.QLabel("Study"),
-            advanced_compare_content=QtWidgets.QLabel("Compare axes"),
+            compare_discover_content=QtWidgets.QLabel("Cross-Scenario Comparison"),
             graph_content=QtWidgets.QLabel("Graph"),
             fire_mri_content=QtWidgets.QLabel("Fire MRI"),
             attention_content=QtWidgets.QLabel("Attention"))

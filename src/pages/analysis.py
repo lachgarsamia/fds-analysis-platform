@@ -1,15 +1,22 @@
 """Analysis page (FireLab roadmap Phase 4; extended into the app's
 combined "analysis workspace" by the scientific-visualization completion
-pass, item 7): re-hosts the analytics panel's existing content
-(analytics_panel.py's AnalyticsPanelDock, unchanged) as page content
-instead of a QDockWidget/tab, with the new static/playback-independent
-ForecastingPanel (forecasting_panel.py) stacked below it.
+pass, item 7): the "Cross-Scenario Comparison" tab hosts
+compare_discover_panel.py's CompareDiscoverPanel, which re-hosts the
+analytics panel's existing content (analytics_panel.py's
+AnalyticsPanelDock, unchanged) as one of its own modes -- see that
+module's docstring for how it and the other three "how do scenarios
+compare?" tools got there. The new static/playback-independent
+ForecastingPanel (forecasting_panel.py) is its own tab, Experimental
+group.
 
 The one-shot background feature-index load used to be triggered by the
 dock's own visibilityChanged signal (tab raised) -- a plain page has no
 such signal, so on_enter() calls the supplied `on_shown` callback instead
 (main_window.py wires this to the same guarded, one-shot handler,
-unchanged in every other way).
+unchanged in every other way, still triggered by the Analysis *page*
+being shown -- unaffected by which tab/mode is active, so nesting the
+dock's widget one level deeper inside CompareDiscoverPanel doesn't change
+when this fires).
 """
 
 from __future__ import annotations
@@ -20,24 +27,22 @@ from PyQt5 import QtCore, QtWidgets
 
 from pages.base import Page
 
-# Analysis-section consolidation (Phase 1 of the approved consolidation
-# plan, docs: the "Analysis Section Consolidation" audit): the Phase D
-# grouping below organized tabs by investigation *stage*, but left several
-# tools that answer the same research question scattered across different
-# groups (e.g. Compare axes/Ensemble/Ensemble analytics/Study's parallel
-# coordinates were split across "Comparison"/"Study-Level" despite all four
-# answering "how do scenarios compare"). This re-groups by research
-# question instead, purely a navigation change -- no panel is merged,
-# split, or otherwise touched here (that's Phases 2-6). Membership:
+# Analysis section consolidation (docs: the "Analysis Section
+# Consolidation" audit + phased plan). Phase 1 re-grouped tabs by research
+# question instead of investigation stage (several tools answering the
+# same question were scattered across different Phase-D groups). Phase 3
+# went further for the "how are scenarios similar or different?" question:
+# Compare axes/Ensemble/Ensemble analytics/Study's former parallel-
+# coordinates tab are now one "Cross-Scenario Comparison" tab (four modes
+# of compare_discover_panel.py's CompareDiscoverPanel) instead of four
+# separate tabs. Membership:
 # - Overview & Interpretation: "what is happening in this simulation?"
 # - Compare & Discover: "how are scenarios similar or different?" (State
 #   space's genome is ensemble-normalized, i.e. inherently a
-#   this-scenario-vs-the-study comparison, so it lives here too)
+#   this-scenario-vs-the-study comparison, so it lives here too, as its
+#   own standalone tab alongside Cross-Scenario Comparison)
 # - Probe & Measure: "what happens at this location/region?"
-# - Factors & Sensitivity: "what drives the observed response?" (Study
-#   still also hosts its parallel-coordinates tab today -- that tab
-#   conceptually belongs in Compare & Discover and is planned to move
-#   there in Phase 3, once it's extracted into its own widget)
+# - Factors & Sensitivity: "what drives the observed response?"
 # - Spatiotemporal Analysis: "how does a quantity evolve across time
 #   and/or space?"
 # - Reference & Communication: authoring/browsing/reporting tools that
@@ -46,7 +51,7 @@ from pages.base import Page
 # default) are unchanged from Phase D.
 _GROUPS = [
     ("Overview & Interpretation", ["Dashboard", "Hazard & Tenability", "Narrative"]),
-    ("Compare & Discover", ["Compare axes", "Ensemble analytics", "Ensemble", "State space"]),
+    ("Compare & Discover", ["Cross-Scenario Comparison", "State space"]),
     ("Probe & Measure", ["Devices", "Zones", "Velocity", "Measure"]),
     ("Factors & Sensitivity", ["Study", "Sensitivity"]),
     ("Spatiotemporal Analysis", ["Height", "Time series", "Intervals", "Space-time"]),
@@ -97,8 +102,7 @@ class AnalysisPage(Page):
     # places a panel can go from hidden to visible.
     tab_shown = QtCore.pyqtSignal()
 
-    def __init__(self, content: QtWidgets.QWidget = None,
-                 on_shown: Optional[Callable[[], None]] = None,
+    def __init__(self, on_shown: Optional[Callable[[], None]] = None,
                  playback_bar: QtWidgets.QWidget = None,
                  forecasting_content: QtWidgets.QWidget = None,
                  timeseries_content: QtWidgets.QWidget = None,
@@ -110,14 +114,13 @@ class AnalysisPage(Page):
                  zone_content: QtWidgets.QWidget = None,
                  interval_content: QtWidgets.QWidget = None,
                  measurement_content: QtWidgets.QWidget = None,
-                 advanced_compare_content: QtWidgets.QWidget = None,
+                 compare_discover_content: QtWidgets.QWidget = None,
                  study_content: QtWidgets.QWidget = None,
                  sensitivity_content: QtWidgets.QWidget = None,
                  hazard_tenability_content: QtWidgets.QWidget = None,
                  dashboard_content: QtWidgets.QWidget = None,
                  spacetime_content: QtWidgets.QWidget = None,
                  narrative_content: QtWidgets.QWidget = None,
-                 ensemble_content: QtWidgets.QWidget = None,
                  graph_content: QtWidgets.QWidget = None,
                  calculator_content: QtWidgets.QWidget = None,
                  devices_content: QtWidgets.QWidget = None,
@@ -150,7 +153,6 @@ class AnalysisPage(Page):
             ("Hazard & Tenability", hazard_tenability_content),
             ("Narrative", narrative_content),
             ("Space-time", spacetime_content),
-            ("Ensemble analytics", content),
             ("Height", height_content),
             ("Zones", zone_content),
             ("Intervals", interval_content),
@@ -166,10 +168,9 @@ class AnalysisPage(Page):
             ("Attention", attention_content),
             ("Why is it hot?", cause_content),
             ("State space", state_space_content),
-            ("Compare axes", advanced_compare_content),
+            ("Cross-Scenario Comparison", compare_discover_content),
             ("Study", study_content),
             ("Sensitivity", sensitivity_content),
-            ("Ensemble", ensemble_content),
             ("Time series", timeseries_content),
             ("Forecasting", forecasting_content),
         ]

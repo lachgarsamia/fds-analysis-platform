@@ -77,6 +77,8 @@ from selection import Selection, SelectionBus
 from quantity_provider import QuantityProvider
 from analysis_panel_base import bind_to_bus
 from study_panel import StudyPanel
+from parallel_coordinates_panel import ParallelCoordinatesPanel
+from compare_discover_panel import CompareDiscoverPanel
 from sensitivity_panel import SensitivityPanel
 from hazard_panel import HazardPanel
 from hazard_tenability_panel import HazardTenabilityPanel
@@ -908,12 +910,35 @@ class MainWindow(QtWidgets.QMainWindow):
                            self.sim_data.manifest,
                            factor_effects_content=self.factor_effects_panel)
                 if self.is_factorial else None)
+            # Parallel coordinates (Analysis section consolidation Phase 3):
+            # extracted from StudyPanel -- it conceptually belongs with the
+            # other cross-scenario discovery tools (Compare & Discover), not
+            # Study's factor/response tabs. Needs the same factor axes +
+            # computed summaries StudyPanel does.
+            self.parallel_coordinates_panel = (
+                ParallelCoordinatesPanel(getattr(self, "_scenario_summaries", None) or [],
+                                         self.sim_data.manifest)
+                if self.is_factorial else None)
             # Sensitivity explorer (V5-M3): interpolate responses across the
             # existing factorial ("what-if"); estimates only, never a new run.
             self.sensitivity_panel = (
                 SensitivityPanel(getattr(self, "_scenario_summaries", None) or [],
                                  self.sim_data.manifest)
                 if self.is_factorial else None)
+            # Compare & Discover (Analysis section consolidation Phase 3): a
+            # thin QTabWidget wrapper over four pre-existing "how do
+            # scenarios compare?" tools -- pairwise, parallel coordinates,
+            # ensemble envelope, and PCA/clustering. Every child's own
+            # construction/store access/lazy-load/bus wiring is unchanged;
+            # only the tab-level presentation is consolidated (same pattern
+            # as HazardTenabilityPanel/AssistantQueryPanel). Any child may be
+            # absent (e.g. fewer than 2 scenarios means no pairwise panel);
+            # the wrapper only adds a tab for what's supplied.
+            self.compare_discover_panel = CompareDiscoverPanel(
+                pairwise=self.advanced_compare_panel,
+                parallel=self.parallel_coordinates_panel,
+                ensemble=self.ensemble_panel,
+                clustering=(self.analytics_panel.widget() if self.analytics_panel is not None else None))
         else:
             self.quantity_provider = None
             self.calculator_panel = None
@@ -923,6 +948,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.energy_panel = None
             self.factor_effects_panel = None
             self.study_panel = None
+            self.parallel_coordinates_panel = None
+            self.compare_discover_panel = None
             self.sensitivity_panel = None
             self.tenability_panel = None
             self.fire_mri_panel = None
@@ -948,7 +975,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.sessions_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
-        analysis_content = self.analytics_panel.widget() if self.analytics_panel is not None else None
         # The dock objects themselves are now empty shells (their content
         # was just reparented onto a page) -- never added to a dock area,
         # but still MainWindow-parented QWidgets, so hide them explicitly
@@ -964,7 +990,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "compare": ComparePage(on_preset=self._apply_compare_preset),
             "dataset": DatasetPage(dataset_content),
             "analysis": AnalysisPage(
-                analysis_content, on_shown=self._on_analysis_page_shown,
+                on_shown=self._on_analysis_page_shown,
                 playback_bar=self._build_analysis_playback_bar(),
                 forecasting_content=ForecastingPanel(
                     self.prediction_store, self.controller.store, self.sim_data.manifest),
@@ -977,14 +1003,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 zone_content=self.zone_panel,
                 interval_content=self.time_window_panel,
                 measurement_content=self.measurement_panel,
-                advanced_compare_content=self.advanced_compare_panel,
+                compare_discover_content=self.compare_discover_panel,
                 study_content=self.study_panel,
                 sensitivity_content=self.sensitivity_panel,
                 hazard_tenability_content=self.hazard_tenability_panel,
                 dashboard_content=self.dashboard_panel,
                 spacetime_content=self.spacetime_panel,
                 narrative_content=self.narrative_panel,
-                ensemble_content=self.ensemble_panel,
                 graph_content=self.graph_panel,
                 calculator_content=self.calculator_panel,
                 devices_content=self.device_panel,
@@ -1054,9 +1079,9 @@ class MainWindow(QtWidgets.QMainWindow):
                      "query_panel", "state_space_panel", "attention_panel", "cause_panel",
                      "factor_effects_panel", "tenability_panel", "timeseries_panel",
                      "energy_panel", "forecasting_panel", "quantities_panel",
-                     "advanced_compare_panel", "study_panel", "hazard_panel",
-                     "spacetime_panel", "narrative_panel", "ensemble_panel", "device_panel",
-                     "velocity_panel", "calculator_panel", "dashboard_panel"):
+                     "advanced_compare_panel", "study_panel", "parallel_coordinates_panel",
+                     "hazard_panel", "spacetime_panel", "narrative_panel", "ensemble_panel",
+                     "device_panel", "velocity_panel", "calculator_panel", "dashboard_panel"):
             panel = getattr(self, attr, None)
             if panel is not None:
                 bind_to_bus(panel, self.selection_bus, fps)

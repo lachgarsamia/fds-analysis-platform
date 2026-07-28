@@ -2942,6 +2942,85 @@ class TestAdvancedComparePanel:
         window.close()
 
 
+class TestCompareDiscoverPanel:
+    """Analysis section consolidation Phase 3: Compare axes (pairwise),
+    parallel coordinates, Ensemble (envelope), and Ensemble analytics
+    (PCA/clustering) are now four modes of one "Cross-Scenario Comparison"
+    workspace -- each child's own construction/store access/lazy-load/bus
+    wiring is unchanged, only the tab-level presentation is consolidated."""
+
+    def test_wrapper_holds_all_four_children_as_tabs(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.compare_discover_panel is None:
+            window.close()
+            return
+        wrapper = window.compare_discover_panel
+        labels = [wrapper.tabs.tabText(i) for i in range(wrapper.tabs.count())]
+        assert labels == ["Pairwise", "Parallel coordinates", "Ensemble", "Clustering"]
+        assert wrapper.tabs.widget(0) is window.advanced_compare_panel
+        assert wrapper.tabs.widget(1) is window.parallel_coordinates_panel
+        assert wrapper.tabs.widget(2) is window.ensemble_panel
+        # analytics_panel (a QDockWidget) reparents its content widget on
+        # extraction, so its own .widget() accessor is empty afterward
+        # (same "dock objects are now empty shells" behavior main_window.py
+        # already documents) -- identity-check against the wrapper's own
+        # stored reference instead of re-querying the now-empty dock.
+        assert wrapper.tabs.widget(3) is wrapper.clustering_widget
+        assert wrapper.clustering_widget is not None
+        window.close()
+
+    def test_showing_wrapper_loads_all_children_not_just_visible_one(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.compare_discover_panel is None:
+            window.close()
+            return
+        window.show()
+        window._navigate_to("analysis")
+        window.pages["analysis"].show_tab(window.compare_discover_panel)
+        QtWidgets.QApplication.processEvents()
+        assert window.advanced_compare_panel._loaded
+        assert window.parallel_coordinates_panel._table is not None  # no lazy gate; always built
+        assert window.ensemble_panel._loaded
+        window.close()
+
+    def test_parallel_coordinates_click_propagates_to_bus(self, qapp):
+        """Relocated from the former StudyPanel parallel-coordinates tab
+        (extracted into parallel_coordinates_panel.py, Phase 3) -- same
+        click -> nearest-line -> scenario-select -> bus-publish behavior,
+        unchanged internally."""
+        import numpy as np
+        import study_analytics as sa
+        window = MainWindow(load_simulation_data())
+        if window.parallel_coordinates_panel is None:
+            window.close()
+            return
+        window.show()
+        pc = window.parallel_coordinates_panel
+        norm = sa.normalized_axes(pc._table, pc._axis_keys, pc._axis_kind)
+        # A continuous response axis (max_temp_c, right after sa.PARAMS) has an
+        # essentially-unique maximum across real scenarios (norm == 1.0 there),
+        # unlike a categorical factor axis where many rows tie -- picking the
+        # row at its peak makes "nearest line" unambiguous for this test.
+        axis_idx = len(sa.PARAMS)
+        target_row = int(np.nanargmax(norm[:, axis_idx]))
+        axes = pc.parallel_canvas.fig.axes
+        assert axes
+        expected = pc._table[target_row]["case_index"]
+        # Start from a different combo index so the click is a genuine
+        # change (PyQt doesn't emit currentIndexChanged for a same-index set).
+        target_idx = pc.scenario_combo.findData(int(expected))
+        pc.scenario_combo.setCurrentIndex((target_idx + 1) % pc.scenario_combo.count())
+        class FakeEvent:
+            inaxes = axes[0]
+            xdata = float(axis_idx)
+            ydata = float(norm[target_row][axis_idx])
+        pc._on_parallel_click(FakeEvent())
+        QtWidgets.QApplication.processEvents()
+        assert pc.scenario_combo.currentData() == expected
+        assert window.selection_bus.current.scenario == expected
+        window.close()
+
+
 class TestPublicationExport:
     """V4-M10: export presets + panel figure export + notebook report."""
 
@@ -4107,39 +4186,6 @@ class TestUnifiedWorkspace:
         sel2 = Selection(scenario=case_index, time_s=1.0, point=(1.0, 1.0001))
         story = gather_context(window, sel2)["point_story"]
         assert "Cause trace" in story and "hottest connected point" in story
-        window.close()
-
-    def test_study_panel_parallel_click_propagates_to_bus(self, qapp):
-        import numpy as np
-        import study_analytics as sa
-        window = MainWindow(load_simulation_data())
-        if window.study_panel is None:
-            window.close()
-            return
-        window.show()
-        sp = window.study_panel
-        norm = sa.normalized_axes(sp._table, sp._axis_keys, sp._axis_kind)
-        # A continuous response axis (max_temp_c, right after sa.PARAMS) has an
-        # essentially-unique maximum across real scenarios (norm == 1.0 there),
-        # unlike a categorical factor axis where many rows tie -- picking the
-        # row at its peak makes "nearest line" unambiguous for this test.
-        axis_idx = len(sa.PARAMS)
-        target_row = int(np.nanargmax(norm[:, axis_idx]))
-        axes = sp.parallel_canvas.fig.axes
-        assert axes
-        expected = sp._table[target_row]["case_index"]
-        # Start from a different combo index so the click is a genuine
-        # change (PyQt doesn't emit currentIndexChanged for a same-index set).
-        target_idx = sp.scenario_combo.findData(int(expected))
-        sp.scenario_combo.setCurrentIndex((target_idx + 1) % sp.scenario_combo.count())
-        class FakeEvent:
-            inaxes = axes[0]
-            xdata = float(axis_idx)
-            ydata = float(norm[target_row][axis_idx])
-        sp._on_parallel_click(FakeEvent())
-        QtWidgets.QApplication.processEvents()
-        assert sp.scenario_combo.currentData() == expected
-        assert window.selection_bus.current.scenario == expected
         window.close()
 
     def test_history_ignores_playback_ticks_and_own_replay(self, qapp):

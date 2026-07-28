@@ -1,11 +1,22 @@
-"""Study-Level Analytics panel (V5-M2), an Analysis-page tab.
+"""Study-Level Analytics panel (V5-M2), an Analysis-page tab -- the
+"Factors & Sensitivity" workspace's anchor panel.
 
-Treats the current experiment as a full factorial. Three views over the
-parameter × response table (study_analytics): parallel coordinates
-(parameters vs responses, one line per scenario), factor influence (which
-factor moves a chosen response most), and correlation + outliers + study
-statistics. Selecting a scenario publishes it to the SelectionBus (M1), so the
+Views over the parameter × response table (study_analytics): factor
+influence (which factor moves a chosen response most), a response curve
+(one factor x one response, level-by-level), correlation + outliers +
+study statistics, and (as a folded-in sub-tab) factor effects' spatial
+field. Selecting a scenario publishes it to the SelectionBus (M1), so the
 Live Viewer and every linked panel follow.
+
+Parallel coordinates used to be a tab here too; it was extracted into
+parallel_coordinates_panel.py (Analysis section consolidation Phase 3)
+since it conceptually belongs with the other cross-scenario discovery
+tools (Compare & Discover), not this panel's factor/response tabs.
+scenario_combo stays here regardless -- every remaining tab is a
+whole-study view with no per-scenario dependency of its own, but keeping
+it preserves the existing "every relevant Analysis panel exposes
+scenario selection" convention and its cross-panel sync (unchanged,
+still bus-bound).
 
 Reads the already-computed scenario summaries; no store reads, no new
 simulations. Reuses study_analytics and, for the factor axis order,
@@ -27,10 +38,6 @@ class StudyPanel(QtWidgets.QWidget):
         super().__init__(parent)
         self._summaries = sorted(summaries or [], key=lambda s: s.case_index)
         self._table = sa.build_table(self._summaries)
-        self._axis_keys = list(sa.PARAMS) + ["max_temp_c", "peak_hrr_kw",
-                                             "total_energy_kj", "layer_min_height_m"]
-        self._axis_kind = {k: ("param" if k in sa.PARAMS else "response")
-                           for k in self._axis_keys}
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -57,10 +64,6 @@ class StudyPanel(QtWidgets.QWidget):
         layout.addWidget(self.caption)
 
         self.tabs = QtWidgets.QTabWidget()
-        # --- parallel coordinates ---
-        self.parallel_canvas = MplCanvas(self)
-        self.parallel_canvas.setAccessibleName("Parallel coordinates")
-        self.tabs.addTab(self.parallel_canvas, "Parallel coordinates")
         # --- factor influence ---
         infl = QtWidgets.QWidget()
         iv = QtWidgets.QVBoxLayout(infl)
@@ -133,67 +136,13 @@ class StudyPanel(QtWidgets.QWidget):
             self.tabs.addTab(factor_effects_content, "Factor effects")
         layout.addWidget(self.tabs, 1)
 
-        self.scenario_combo.currentIndexChanged.connect(self._render_parallel)
-        # V6-M4: click a line in the parallel-coordinates plot to select
-        # that scenario -- the combo above is already bus-bound generically
-        # (bind_to_bus, main_window._build_selection), so moving its index
-        # is enough to publish the selection; no direct bus reference needed
-        # here.
-        self.parallel_canvas.mpl_connect("button_press_event", self._on_parallel_click)
         self._render_all()
 
     # ------------------------------------------------------------- rendering
     def _render_all(self) -> None:
-        self._render_parallel()
         self._render_influence()
         self._render_response_curve()
         self._render_correlation()
-
-    def _render_parallel(self) -> None:
-        fig = self.parallel_canvas.fig
-        fig.clear()
-        ax = fig.add_subplot(111)
-        if not self._table:
-            self.parallel_canvas.draw_idle()
-            return
-        norm = sa.normalized_axes(self._table, self._axis_keys, self._axis_kind)
-        n_axes = len(self._axis_keys)
-        xs = np.arange(n_axes)
-        sel = self.scenario_combo.currentData()
-        for i, row in enumerate(self._table):
-            y = norm[i]
-            is_sel = row["case_index"] == sel
-            ax.plot(xs, y, color=("#00E5FF" if is_sel else "#B0B0B0"),
-                    linewidth=(2.2 if is_sel else 0.8),
-                    alpha=(1.0 if is_sel else 0.5), zorder=(3 if is_sel else 1))
-        labels = [sa.PARAM_LABELS.get(k, sa.RESPONSE_LABEL.get(k, k)) for k in self._axis_keys]
-        ax.set_xticks(xs)
-        ax.set_xticklabels(labels, fontsize=7, rotation=30, ha="right")
-        ax.set_yticks([])
-        ax.set_ylabel("normalized (min→max)", fontsize=8)
-        for x in xs:
-            ax.axvline(x, color="#ddd", linewidth=0.6, zorder=0)
-        fig.subplots_adjust(top=0.97, bottom=0.22, left=0.08, right=0.98)
-        self.parallel_canvas.draw_idle()
-
-    def _on_parallel_click(self, event) -> None:
-        """Study point -> jump to scenario (V6-M4): find the plotted line
-        nearest the click and select its scenario in `scenario_combo`,
-        which is already wired to the SelectionBus."""
-        if event.inaxes is None or event.xdata is None or not self._table:
-            return
-        norm = sa.normalized_axes(self._table, self._axis_keys, self._axis_kind)
-        axis_idx = min(max(int(round(event.xdata)), 0), len(self._axis_keys) - 1)
-        best_i, best_d = None, None
-        for i in range(len(self._table)):
-            d = abs(norm[i][axis_idx] - event.ydata)
-            if best_d is None or d < best_d:
-                best_d, best_i = d, i
-        if best_i is None:
-            return
-        idx = self.scenario_combo.findData(int(self._table[best_i]["case_index"]))
-        if idx >= 0:
-            self.scenario_combo.setCurrentIndex(idx)
 
     def _render_influence(self) -> None:
         fig = self.influence_canvas.fig
