@@ -38,6 +38,7 @@ class AdvancedComparePanel(QtWidgets.QWidget):
         self._cache = {}
         self._metric = None      # (times, smax_a, smax_b) for the temporal plot
         self._pinned_comparisons: list = []   # Phase C -> session report
+        self._bus = None
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -167,6 +168,28 @@ class AdvancedComparePanel(QtWidgets.QWidget):
         if ib >= 0:
             self.combo_b.setCurrentIndex(ib)  # triggers _recompute
 
+    # ------------------------------------------------------------- bus (Phase 2)
+    def set_bus(self, bus) -> None:
+        """Wires the A/B pair to Selection.comparison -- unlike a single
+        scenario_combo, a pair doesn't fit bind_to_bus's generic loop
+        (analysis_panel_base.py only looks for `scenario_combo`), so this
+        panel gets a small custom set_bus, the same way SensitivityPanel/
+        SpaceTimePanel already do for their own non-generic shapes. Reuses
+        an existing, previously-unused Selection field rather than adding
+        new state."""
+        self._bus = bus
+        bus.changed.connect(self._on_selection)
+
+    def _on_selection(self, sel, origin) -> None:
+        if origin is self or sel.comparison is None:
+            return
+        ca, cb = sel.comparison
+        self.set_scenarios(ca, cb)
+
+    def _publish_comparison(self, ca, cb) -> None:
+        if self._bus is not None:
+            self._bus.update(origin=self, comparison=(ca, cb))
+
     # --------------------------------------------------------------- compute
     def _recompute(self) -> None:
         if not self._loaded:
@@ -183,6 +206,7 @@ class AdvancedComparePanel(QtWidgets.QWidget):
             self._metric = None
             self._render(None)
             return
+        self._publish_comparison(ca, cb)
         cache_key = (ca, cb, key.quantity)
         if cache_key not in self._cache:
             data_a = np.asarray(self._store.get(ca, key))

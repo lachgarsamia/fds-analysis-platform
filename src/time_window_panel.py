@@ -46,6 +46,7 @@ class TimeWindowPanel(QtWidgets.QWidget):
         self._t0 = None
         self._t1 = None
         self._split = None
+        self._bus = None
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -192,6 +193,7 @@ class TimeWindowPanel(QtWidgets.QWidget):
         self.mode_combo.blockSignals(False)
         self._render()
         self._compute()
+        self._publish_selection()
 
     def _on_click(self, event) -> None:
         if self._series is None or event.inaxes is None or event.xdata is None:
@@ -209,9 +211,29 @@ class TimeWindowPanel(QtWidgets.QWidget):
                 return
         self._render()
         self._compute()
+        self._publish_selection()
 
     def _on_insight(self, insight) -> None:
         pass  # interval stats are spans; nothing to seek here
+
+    # ------------------------------------------------------------- bus (Phase 2)
+    def set_bus(self, bus) -> None:
+        """Publishes the current window as Selection.interval -- previously
+        local-only despite Selection.interval existing for exactly this.
+        One-way (publish only), same scope as TimeSeriesPanel's probe.
+        Split mode is deliberately not published: unlike interval/point/
+        region, Selection.time_s also drives the shared playback frame
+        everywhere, so publishing it from a stats-only split click would
+        silently relocate every other panel's current frame -- a louder
+        side effect than this phase's "shared context, not surprise
+        actions" scope."""
+        self._bus = bus
+
+    def _publish_selection(self) -> None:
+        if self._bus is None or self._mode != "window":
+            return
+        if self._t0 is not None and self._t1 is not None:
+            self._bus.update(origin=self, interval=(self._t0, self._t1))
 
     # -------------------------------------------------- session state (V4-M6)
     def get_state(self) -> dict:

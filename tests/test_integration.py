@@ -2646,6 +2646,32 @@ class TestTimeWindowPanel:
         assert len(window.evidence_dock.notebook) == 1
         window.close()
 
+    def test_window_selection_publishes_interval(self, qapp):
+        """Consolidation Phase 2: a selected window (previously local-only)
+        publishes Selection.interval (defined but previously unused by any
+        panel). Split mode is deliberately not published (see set_bus's
+        docstring: time_s also drives the shared playback frame)."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        panel = window.time_window_panel
+        panel.ensure_loaded()
+        if not panel._series["phases"]:
+            window.close()
+            return
+        panel._on_phase_selected(1)
+        _name, a, b = panel._series["phases"][0]
+        assert window.selection_bus.current.interval == (a, b)
+        before = window.selection_bus.current
+        panel._on_mode_changed(1)   # switch to split mode
+        panel._split = 20.0
+        panel._compute()
+        panel._publish_selection()
+        assert window.selection_bus.current is before   # split mode: no publish
+        window.close()
+
 
 class TestNamedSessions:
     """V4-M6: named, reproducible analysis sessions."""
@@ -2853,6 +2879,32 @@ class TestAdvancedComparePanel:
         assert panel.temporal_list.count() == 0
         assert panel.spatial_list.count() == 0
         assert panel.physics_list.count() == 0
+        window.close()
+
+    def test_ab_pair_publishes_and_follows_selection_comparison(self, qapp):
+        """Consolidation Phase 2: combo_a/combo_b don't fit bind_to_bus's
+        generic scenario_combo lookup, so Selection.comparison (defined but
+        previously unused by any panel) is wired via a small custom
+        set_bus, matching the SensitivityPanel/SpaceTimePanel precedent."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if window.advanced_compare_panel is None:
+            window.close()
+            return
+        panel = window.advanced_compare_panel
+        panel.ensure_loaded()
+        target_a = sim_data.manifest[2].case_index
+        target_b = sim_data.manifest[3].case_index
+        idx_a = panel.combo_a.findData(target_a)
+        panel.combo_a.setCurrentIndex(idx_a)
+        idx_b = panel.combo_b.findData(target_b)
+        panel.combo_b.setCurrentIndex(idx_b)
+        assert window.selection_bus.current.comparison == (target_a, target_b)
+        # reverse: a comparison published elsewhere drives this panel's pair.
+        other_a, other_b = sim_data.manifest[0].case_index, sim_data.manifest[1].case_index
+        window.selection_bus.update(origin=None, comparison=(other_a, other_b))
+        assert panel.combo_a.currentData() == other_a
+        assert panel.combo_b.currentData() == other_b
         window.close()
 
     def test_add_to_session_report_pins_comparison_and_survives_round_trip(self, qapp, tmp_path):

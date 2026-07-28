@@ -123,6 +123,7 @@ class TimeSeriesPanel(QtWidgets.QWidget):
         self._marker_artists: list = []
         self._last_curves: list = []  # [(label, values)] of the current plot
         self._last_x = None           # (axis label, values) of the current plot
+        self._bus = None
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -320,6 +321,29 @@ class TimeSeriesPanel(QtWidgets.QWidget):
         self._draw_probe_markers()
         self.locator_canvas.draw_idle()
         self._update_plot()
+        self._publish_probe()
+
+    # ------------------------------------------------------------- bus (Phase 2)
+    def set_bus(self, bus) -> None:
+        """Publishes the current probe as Selection.point/region (previously
+        unused by any panel) so another panel that reacts to the shared
+        selection -- SpaceTimePanel already does, via its own custom
+        set_bus -- can follow this probe without the researcher re-picking
+        it. One-way (publish only): this panel's own mode/probe state stays
+        local, so accepting an external pick isn't required to get the
+        cross-panel value."""
+        self._bus = bus
+
+    def _publish_probe(self) -> None:
+        if self._bus is None or self._probe is None:
+            return
+        if self._mode == "point":
+            self._bus.update(origin=self, point=self._probe)
+        elif self._mode == "region":
+            (x0, z0), (x1, z1) = self._probe
+            self._bus.update(origin=self, region=(min(x0, x1), max(x0, x1),
+                                                   min(z0, z1), max(z0, z1)))
+        # line mode has no matching Selection field -- not published.
 
     # ------------------------------------------------------------- controls
     def _on_scenario_changed(self, _idx: int) -> None:

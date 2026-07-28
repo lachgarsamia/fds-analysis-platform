@@ -130,6 +130,34 @@ class TestTimeSeriesPanel:
         # Full diagonal of a 1.0 x 0.3 extent
         assert panel._last_x[1][-1] == pytest.approx(np.hypot(1.0, 0.3))
 
+    def test_point_probe_publishes_to_the_bus(self, panel):
+        """Consolidation Phase 2: the probe (previously local-only)
+        publishes Selection.point so another panel following the shared
+        selection (e.g. SpaceTimePanel) can follow it."""
+        from selection import SelectionBus
+        bus = SelectionBus()
+        panel.set_bus(bus)
+        panel._apply_click(0.5, 0.15)
+        assert bus.current.point == (0.5, 0.15)
+
+    def test_region_probe_publishes_normalized_region(self, panel):
+        from selection import SelectionBus
+        bus = SelectionBus()
+        panel.set_bus(bus)
+        panel.mode_combo.setCurrentIndex(2)  # region
+        panel._apply_click(0.6, 0.05)
+        panel._apply_click(0.1, 0.2)
+        assert bus.current.region == (0.1, 0.6, 0.05, 0.2)
+
+    def test_line_probe_has_no_matching_field_and_does_not_publish(self, panel):
+        from selection import SelectionBus
+        bus = SelectionBus()
+        panel.set_bus(bus)
+        panel.mode_combo.setCurrentIndex(1)  # line
+        panel._apply_click(0.0, 0.3)
+        panel._apply_click(1.0, 0.0)
+        assert bus.current.point is None and bus.current.region is None
+
     def test_region_mode_two_clicks_gives_time_axis(self, panel):
         panel.mode_combo.setCurrentIndex(2)  # region
         panel._apply_click(0.1, 0.05)

@@ -1073,6 +1073,17 @@ class MainWindow(QtWidgets.QMainWindow):
         # V5-M4: the space-time panel publishes/reacts to the selected point.
         if self.spacetime_panel is not None:
             self.spacetime_panel.set_bus(self.selection_bus)
+        # Consolidation Phase 2: the A/B pair publishes/reacts to
+        # Selection.comparison (previously defined but unused by any panel).
+        if self.advanced_compare_panel is not None:
+            self.advanced_compare_panel.set_bus(self.selection_bus)
+        # Consolidation Phase 2: the point/region probe publishes to the bus
+        # (previously local-only) so other panels (e.g. SpaceTimePanel) can follow it.
+        if self.timeseries_panel is not None:
+            self.timeseries_panel.set_bus(self.selection_bus)
+        # Consolidation Phase 2: the selected window publishes Selection.interval.
+        if self.time_window_panel is not None:
+            self.time_window_panel.set_bus(self.selection_bus)
         # V5-M5: a narrative step publishes its Insight's selection (seek + sync).
         if self.narrative_panel is not None:
             self.narrative_panel.event_activated.connect(self._on_insight_activated)
