@@ -4173,8 +4173,9 @@ class TestUnifiedWorkspace:
             return
         window._on_workspace_preset("Study analytics")
         assert window._active_page_key == "analysis"
-        # Phase D: tabs are grouped -- the outer tab now holds the "Study-Level"
-        # group's own inner QTabWidget, which must be showing study_panel.
+        # Tabs are grouped -- the outer tab now holds the "Factors &
+        # Sensitivity" group's own inner QTabWidget, which must be showing
+        # study_panel.
         group = window.pages["analysis"].tabs.currentWidget()
         assert group.currentWidget() is window.study_panel
         window.close()

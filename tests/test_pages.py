@@ -58,8 +58,10 @@ class TestPageLifecycle:
 
 
 class TestAnalysisPageGrouping:
-    """Analysis-improvement roadmap Phase D: tabs re-grouped by
-    investigation stage, with Experimental collapsed by default."""
+    """Analysis section consolidation Phase 1: tabs re-grouped by research
+    question (Overview & Interpretation / Compare & Discover / Probe &
+    Measure / Factors & Sensitivity / Spatiotemporal Analysis / Reference &
+    Communication), with Experimental collapsed by default."""
 
     def test_panels_are_grouped_and_experimental_starts_collapsed(self, qapp):
         page = AnalysisPage(
@@ -71,8 +73,9 @@ class TestAnalysisPageGrouping:
             attention_content=QtWidgets.QLabel("Attention"))
         assert page.tabs.count() == 5
         group_names = [page.tabs.tabText(i) for i in range(page.tabs.count())]
-        assert group_names == ["Core Investigation", "Study-Level", "Comparison",
-                               "Interpretation & Communication", "Experimental"]
+        assert group_names == ["Compare & Discover", "Factors & Sensitivity",
+                               "Spatiotemporal Analysis", "Reference & Communication",
+                               "Experimental"]
         experimental = page.tabs.widget(group_names.index("Experimental"))
         assert experimental.tabs.count() == 2   # Fire MRI, Attention
         assert experimental.tabs.isHidden()     # collapsed by default
@@ -85,7 +88,7 @@ class TestAnalysisPageGrouping:
         page = AnalysisPage(study_content=QtWidgets.QLabel("Study"),
                             sensitivity_content=QtWidgets.QLabel("Sensitivity"))
         assert page.tabs.count() == 1
-        assert page.tabs.tabText(0) == "Study-Level"
+        assert page.tabs.tabText(0) == "Factors & Sensitivity"
 
     def test_show_tab_reveals_nested_panel_and_expands_experimental(self, qapp):
         fire_mri = QtWidgets.QLabel("Fire MRI")
@@ -105,10 +108,10 @@ class TestAnalysisPageGrouping:
             sensitivity_content=QtWidgets.QLabel("Sensitivity"),
             graph_content=QtWidgets.QLabel("Graph"))
         page.tab_shown.connect(lambda: calls.append(1))
-        study_group = page.tabs.widget(0)   # Study-Level: Study, Sensitivity
+        study_group = page.tabs.widget(0)   # Factors & Sensitivity: Study, Sensitivity
         study_group.setCurrentIndex(1)      # inner switch, no outer change
         assert len(calls) == 1
-        page.tabs.setCurrentIndex(1)        # outer switch to Interpretation & Communication
+        page.tabs.setCurrentIndex(1)        # outer switch to Reference & Communication
         assert len(calls) == 2
 
 

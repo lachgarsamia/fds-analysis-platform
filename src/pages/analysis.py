@@ -20,24 +20,37 @@ from PyQt5 import QtCore, QtWidgets
 
 from pages.base import Page
 
-# Analysis-improvement roadmap Phase D: the tab list grew to ~28 flat tabs
-# (Phase A-C folded several redundant ones in, but didn't reduce the total
-# count) -- re-grouped by investigation stage so a researcher scans five
-# named groups instead of one long strip. Membership follows the audit:
-# per-scenario/point tools (Core Investigation), whole-factorial tools
-# (Study-Level), the one pairwise-scenario tool (Comparison), evidence-
-# organizing/reference tools (Interpretation & Communication), and the
-# lower-confidence/exploratory tools (Experimental, collapsed by default).
+# Analysis-section consolidation (Phase 1 of the approved consolidation
+# plan, docs: the "Analysis Section Consolidation" audit): the Phase D
+# grouping below organized tabs by investigation *stage*, but left several
+# tools that answer the same research question scattered across different
+# groups (e.g. Compare axes/Ensemble/Ensemble analytics/Study's parallel
+# coordinates were split across "Comparison"/"Study-Level" despite all four
+# answering "how do scenarios compare"). This re-groups by research
+# question instead, purely a navigation change -- no panel is merged,
+# split, or otherwise touched here (that's Phases 2-6). Membership:
+# - Overview & Interpretation: "what is happening in this simulation?"
+# - Compare & Discover: "how are scenarios similar or different?" (State
+#   space's genome is ensemble-normalized, i.e. inherently a
+#   this-scenario-vs-the-study comparison, so it lives here too)
+# - Probe & Measure: "what happens at this location/region?"
+# - Factors & Sensitivity: "what drives the observed response?" (Study
+#   still also hosts its parallel-coordinates tab today -- that tab
+#   conceptually belongs in Compare & Discover and is planned to move
+#   there in Phase 3, once it's extracted into its own widget)
+# - Spatiotemporal Analysis: "how does a quantity evolve across time
+#   and/or space?"
+# - Reference & Communication: authoring/browsing/reporting tools that
+#   aren't themselves an investigation of the simulation
+# The lower-confidence/exploratory tools (Experimental, collapsed by
+# default) are unchanged from Phase D.
 _GROUPS = [
-    ("Core Investigation", [
-        "Dashboard", "Hazard & Tenability", "Narrative", "Space-time",
-        "Height", "Zones", "Intervals", "Measure", "Time series", "Calculator",
-        "Devices", "Velocity"]),
-    ("Study-Level", [
-        "Ensemble analytics", "State space", "Study",
-        "Sensitivity", "Ensemble"]),
-    ("Comparison", ["Compare axes"]),
-    ("Interpretation & Communication", ["Graph", "Quantities", "Assistant", "Sessions"]),
+    ("Overview & Interpretation", ["Dashboard", "Hazard & Tenability", "Narrative"]),
+    ("Compare & Discover", ["Compare axes", "Ensemble analytics", "Ensemble", "State space"]),
+    ("Probe & Measure", ["Devices", "Zones", "Velocity", "Measure"]),
+    ("Factors & Sensitivity", ["Study", "Sensitivity"]),
+    ("Spatiotemporal Analysis", ["Height", "Time series", "Intervals", "Space-time"]),
+    ("Reference & Communication", ["Calculator", "Quantities", "Graph", "Assistant", "Sessions"]),
 ]
 # Fire MRI, Attention, Why is it hot?, and Forecasting are each individually
 # gated/heuristic/exploratory (per-panel disclaimers already say so) --
