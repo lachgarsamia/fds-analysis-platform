@@ -6,7 +6,11 @@ drawn on the map and listed as an Insight chain. A prominent disclaimer
 states this is association (gradient ascent, no velocity field), not
 proven causation, per the V3-M7 gate.
 
-Static/lazy.
+Lazy; `frame_slider` (a QSpinBox -- bind_to_bus only needs value()/
+setValue()/maximum()/valueChanged, not a particular widget class) is
+wired to the shared SelectionBus playback clock (UX consolidation pass,
+item 7), so the map follows Play/Pause/scrub from the Analysis page's
+shared transport, same as every other per-frame panel.
 """
 
 from __future__ import annotations
@@ -57,9 +61,9 @@ class CausePanel(QtWidgets.QWidget):
         self.scenario_combo.setAccessibleName("Cause scenario")
         header.addWidget(self.scenario_combo)
         header.addWidget(QtWidgets.QLabel("frame:"))
-        self.frame_spin = QtWidgets.QSpinBox()
-        self.frame_spin.setAccessibleName("Cause frame")
-        header.addWidget(self.frame_spin)
+        self.frame_slider = QtWidgets.QSpinBox()
+        self.frame_slider.setAccessibleName("Cause frame")
+        header.addWidget(self.frame_slider)
         layout.addLayout(header)
 
         disclaimer = QtWidgets.QLabel(_DISCLAIMER)
@@ -82,7 +86,7 @@ class CausePanel(QtWidgets.QWidget):
         layout.addWidget(body, 1)
 
         self.scenario_combo.currentIndexChanged.connect(self._reload)
-        self.frame_spin.valueChanged.connect(self._render)
+        self.frame_slider.valueChanged.connect(self._render)
         self.canvas.mpl_connect("button_press_event", self._on_click)
 
     def showEvent(self, event):
@@ -107,19 +111,19 @@ class CausePanel(QtWidgets.QWidget):
             return
         self._data = np.asarray(self._store.get(case_index, DEFAULT_SLICE_KEY))
         self._extent = self._store.get_extent(case_index, DEFAULT_SLICE_KEY)
-        self.frame_spin.blockSignals(True)
+        self.frame_slider.blockSignals(True)
         n = self._data.shape[0]
-        self.frame_spin.setRange(0, n - 1)
-        self.frame_spin.setValue(min(self.frame_spin.value(), n - 1) if self.frame_spin.value()
+        self.frame_slider.setRange(0, n - 1)
+        self.frame_slider.setValue(min(self.frame_slider.value(), n - 1) if self.frame_slider.value()
                                  else int(n * 0.6))
-        self.frame_spin.blockSignals(False)
+        self.frame_slider.blockSignals(False)
         self.chain.set_insights([])
         self._render()
 
     def _render(self, trace=None) -> None:
         if self._data is None:
             return
-        idx = min(self.frame_spin.value(), self._data.shape[0] - 1)
+        idx = min(self.frame_slider.value(), self._data.shape[0] - 1)
         display = get_quantity("TEMPERATURE")
         fig = self.canvas.fig
         fig.clear()
@@ -144,7 +148,7 @@ class CausePanel(QtWidgets.QWidget):
     def _on_click(self, event) -> None:
         if self._data is None or event.inaxes != self._ax or event.xdata is None:
             return
-        idx = min(self.frame_spin.value(), self._data.shape[0] - 1)
+        idx = min(self.frame_slider.value(), self._data.shape[0] - 1)
         frame = self._data[idx]
         if self._extent is None:
             return

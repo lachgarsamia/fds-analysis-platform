@@ -2402,7 +2402,7 @@ class TestCausePanel:
         # click the hottest cell's location -> a chain appears
         data = np.asarray(sim_data.store.get(sim_data.manifest[0].case_index, DEFAULT_SLICE_KEY))
         extent = sim_data.store.get_extent(sim_data.manifest[0].case_index, DEFAULT_SLICE_KEY)
-        fi = panel.frame_spin.value()
+        fi = panel.frame_slider.value()
         gr, gc = np.unravel_index(int(np.argmax(data[fi])), data[fi].shape)
         n_z, n_x = data[fi].shape
 
