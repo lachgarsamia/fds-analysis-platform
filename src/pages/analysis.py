@@ -17,6 +17,11 @@ unchanged in every other way, still triggered by the Analysis *page*
 being shown -- unaffected by which tab/mode is active, so nesting the
 dock's widget one level deeper inside CompareDiscoverPanel doesn't change
 when this fires).
+
+Phase 6 similarly folded Height/Time series/Time Window into
+spatiotemporal_panel.py's SpatiotemporalPanel (three modes of one
+"Field & Time Explorer" tab) -- see that module's docstring for why
+Space-time stays a separate top-level tab instead.
 """
 
 from __future__ import annotations
@@ -40,7 +45,11 @@ from pages.base import Page
 # ProbeMeasurePanel). Phase 5 folded Sensitivity into Study itself as a
 # sub-tab (study_panel.py), the same "thin slot, not a rewrite" pattern
 # already used there for Factor effects -- so "Factors & Sensitivity" now
-# has a single "Study" tab rather than two separate ones. Membership:
+# has a single "Study" tab rather than two separate ones. Phase 6 did the
+# same for Height/Time series/Time Window, now one "Field & Time Explorer"
+# tab (spatiotemporal_panel.py's SpatiotemporalPanel); Space-time stays a
+# separate top-level tab in the same group (deferred, see that module's
+# docstring). Membership:
 # - Overview & Interpretation: "what is happening in this simulation?"
 # - Compare & Discover: "how are scenarios similar or different?" (State
 #   space's genome is ensemble-normalized, i.e. inherently a
@@ -59,7 +68,7 @@ _GROUPS = [
     ("Compare & Discover", ["Cross-Scenario Comparison", "State space"]),
     ("Probe & Measure", ["Spatial Probes"]),
     ("Factors & Sensitivity", ["Study"]),
-    ("Spatiotemporal Analysis", ["Height", "Time series", "Intervals", "Space-time"]),
+    ("Spatiotemporal Analysis", ["Field & Time Explorer", "Space-time"]),
     ("Reference & Communication", ["Calculator", "Quantities", "Graph", "Assistant", "Sessions"]),
 ]
 # Fire MRI, Attention, Why is it hot?, and Forecasting are each individually
@@ -110,13 +119,11 @@ class AnalysisPage(Page):
     def __init__(self, on_shown: Optional[Callable[[], None]] = None,
                  playback_bar: QtWidgets.QWidget = None,
                  forecasting_content: QtWidgets.QWidget = None,
-                 timeseries_content: QtWidgets.QWidget = None,
                  fire_mri_content: QtWidgets.QWidget = None,
                  state_space_content: QtWidgets.QWidget = None,
                  attention_content: QtWidgets.QWidget = None,
                  cause_content: QtWidgets.QWidget = None,
-                 height_content: QtWidgets.QWidget = None,
-                 interval_content: QtWidgets.QWidget = None,
+                 spatiotemporal_content: QtWidgets.QWidget = None,
                  probe_measure_content: QtWidgets.QWidget = None,
                  compare_discover_content: QtWidgets.QWidget = None,
                  study_content: QtWidgets.QWidget = None,
@@ -154,8 +161,7 @@ class AnalysisPage(Page):
             ("Hazard & Tenability", hazard_tenability_content),
             ("Narrative", narrative_content),
             ("Space-time", spacetime_content),
-            ("Height", height_content),
-            ("Intervals", interval_content),
+            ("Field & Time Explorer", spatiotemporal_content),
             ("Spatial Probes", probe_measure_content),
             ("Graph", graph_content),
             ("Quantities", quantities_content),
@@ -168,7 +174,6 @@ class AnalysisPage(Page):
             ("State space", state_space_content),
             ("Cross-Scenario Comparison", compare_discover_content),
             ("Study", study_content),
-            ("Time series", timeseries_content),
             ("Forecasting", forecasting_content),
         ]
         by_label = dict(sections)

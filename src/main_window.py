@@ -70,6 +70,7 @@ from time_window_panel import TimeWindowPanel
 from measurement_panel import MeasurementPanel
 from advanced_compare_panel import AdvancedComparePanel
 from probe_measure_panel import ProbeMeasurePanel
+from spatiotemporal_panel import SpatiotemporalPanel
 from quantities_panel import QuantitiesPanel
 from assistant_panel import AssistantPanel
 from assistant_query_panel import AssistantQueryPanel
@@ -836,6 +837,17 @@ class MainWindow(QtWidgets.QMainWindow):
             self.time_window_panel = TimeWindowPanel(
                 self.controller.store, self.sim_data.manifest,
                 self._quantity_options(), self.sim_data.timesteps_per_second)
+            # Spatiotemporal Analysis (Analysis section consolidation Phase
+            # 6): a thin QTabWidget wrapper over three pre-existing "how does
+            # a quantity evolve across time and/or space?" tools -- vertical
+            # profile, point/region/line probe, and whole-field/interval.
+            # Every child's own construction/store access/lazy-load/bus
+            # wiring is unchanged; only the tab-level presentation is
+            # consolidated. Space-time is deliberately excluded (structurally
+            # different mechanism, see spatiotemporal_panel.py's docstring).
+            self.spatiotemporal_panel = SpatiotemporalPanel(
+                height=self.height_panel, timeseries=self.timeseries_panel,
+                time_window=self.time_window_panel)
             # Measurement tools (V4-M7; UX consolidation pass reduced the
             # tool set to rectangle/probe): disposable, un-named area/point
             # reads on the field; measurements persist with the session.
@@ -979,6 +991,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.time_window_panel = None
             self.measurement_panel = None
             self.probe_measure_panel = None
+            self.spatiotemporal_panel = None
             self.advanced_compare_panel = None
             self.quantities_panel = None
             self.assistant_panel = None
@@ -1012,13 +1025,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 playback_bar=self._build_analysis_playback_bar(),
                 forecasting_content=ForecastingPanel(
                     self.prediction_store, self.controller.store, self.sim_data.manifest),
-                timeseries_content=self.timeseries_panel,
                 fire_mri_content=self.fire_mri_panel,
                 state_space_content=self.state_space_panel,
                 attention_content=self.attention_panel,
                 cause_content=self.cause_panel,
-                height_content=self.height_panel,
-                interval_content=self.time_window_panel,
+                spatiotemporal_content=self.spatiotemporal_panel,
                 probe_measure_content=self.probe_measure_panel,
                 compare_discover_content=self.compare_discover_panel,
                 study_content=self.study_panel,

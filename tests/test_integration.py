@@ -3396,6 +3396,59 @@ class TestSensitivityPanel:
         window.close()
 
 
+class TestSpatiotemporalPanel:
+    """Analysis section consolidation Phase 6: Height, Time series, and
+    Time Window are now three modes of one "Field & Time Explorer"
+    workspace -- each child's own construction/store access/lazy-load/bus
+    wiring is unchanged, only the tab-level presentation is consolidated.
+    Space-time stays a separate top-level tab (deferred, see
+    spatiotemporal_panel.py's docstring)."""
+
+    def test_wrapper_holds_all_three_children_as_tabs(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.spatiotemporal_panel is None:
+            window.close()
+            return
+        wrapper = window.spatiotemporal_panel
+        labels = [wrapper.tabs.tabText(i) for i in range(wrapper.tabs.count())]
+        assert labels == ["Vertical profile", "Point/Region/Line probe", "Whole-field & interval"]
+        assert wrapper.tabs.widget(0) is window.height_panel
+        assert wrapper.tabs.widget(1) is window.timeseries_panel
+        assert wrapper.tabs.widget(2) is window.time_window_panel
+        window.close()
+
+    def test_showing_wrapper_loads_all_children_not_just_visible_one(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.spatiotemporal_panel is None:
+            window.close()
+            return
+        window.show()
+        window._navigate_to("analysis")
+        window.pages["analysis"].show_tab(window.spatiotemporal_panel)
+        QtWidgets.QApplication.processEvents()
+        assert window.height_panel._loaded
+        assert window.timeseries_panel._loaded
+        assert window.time_window_panel._loaded
+        window.close()
+
+    def test_show_tab_reveals_a_specific_child_three_levels_deep(self, qapp):
+        """Regression check for the recursive show_tab fix from Phase 4:
+        group -> wrapper -> child."""
+        window = MainWindow(load_simulation_data())
+        if window.spatiotemporal_panel is None:
+            window.close()
+            return
+        window.show()
+        window._navigate_to("analysis")
+        window.pages["analysis"].show_tab(window.time_window_panel)
+        group = window.pages["analysis"].tabs.currentWidget()
+        assert window.pages["analysis"].tabs.tabText(
+            window.pages["analysis"].tabs.currentIndex()) == "Spatiotemporal Analysis"
+        assert group.currentWidget() is window.spatiotemporal_panel
+        assert window.spatiotemporal_panel.tabs.currentWidget() is window.time_window_panel
+        window.close()
+
+
 class TestResearchWorkspace:
     """V5-M4: hazard spaces + mission-control dashboard + workspace hook."""
 

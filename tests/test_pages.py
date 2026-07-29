@@ -65,7 +65,7 @@ class TestAnalysisPageGrouping:
 
     def test_panels_are_grouped_and_experimental_starts_collapsed(self, qapp):
         page = AnalysisPage(
-            height_content=QtWidgets.QLabel("Height"),
+            spatiotemporal_content=QtWidgets.QLabel("Spatiotemporal"),
             study_content=QtWidgets.QLabel("Study"),
             compare_discover_content=QtWidgets.QLabel("Cross-Scenario Comparison"),
             graph_content=QtWidgets.QLabel("Graph"),
