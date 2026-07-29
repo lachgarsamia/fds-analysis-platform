@@ -914,12 +914,24 @@ class MainWindow(QtWidgets.QMainWindow):
                 FactorEffectsPanel(self.controller.store, self.sim_data.manifest,
                                    self._quantity_options(), self.sim_data.timesteps_per_second)
                 if self.is_factorial else None)
+            # Sensitivity explorer (V5-M3): interpolate responses across the
+            # existing factorial ("what-if"); estimates only, never a new run.
+            # Constructed before StudyPanel (Analysis section consolidation
+            # Phase 5) since it's now folded in as one of its sub-tabs, the
+            # same "thin slot, not a rewrite" pattern already used for
+            # Factor effects -- this panel's own sliders/tabs/bus wiring are
+            # completely unchanged.
+            self.sensitivity_panel = (
+                SensitivityPanel(getattr(self, "_scenario_summaries", None) or [],
+                                 self.sim_data.manifest)
+                if self.is_factorial else None)
             # Study-level analytics (V5-M2): the factorial as a designed
             # experiment. Needs the factor axes + computed summaries.
             self.study_panel = (
                 StudyPanel(getattr(self, "_scenario_summaries", None) or [],
                            self.sim_data.manifest,
-                           factor_effects_content=self.factor_effects_panel)
+                           factor_effects_content=self.factor_effects_panel,
+                           sensitivity_content=self.sensitivity_panel)
                 if self.is_factorial else None)
             # Parallel coordinates (Analysis section consolidation Phase 3):
             # extracted from StudyPanel -- it conceptually belongs with the
@@ -929,12 +941,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.parallel_coordinates_panel = (
                 ParallelCoordinatesPanel(getattr(self, "_scenario_summaries", None) or [],
                                          self.sim_data.manifest)
-                if self.is_factorial else None)
-            # Sensitivity explorer (V5-M3): interpolate responses across the
-            # existing factorial ("what-if"); estimates only, never a new run.
-            self.sensitivity_panel = (
-                SensitivityPanel(getattr(self, "_scenario_summaries", None) or [],
-                                 self.sim_data.manifest)
                 if self.is_factorial else None)
             # Compare & Discover (Analysis section consolidation Phase 3): a
             # thin QTabWidget wrapper over four pre-existing "how do
@@ -1016,7 +1022,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 probe_measure_content=self.probe_measure_panel,
                 compare_discover_content=self.compare_discover_panel,
                 study_content=self.study_panel,
-                sensitivity_content=self.sensitivity_panel,
                 hazard_tenability_content=self.hazard_tenability_panel,
                 dashboard_content=self.dashboard_panel,
                 spacetime_content=self.spacetime_panel,

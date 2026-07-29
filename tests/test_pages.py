@@ -85,10 +85,10 @@ class TestAnalysisPageGrouping:
     def test_only_supplied_panels_form_a_group(self, qapp):
         """A group with nothing supplied gets no tab at all (same "only
         supplied surfaces get a tab" rule the flat layout already had)."""
-        page = AnalysisPage(study_content=QtWidgets.QLabel("Study"),
-                            sensitivity_content=QtWidgets.QLabel("Sensitivity"))
+        page = AnalysisPage(dashboard_content=QtWidgets.QLabel("Dashboard"),
+                            narrative_content=QtWidgets.QLabel("Narrative"))
         assert page.tabs.count() == 1
-        assert page.tabs.tabText(0) == "Factors & Sensitivity"
+        assert page.tabs.tabText(0) == "Overview & Interpretation"
 
     def test_show_tab_reveals_nested_panel_and_expands_experimental(self, qapp):
         fire_mri = QtWidgets.QLabel("Fire MRI")
@@ -120,12 +120,12 @@ class TestAnalysisPageGrouping:
     def test_tab_shown_fires_on_outer_and_inner_switch(self, qapp):
         calls = []
         page = AnalysisPage(
-            study_content=QtWidgets.QLabel("Study"),
-            sensitivity_content=QtWidgets.QLabel("Sensitivity"),
+            dashboard_content=QtWidgets.QLabel("Dashboard"),
+            narrative_content=QtWidgets.QLabel("Narrative"),
             graph_content=QtWidgets.QLabel("Graph"))
         page.tab_shown.connect(lambda: calls.append(1))
-        study_group = page.tabs.widget(0)   # Factors & Sensitivity: Study, Sensitivity
-        study_group.setCurrentIndex(1)      # inner switch, no outer change
+        overview_group = page.tabs.widget(0)   # Overview & Interpretation: Dashboard, Narrative
+        overview_group.setCurrentIndex(1)      # inner switch, no outer change
         assert len(calls) == 1
         page.tabs.setCurrentIndex(1)        # outer switch to Reference & Communication
         assert len(calls) == 2

@@ -37,7 +37,10 @@ from pages.base import Page
 # of compare_discover_panel.py's CompareDiscoverPanel) instead of four
 # separate tabs; Phase 4 did the same for Devices/Zones/Velocity/Measure,
 # now one "Spatial Probes" tab (probe_measure_panel.py's
-# ProbeMeasurePanel). Membership:
+# ProbeMeasurePanel). Phase 5 folded Sensitivity into Study itself as a
+# sub-tab (study_panel.py), the same "thin slot, not a rewrite" pattern
+# already used there for Factor effects -- so "Factors & Sensitivity" now
+# has a single "Study" tab rather than two separate ones. Membership:
 # - Overview & Interpretation: "what is happening in this simulation?"
 # - Compare & Discover: "how are scenarios similar or different?" (State
 #   space's genome is ensemble-normalized, i.e. inherently a
@@ -55,7 +58,7 @@ _GROUPS = [
     ("Overview & Interpretation", ["Dashboard", "Hazard & Tenability", "Narrative"]),
     ("Compare & Discover", ["Cross-Scenario Comparison", "State space"]),
     ("Probe & Measure", ["Spatial Probes"]),
-    ("Factors & Sensitivity", ["Study", "Sensitivity"]),
+    ("Factors & Sensitivity", ["Study"]),
     ("Spatiotemporal Analysis", ["Height", "Time series", "Intervals", "Space-time"]),
     ("Reference & Communication", ["Calculator", "Quantities", "Graph", "Assistant", "Sessions"]),
 ]
@@ -117,7 +120,6 @@ class AnalysisPage(Page):
                  probe_measure_content: QtWidgets.QWidget = None,
                  compare_discover_content: QtWidgets.QWidget = None,
                  study_content: QtWidgets.QWidget = None,
-                 sensitivity_content: QtWidgets.QWidget = None,
                  hazard_tenability_content: QtWidgets.QWidget = None,
                  dashboard_content: QtWidgets.QWidget = None,
                  spacetime_content: QtWidgets.QWidget = None,
@@ -166,7 +168,6 @@ class AnalysisPage(Page):
             ("State space", state_space_content),
             ("Cross-Scenario Comparison", compare_discover_content),
             ("Study", study_content),
-            ("Sensitivity", sensitivity_content),
             ("Time series", timeseries_content),
             ("Forecasting", forecasting_content),
         ]

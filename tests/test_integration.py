@@ -3321,6 +3321,27 @@ class TestStudyPanel:
         assert panel.tabs.widget(idx) is window.factor_effects_panel
         window.close()
 
+    def test_sensitivity_folded_in_as_a_sub_tab(self, qapp):
+        """Analysis section consolidation Phase 5: the Sensitivity
+        Explorer (local sensitivity at a chosen factor setting) is a
+        sub-tab here now, complementing this panel's own global spread
+        across observed levels (Factor influence/Response curve) -- not a
+        structurally-separate top-level tab. The panel itself (sliders,
+        its own 3-tab layout, SelectionBus wiring) is unchanged."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        panel = window.study_panel
+        labels = [panel.tabs.tabText(i) for i in range(panel.tabs.count())]
+        assert "Sensitivity" in labels
+        idx = labels.index("Sensitivity")
+        assert panel.tabs.widget(idx) is window.sensitivity_panel
+        # the folded-in panel's own sliders/tabs are untouched.
+        assert window.sensitivity_panel.tabs.count() == 3
+        window.close()
+
     def test_experiments_subsection_is_fully_removed(self, qapp):
         """UX consolidation pass: Experiments (self-contained batch CRUD,
         no scenario/quantity/time controls, no scientific conclusion of its
@@ -3450,6 +3471,12 @@ class TestWorkspaceAndCommunication:
         # quantity is now a shared field: a quantity-aware panel followed
         if window.height_panel._quantity_options:
             assert window.height_panel._key.quantity == "VELOCITY"
+        if window.sensitivity_panel is not None:
+            # Phase 5: sensitivity_panel is now three levels deep (group ->
+            # StudyPanel's own tabs -> sensitivity_panel) -- the recursive
+            # show_tab must still actually raise its tab, not just the
+            # Analysis page in general.
+            assert window.study_panel.tabs.currentWidget() is window.sensitivity_panel
         window.close()
 
     def test_spacetime_point_syncs_both_ways(self, qapp):

@@ -4,19 +4,30 @@
 Views over the parameter × response table (study_analytics): factor
 influence (which factor moves a chosen response most), a response curve
 (one factor x one response, level-by-level), correlation + outliers +
-study statistics, and (as a folded-in sub-tab) factor effects' spatial
-field. Selecting a scenario publishes it to the SelectionBus (M1), so the
-Live Viewer and every linked panel follow.
+study statistics, and (as folded-in sub-tabs) factor effects' spatial
+field and the Sensitivity Explorer's what-if interpolation. Selecting a
+scenario publishes it to the SelectionBus (M1), so the Live Viewer and
+every linked panel follow.
+
+Sensitivity answers a related but distinct question -- local sensitivity
+at an interpolated, possibly-unobserved factor setting (What-if table,
+Response surface, Tornado), vs. this panel's own global spread across
+*observed* factor levels (Factor influence, Response curve) -- so it's
+folded in as one whole sub-tab (its own sliders/3-tab-layout/SelectionBus
+wiring completely unchanged), the same "thin slot, not a rewrite" pattern
+already used for Factor effects, not split apart into this panel's own
+tabs.
 
 Parallel coordinates used to be a tab here too; it was extracted into
 parallel_coordinates_panel.py (Analysis section consolidation Phase 3)
 since it conceptually belongs with the other cross-scenario discovery
 tools (Compare & Discover), not this panel's factor/response tabs.
-scenario_combo stays here regardless -- every remaining tab is a
-whole-study view with no per-scenario dependency of its own, but keeping
-it preserves the existing "every relevant Analysis panel exposes
-scenario selection" convention and its cross-panel sync (unchanged,
-still bus-bound).
+scenario_combo stays here regardless -- every remaining tab of this
+panel's own (i.e. not counting the folded-in Sensitivity/Factor-effects
+sub-tabs) is a whole-study view with no per-scenario dependency of its
+own, but keeping it preserves the existing "every relevant Analysis panel
+exposes scenario selection" convention and its cross-panel sync
+(unchanged, still bus-bound).
 
 Reads the already-computed scenario summaries; no store reads, no new
 simulations. Reuses study_analytics and, for the factor axis order,
@@ -34,7 +45,8 @@ import study_analytics as sa
 
 class StudyPanel(QtWidgets.QWidget):
     def __init__(self, summaries: list, manifest: list,
-                 factor_effects_content: QtWidgets.QWidget = None, parent=None):
+                 factor_effects_content: QtWidgets.QWidget = None,
+                 sensitivity_content: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self._summaries = sorted(summaries or [], key=lambda s: s.case_index)
         self._table = sa.build_table(self._summaries)
@@ -134,6 +146,15 @@ class StudyPanel(QtWidgets.QWidget):
         # lazy-load (showEvent), and SelectionBus wiring unchanged.
         if factor_effects_content is not None:
             self.tabs.addTab(factor_effects_content, "Factor effects")
+        # Sensitivity Explorer (Analysis section consolidation Phase 5):
+        # local sensitivity (what-if interpolation, response surface,
+        # tornado) at a chosen factor setting, complementing this panel's
+        # global spread across observed levels above -- folded in whole
+        # (its own sliders/tabs/SelectionBus wiring unchanged) rather than
+        # split apart, since its three views share one set of sliders and
+        # aren't independently meaningful.
+        if sensitivity_content is not None:
+            self.tabs.addTab(sensitivity_content, "Sensitivity")
         layout.addWidget(self.tabs, 1)
 
         self._render_all()
