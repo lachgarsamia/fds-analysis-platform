@@ -2942,6 +2942,57 @@ class TestAdvancedComparePanel:
         window.close()
 
 
+class TestProbeMeasurePanel:
+    """Analysis section consolidation Phase 4: Devices, Zones, Velocity,
+    and Measure are now four modes of one "Spatial Probes" workspace --
+    each child's own construction/store access/lazy-load/bus wiring is
+    unchanged, only the tab-level presentation is consolidated."""
+
+    def test_wrapper_holds_all_four_children_as_tabs(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.probe_measure_panel is None:
+            window.close()
+            return
+        wrapper = window.probe_measure_panel
+        labels = [wrapper.tabs.tabText(i) for i in range(wrapper.tabs.count())]
+        assert labels == ["Devices", "Zones", "Velocity", "Quick probe"]
+        assert wrapper.tabs.widget(0) is window.device_panel
+        assert wrapper.tabs.widget(1) is window.zone_panel
+        assert wrapper.tabs.widget(2) is window.velocity_panel
+        assert wrapper.tabs.widget(3) is window.measurement_panel
+        window.close()
+
+    def test_showing_wrapper_loads_all_children_not_just_visible_one(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.probe_measure_panel is None:
+            window.close()
+            return
+        window.show()
+        window._navigate_to("analysis")
+        window.pages["analysis"].show_tab(window.probe_measure_panel)
+        QtWidgets.QApplication.processEvents()
+        assert window.device_panel._loaded
+        assert window.zone_panel._loaded
+        assert window.velocity_panel._loaded
+        assert window.measurement_panel._loaded
+        window.close()
+
+    def test_show_tab_reveals_a_specific_child_three_levels_deep(self, qapp):
+        """Regression check for the show_tab recursion fix this phase
+        required: group -> wrapper -> child is one level deeper than
+        Phase D originally handled."""
+        window = MainWindow(load_simulation_data())
+        if window.probe_measure_panel is None:
+            window.close()
+            return
+        window.show()
+        window._navigate_to("analysis")
+        window.pages["analysis"].show_tab(window.device_panel)
+        QtWidgets.QApplication.processEvents()
+        assert window.probe_measure_panel.tabs.currentWidget() is window.device_panel
+        window.close()
+
+
 class TestCompareDiscoverPanel:
     """Analysis section consolidation Phase 3: Compare axes (pairwise),
     parallel coordinates, Ensemble (envelope), and Ensemble analytics

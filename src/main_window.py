@@ -69,6 +69,7 @@ from zone_panel import ZonePanel
 from time_window_panel import TimeWindowPanel
 from measurement_panel import MeasurementPanel
 from advanced_compare_panel import AdvancedComparePanel
+from probe_measure_panel import ProbeMeasurePanel
 from quantities_panel import QuantitiesPanel
 from assistant_panel import AssistantPanel
 from assistant_query_panel import AssistantQueryPanel
@@ -835,11 +836,21 @@ class MainWindow(QtWidgets.QMainWindow):
             self.time_window_panel = TimeWindowPanel(
                 self.controller.store, self.sim_data.manifest,
                 self._quantity_options(), self.sim_data.timesteps_per_second)
-            # Measurement tools (V4-M7): distance / path / rectangle / probe
-            # on the field; measurements persist with the session.
+            # Measurement tools (V4-M7; UX consolidation pass reduced the
+            # tool set to rectangle/probe): disposable, un-named area/point
+            # reads on the field; measurements persist with the session.
             self.measurement_panel = MeasurementPanel(
                 self.controller.store, self.sim_data.manifest,
                 self._quantity_options(), self.sim_data.timesteps_per_second)
+            # Probe & Measure (Analysis section consolidation Phase 4): a
+            # thin QTabWidget wrapper over four pre-existing "what happens
+            # at this location/region?" tools -- devices, zones, velocity,
+            # and quick (disposable) measurement. Every child's own
+            # construction/store access/lazy-load/bus wiring is unchanged;
+            # only the tab-level presentation is consolidated.
+            self.probe_measure_panel = ProbeMeasurePanel(
+                devices=self.device_panel, zones=self.zone_panel,
+                velocity=self.velocity_panel, measure=self.measurement_panel)
             # Advanced comparison (V4-M8): temporal / spatial / physics axes.
             # Needs two scenarios to compare (like the semantic diff).
             self.advanced_compare_panel = (
@@ -961,6 +972,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.zone_panel = None
             self.time_window_panel = None
             self.measurement_panel = None
+            self.probe_measure_panel = None
             self.advanced_compare_panel = None
             self.quantities_panel = None
             self.assistant_panel = None
@@ -1000,9 +1012,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 attention_content=self.attention_panel,
                 cause_content=self.cause_panel,
                 height_content=self.height_panel,
-                zone_content=self.zone_panel,
                 interval_content=self.time_window_panel,
-                measurement_content=self.measurement_panel,
+                probe_measure_content=self.probe_measure_panel,
                 compare_discover_content=self.compare_discover_panel,
                 study_content=self.study_panel,
                 sensitivity_content=self.sensitivity_panel,
@@ -1012,8 +1023,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 narrative_content=self.narrative_panel,
                 graph_content=self.graph_panel,
                 calculator_content=self.calculator_panel,
-                devices_content=self.device_panel,
-                velocity_content=self.velocity_panel,
                 quantities_content=self.quantities_panel,
                 assistant_content=self.assistant_query_panel,
                 sessions_content=self.sessions_panel),

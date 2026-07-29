@@ -35,7 +35,9 @@ from pages.base import Page
 # Compare axes/Ensemble/Ensemble analytics/Study's former parallel-
 # coordinates tab are now one "Cross-Scenario Comparison" tab (four modes
 # of compare_discover_panel.py's CompareDiscoverPanel) instead of four
-# separate tabs. Membership:
+# separate tabs; Phase 4 did the same for Devices/Zones/Velocity/Measure,
+# now one "Spatial Probes" tab (probe_measure_panel.py's
+# ProbeMeasurePanel). Membership:
 # - Overview & Interpretation: "what is happening in this simulation?"
 # - Compare & Discover: "how are scenarios similar or different?" (State
 #   space's genome is ensemble-normalized, i.e. inherently a
@@ -52,7 +54,7 @@ from pages.base import Page
 _GROUPS = [
     ("Overview & Interpretation", ["Dashboard", "Hazard & Tenability", "Narrative"]),
     ("Compare & Discover", ["Cross-Scenario Comparison", "State space"]),
-    ("Probe & Measure", ["Devices", "Zones", "Velocity", "Measure"]),
+    ("Probe & Measure", ["Spatial Probes"]),
     ("Factors & Sensitivity", ["Study", "Sensitivity"]),
     ("Spatiotemporal Analysis", ["Height", "Time series", "Intervals", "Space-time"]),
     ("Reference & Communication", ["Calculator", "Quantities", "Graph", "Assistant", "Sessions"]),
@@ -111,9 +113,8 @@ class AnalysisPage(Page):
                  attention_content: QtWidgets.QWidget = None,
                  cause_content: QtWidgets.QWidget = None,
                  height_content: QtWidgets.QWidget = None,
-                 zone_content: QtWidgets.QWidget = None,
                  interval_content: QtWidgets.QWidget = None,
-                 measurement_content: QtWidgets.QWidget = None,
+                 probe_measure_content: QtWidgets.QWidget = None,
                  compare_discover_content: QtWidgets.QWidget = None,
                  study_content: QtWidgets.QWidget = None,
                  sensitivity_content: QtWidgets.QWidget = None,
@@ -123,8 +124,6 @@ class AnalysisPage(Page):
                  narrative_content: QtWidgets.QWidget = None,
                  graph_content: QtWidgets.QWidget = None,
                  calculator_content: QtWidgets.QWidget = None,
-                 devices_content: QtWidgets.QWidget = None,
-                 velocity_content: QtWidgets.QWidget = None,
                  quantities_content: QtWidgets.QWidget = None,
                  assistant_content: QtWidgets.QWidget = None,
                  sessions_content: QtWidgets.QWidget = None, parent=None):
@@ -154,14 +153,11 @@ class AnalysisPage(Page):
             ("Narrative", narrative_content),
             ("Space-time", spacetime_content),
             ("Height", height_content),
-            ("Zones", zone_content),
             ("Intervals", interval_content),
-            ("Measure", measurement_content),
+            ("Spatial Probes", probe_measure_content),
             ("Graph", graph_content),
             ("Quantities", quantities_content),
             ("Calculator", calculator_content),
-            ("Devices", devices_content),
-            ("Velocity", velocity_content),
             ("Assistant", assistant_content),
             ("Sessions", sessions_content),
             ("Fire MRI", fire_mri_content),
@@ -217,30 +213,41 @@ class AnalysisPage(Page):
 
     def show_tab(self, widget: QtWidgets.QWidget) -> None:
         """Raise the tab hosting `widget` (V4-M9 comparison hand-off).
-        Phase D: tabs are grouped into an outer QTabWidget of QTabWidgets
-        (or, for Experimental, a collapsible wrapper around one) -- search
-        one level deeper when `widget` isn't a direct child, expanding a
-        collapsed group so the revealed tab is actually visible."""
+        Tabs are grouped into an outer QTabWidget of QTabWidgets, some of
+        which are themselves thin workspace wrappers over further nested
+        QTabWidgets (Compare & Discover/Probe & Measure/... consolidation
+        phases), or a collapsible wrapper (Experimental) -- searches to
+        whatever depth `widget` is actually nested at, selecting every tab
+        along the path and expanding any collapsible wrapper found there,
+        so the revealed tab is actually visible."""
         tabs = getattr(self, "tabs", None)
         if tabs is None or widget is None:
             return
-        idx = tabs.indexOf(widget)
+        self._reveal_in(tabs, widget)
+
+    @staticmethod
+    def _reveal_in(container: QtWidgets.QTabWidget, widget: QtWidgets.QWidget) -> bool:
+        """Recursively find `widget` inside `container` or any QTabWidget
+        nested inside its tabs (directly, or via a wrapper's own `.tabs`
+        attribute -- see _CollapsibleGroup and every Phase 3+ consolidation
+        wrapper). Selects every tab along the path and calls each
+        container's own `expand()` if it has one. Returns True if found."""
+        idx = container.indexOf(widget)
         if idx >= 0:
-            tabs.setCurrentIndex(idx)
-            return
-        for i in range(tabs.count()):
-            group = tabs.widget(i)
-            inner = group if isinstance(group, QtWidgets.QTabWidget) else getattr(group, "tabs", None)
+            container.setCurrentIndex(idx)
+            return True
+        for i in range(container.count()):
+            child = container.widget(i)
+            inner = child if isinstance(child, QtWidgets.QTabWidget) else getattr(child, "tabs", None)
             if inner is None:
                 continue
-            j = inner.indexOf(widget)
-            if j >= 0:
-                tabs.setCurrentIndex(i)
-                inner.setCurrentIndex(j)
-                expand = getattr(group, "expand", None)
+            if AnalysisPage._reveal_in(inner, widget):
+                container.setCurrentIndex(i)
+                expand = getattr(child, "expand", None)
                 if callable(expand):
                     expand()
-                return
+                return True
+        return False
 
     def on_enter(self) -> None:
         if self._on_shown is not None:

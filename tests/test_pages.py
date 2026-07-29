@@ -101,6 +101,22 @@ class TestAnalysisPageGrouping:
         assert experimental.tabs.currentWidget() is fire_mri
         assert not experimental.tabs.isHidden()   # auto-expanded on reveal
 
+    def test_show_tab_reveals_a_panel_nested_inside_a_workspace_wrapper(self, qapp):
+        """Phase 4+: a workspace wrapper (e.g. ProbeMeasurePanel) nests its
+        children one level deeper than a plain Phase-D group did --
+        show_tab must recurse to whatever depth the target is actually at,
+        not just the one level Phase D originally needed."""
+        from probe_measure_panel import ProbeMeasurePanel
+        devices = QtWidgets.QLabel("Devices")
+        wrapper = ProbeMeasurePanel(devices=devices, zones=QtWidgets.QLabel("Zones"))
+        page = AnalysisPage(probe_measure_content=wrapper,
+                            study_content=QtWidgets.QLabel("Study"))
+        page.show_tab(devices)
+        group = page.tabs.currentWidget()
+        assert page.tabs.tabText(page.tabs.currentIndex()) == "Probe & Measure"
+        assert group.currentWidget() is wrapper
+        assert wrapper.tabs.currentWidget() is devices
+
     def test_tab_shown_fires_on_outer_and_inner_switch(self, qapp):
         calls = []
         page = AnalysisPage(
