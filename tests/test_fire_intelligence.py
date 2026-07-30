@@ -1205,6 +1205,28 @@ class TestStudyAnalytics:
         scores = sam.outlier_scores(sam.build_table(self._summaries()))
         assert len(scores) == 4 and np.all(scores >= 0)
 
+    def test_pairwise_n_diagonal_is_the_columns_own_count(self):
+        t = sam.build_table(self._summaries())
+        counts = sam.pairwise_n(t, ["max_temp_c", "peak_hrr_kw"])
+        assert counts[0, 0] == 4 and counts[1, 1] == 4
+
+    def test_pairwise_n_shrinks_for_a_pair_with_partial_missing_data(self):
+        """A response that's NaN for some scenarios (e.g. a hazard
+        threshold never reached) must shrink only the pairs involving it
+        -- the matrix's overall scenario count doesn't guarantee every
+        cell shares that n."""
+        rows = [
+            _FakeSummary(0, "a", 0, 0, 0, 0, max_temp_c=100.0, peak_hrr_kw=50.0),
+            _FakeSummary(1, "b", 0, 0, 1, 0, max_temp_c=200.0, peak_hrr_kw=None),
+            _FakeSummary(2, "c", 0, 1, 0, 0, max_temp_c=300.0, peak_hrr_kw=None),
+            _FakeSummary(3, "d", 0, 1, 1, 0, max_temp_c=400.0, peak_hrr_kw=80.0),
+        ]
+        t = sam.build_table(rows)
+        counts = sam.pairwise_n(t, ["max_temp_c", "peak_hrr_kw"])
+        assert counts[0, 0] == 4          # max_temp_c has no gaps
+        assert counts[1, 1] == 2          # peak_hrr_kw is NaN for 2 of 4
+        assert counts[0, 1] == counts[1, 0] == 2   # the pair is limited by the gappier column
+
     def test_normalized_axes_in_unit_range(self):
         t = sam.build_table(self._summaries())
         norm = sam.normalized_axes(t, ["vod", "max_temp_c"], {"vod": "param", "max_temp_c": "response"})

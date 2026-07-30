@@ -3006,22 +3006,29 @@ class MainWindow(QtWidgets.QMainWindow):
         # Pull this cell's own last-set colormap/clim into the shared
         # controls rather than pushing MainWindow's previous state onto
         # it -- matches "other cells keep their own last-set clim/colormap
-        # independently" when unlinked (M2.2 design decision).
-        cmap_name = cell.view.heatmap.get_cmap().name
-        self.current_colormap = cmap_name
-        self.settings.setValue("colormap", cmap_name)
-        for action, (_, cmap) in zip(self.colormap_action_group.actions(), COLORMAPS):
-            action.setChecked(cmap == cmap_name)
+        # independently" when unlinked (M2.2 design decision). A freshly
+        # type-switched ensemble cell with no scenarios picked yet (stays
+        # blank until the picker dialog runs -- see _on_cell_type_changed)
+        # has never rendered a frame, so its heatmap is still None; there's
+        # nothing to pull in that case, so the shared controls are simply
+        # left as they are rather than crashing on a bare cell that has no
+        # colormap/clim of its own yet.
+        if cell.view.heatmap is not None:
+            cmap_name = cell.view.heatmap.get_cmap().name
+            self.current_colormap = cmap_name
+            self.settings.setValue("colormap", cmap_name)
+            for action, (_, cmap) in zip(self.colormap_action_group.actions(), COLORMAPS):
+                action.setChecked(cmap == cmap_name)
 
-        display = self._display_for(cell.quantity_key.quantity)
-        _vmin, vmax = cell.view.heatmap.get_clim()
-        self.temp_slider.blockSignals(True)
-        self.temp_slider.setRange(display['slider_min'], display['slider_max'])
-        self.temp_slider.setValue(int(vmax))
-        self.temp_slider.blockSignals(False)
-        self.temp_slider.setAccessibleName(f"Maximum {display['label'].lower()} scale, {display['unit']}")
-        self.temp_slider.setToolTip(f"Adjust the maximum {display['label'].lower()} shown on the color scale")
-        self.temp_label.setText(f"{int(vmax)} {display['unit']}")
+            display = self._display_for(cell.quantity_key.quantity)
+            _vmin, vmax = cell.view.heatmap.get_clim()
+            self.temp_slider.blockSignals(True)
+            self.temp_slider.setRange(display['slider_min'], display['slider_max'])
+            self.temp_slider.setValue(int(vmax))
+            self.temp_slider.blockSignals(False)
+            self.temp_slider.setAccessibleName(f"Maximum {display['label'].lower()} scale, {display['unit']}")
+            self.temp_slider.setToolTip(f"Adjust the maximum {display['label'].lower()} shown on the color scale")
+            self.temp_label.setText(f"{int(vmax)} {display['unit']}")
 
         self._current_n_frames = self._field(self.controller.store, cell.case_index, cell.quantity_key).shape[0]
         self.timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)

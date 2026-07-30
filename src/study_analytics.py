@@ -127,6 +127,27 @@ def correlation_matrix(table: list, keys: list = None) -> np.ndarray:
     return c
 
 
+def pairwise_n(table: list, keys: list = None) -> np.ndarray:
+    """The same pairing/NaN-masking correlation_matrix uses, but returning
+    how many scenarios actually back each pair's r -- a response that's
+    NaN for some scenarios (e.g. a hazard threshold never reached) shrinks
+    just the pairs involving it, so a matrix's overall scenario count
+    doesn't guarantee every cell shares that same n. Diagonal is the
+    column's own non-NaN count."""
+    keys = keys or RESPONSE_KEYS
+    cols = [column(table, k) for k in keys]
+    n = len(keys)
+    counts = np.zeros((n, n), dtype=int)
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                counts[i, j] = int((~np.isnan(cols[i])).sum())
+            else:
+                mask = ~(np.isnan(cols[i]) | np.isnan(cols[j]))
+                counts[i, j] = int(mask.sum())
+    return counts
+
+
 def outlier_scores(table: list, keys: list = None) -> np.ndarray:
     """Per-scenario RMS of standardized (z-scored) responses -- its distance
     from the ensemble mean in response space. Higher = more unusual."""

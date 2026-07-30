@@ -48,11 +48,18 @@ from __future__ import annotations
 
 import numpy as np
 from PyQt5 import QtCore, QtWidgets
+from matplotlib.patches import Rectangle
 
 from widgets import MplCanvas
 import study_analytics as sa
 from analysis_panel_base import populate_scenario_combo
 from manifest import LEVEL_LABELS
+
+# Rule-of-thumb floor, not a formal significance test (this module reports
+# r and n plainly rather than a p-value): below this many scenarios, a
+# single point can swing r substantially, so a pair this thin is flagged
+# rather than shown at face value.
+_MIN_RELIABLE_N = 6
 
 
 class StudyPanel(QtWidgets.QWidget):
@@ -304,22 +311,36 @@ class StudyPanel(QtWidgets.QWidget):
         keys = sa.RESPONSE_KEYS
         self._corr_keys = keys
         c = sa.correlation_matrix(table, keys)
+        counts = sa.pairwise_n(table, keys)
         im = ax.imshow(c, cmap="coolwarm", vmin=-1, vmax=1, aspect="auto")
         labels = [sa.RESPONSE_LABEL[k] for k in keys]
         ax.set_xticks(range(len(keys))); ax.set_xticklabels(labels, fontsize=6, rotation=40, ha="right")
         ax.set_yticks(range(len(keys))); ax.set_yticklabels(labels, fontsize=6)
         # Exact values on the grid itself -- previously just color, with no
         # way to read the actual r without a separate hover/inspection step.
+        # A pair's own n can be thinner than the subset's overall scenario
+        # count (a response that's NaN for some scenarios shrinks just the
+        # pairs involving it) -- hatched + the n shown flags exactly which
+        # cells that applies to, rather than a uniform "n of total" caption
+        # implying every cell shares the same support.
+        any_thin = False
         for i in range(len(keys)):
             for j in range(len(keys)):
                 v = c[i, j]
+                thin = not np.isnan(v) and counts[i, j] < _MIN_RELIABLE_N
                 text = "–" if np.isnan(v) else f"{v:.2f}"
+                if thin:
+                    text += f"\n(n={counts[i, j]})"
+                    any_thin = True
+                    ax.add_patch(Rectangle((j - 0.5, i - 0.5), 1, 1, fill=False,
+                                           hatch="////", edgecolor="#00000066", linewidth=0))
                 color = "white" if (not np.isnan(v) and abs(v) > 0.6) else "#222"
                 ax.text(j, i, text, ha="center", va="center", fontsize=4.5, color=color)
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         n, n_total = len(table), len(self._table)
         subset = f"  ·  {n} of {n_total} scenarios" if n != n_total else ""
-        ax.set_title(f"Response correlations (Pearson r){subset}", fontsize=9)
+        thin_note = f"  ·  hatched = fewer than {_MIN_RELIABLE_N} scenarios support that pair" if any_thin else ""
+        ax.set_title(f"Response correlations (Pearson r){subset}{thin_note}", fontsize=8)
         fig.subplots_adjust(top=0.9, bottom=0.24, left=0.2, right=0.98)
         self.corr_canvas.draw_idle()
         self._render_stats()
@@ -392,11 +413,12 @@ class StudyPanel(QtWidgets.QWidget):
             if xs.size >= 2 and xs.std() > 0 and ys.std() > 0:
                 r = float(np.corrcoef(xs, ys)[0, 1])
             r_text = f"r = {r:.2f}" if not np.isnan(r) else "r = n/a"
+            caveat = "  -- too few points to trust" if 0 < xs.size < _MIN_RELIABLE_N else ""
             y_label = sa.RESPONSE_LABEL[key_y] + (f" ({sa.RESPONSE_UNIT[key_y]})" if sa.RESPONSE_UNIT[key_y] else "")
             ax.set_xlabel(x_label, fontsize=8)
             ax.set_ylabel(y_label, fontsize=8)
             ax.set_title(f"{sa.RESPONSE_LABEL[key_y]} vs {sa.RESPONSE_LABEL[key_x]}  "
-                        f"({r_text}, n={xs.size})", fontsize=9)
+                        f"({r_text}, n={xs.size}){caveat}", fontsize=9)
         ax.tick_params(labelsize=7)
         fig.subplots_adjust(top=0.88, bottom=0.18, left=0.18, right=0.96)
         self.corr_drilldown_canvas.draw_idle()

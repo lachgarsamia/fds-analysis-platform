@@ -1216,6 +1216,29 @@ class TestIntegration:
         assert window.controller.current_case_index() == target.case_index
         window.close()
 
+    def test_activating_a_freshly_typed_ensemble_cell_with_no_data_does_not_crash(self, qapp):
+        """A cell just switched to Ensemble mode (right-click menu) with no
+        scenarios picked yet stays blank until the picker dialog runs
+        (_on_cell_type_changed's own documented behavior) -- its view never
+        renders a frame, so heatmap is still None. Activating it (clicking
+        it, exactly what this test exists to cover) used to crash
+        MainWindow._on_active_cell_changed, which unconditionally read
+        cell.view.heatmap.get_cmap()."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window._set_grid_layout("2x2")
+        cell = window.view_grid.visible_cells()[3]
+        cell.set_cell_type("ensemble")
+        assert cell.ensemble_case_indices == []
+        assert cell.view.heatmap is None
+
+        cell.activated.emit(cell)  # must not raise
+
+        assert window.view_grid.active_cell() is cell
+        window.close()
+
     def test_grid_link_clim_shares_max_within_quantity_group(self, qapp):
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
@@ -3428,6 +3451,54 @@ class TestStudyPanel:
         import types
         event = types.SimpleNamespace(inaxes=None, xdata=None, ydata=None)
         panel._on_corr_click(event)  # must not raise
+        window.close()
+
+    def test_thin_pair_is_hatched_and_annotated_with_its_own_n(self, qapp):
+        """A pair whose own support is below the reliability floor is
+        flagged even when the overall subset looks fine -- e.g. a hazard
+        threshold response that's NaN for most scenarios."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        panel = window.study_panel
+        import study_analytics as sa
+        table = panel._filtered_table()
+        counts = sa.pairwise_n(table, sa.RESPONSE_KEYS)
+        thin_pairs = [(i, j) for i in range(len(sa.RESPONSE_KEYS))
+                     for j in range(len(sa.RESPONSE_KEYS))
+                     if i != j and 0 < counts[i, j] < 6]
+        if not thin_pairs:
+            pytest.skip("this dataset has no thin (n<6) response pair to assert against")
+        ax = panel.corr_canvas.fig.axes[0]
+        assert any("(n=" in t.get_text() for t in ax.texts)
+        assert len(ax.patches) >= 1  # the hatched overlay rectangle(s)
+        window.close()
+
+    def test_filtering_to_a_tiny_subset_flags_low_n_rather_than_hiding_it(self, qapp):
+        """Filtering combos must recompute the matrix over the matching
+        subset (not just hide cells) -- and a resulting tiny subset must
+        surface a caution, not a bare convincing-looking r."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        panel = window.study_panel
+        # Stack every filter combo to its first real level -- the
+        # narrowest subset the study's factors can produce.
+        for combo in panel._corr_filter_combos.values():
+            if combo.count() > 1:
+                combo.setCurrentIndex(1)
+        table = panel._filtered_table()
+        assert len(table) <= 2  # a full factorial's narrowest per-cell subset
+        ax = panel.corr_canvas.fig.axes[0]
+        title = ax.get_title()
+        if len(table) < 6:
+            assert "hatched" in title or "n=" in "".join(t.get_text() for t in ax.texts)
+        panel._reset_corr_filters()
+        assert len(panel._filtered_table()) == len(panel._table)
         window.close()
 
     def test_experiments_subsection_is_fully_removed(self, qapp):
