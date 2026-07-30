@@ -3826,10 +3826,51 @@ class TestPhase5Communication:
         import numpy as np
         panel = window.ensemble_panel
         panel.ensure_loaded()
-        lo, mean, hi = panel._metric_data("spatial_max")["env"]
+        lo, mean, hi = panel._metric_data("spatial_max")["minmax"]
         assert len(mean) > 0 and (lo <= mean).all() and (mean <= hi).all()
         window.selection_bus.update(origin=None, scenario=5)
         assert panel.scenario_combo.currentData() == 5
+        assert panel._overlay_cases[0] == 5   # bus-synced scenario is always the first overlay
+        window.close()
+
+    def test_ensemble_band_toggle_switches_between_minmax_and_iqr(self, qapp):
+        """Analysis UX + reliability pass: the "Band:" combo must actually
+        change what's rendered, not just exist."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        panel = window.ensemble_panel
+        panel.ensure_loaded()
+        idx = panel.band_combo.findData("iqr")
+        assert idx > 0
+        panel.band_combo.setCurrentIndex(idx)
+        ax = panel.canvas.fig.axes[0]
+        assert "25" in ax.get_legend().get_texts()[0].get_text()
+        panel.band_combo.setCurrentIndex(0)
+        ax = panel.canvas.fig.axes[0]
+        assert "min" in ax.get_legend().get_texts()[0].get_text().lower()
+        window.close()
+
+    def test_ensemble_multi_scenario_overlay_via_picker(self, qapp):
+        """Analysis UX + reliability pass: the overlay picker (reusing
+        views.EnsemblePickerDialog, same widget timeseries.py already uses)
+        lets 2+ specific scenarios be compared against the envelope at
+        once, not just the single bus-synced scenario."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or len(sim_data.manifest) < 3:
+            window.close()
+            return
+        panel = window.ensemble_panel
+        panel.ensure_loaded()
+        chosen = [e.case_index for e in sim_data.manifest[:3]]
+        panel._overlay_cases = chosen
+        panel._render()
+        ax = panel.canvas.fig.axes[0]
+        # band + mean + 3 overlay curves = 5 legend entries
+        assert len(ax.get_legend().get_texts()) == 5
         window.close()
 
     def test_assistant_search_routes_and_refuses_causal(self, qapp):

@@ -1372,6 +1372,21 @@ class TestEnsembleSpread:
         lo, mean, hi = ens.envelope([np.array([1.0, 2.0, 3.0]), np.array([5.0, 5.0])])
         assert len(mean) == 2
 
+    def test_percentile_envelope_is_narrower_than_minmax_with_an_outlier(self):
+        """Analysis UX + reliability pass: the 25-75% band should not be
+        stretched by a single outlier scenario the way min-max is."""
+        series = [np.full(3, 10.0), np.full(3, 11.0), np.full(3, 12.0),
+                 np.full(3, 100.0)]   # one clear outlier
+        lo_mm, mean_mm, hi_mm = ens.envelope(series)
+        lo_iqr, mean_iqr, hi_iqr = ens.percentile_envelope(series)
+        np.testing.assert_allclose(mean_mm, mean_iqr)   # same mean either way
+        assert (hi_mm - lo_mm > hi_iqr - lo_iqr).all()  # min-max band is wider
+        assert (hi_iqr < 100.0).all()                   # IQR band excludes the outlier
+
+    def test_percentile_envelope_empty_input(self):
+        lo, mean, hi = ens.percentile_envelope([])
+        assert len(lo) == len(mean) == len(hi) == 0
+
 
 class TestAssistantSearch:
     def _table(self):

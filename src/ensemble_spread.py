@@ -55,3 +55,18 @@ def envelope(series_list: list):
     n = min(len(s) for s in series_list)
     m = np.vstack([np.asarray(s, dtype=float)[:n] for s in series_list])
     return m.min(axis=0), m.mean(axis=0), m.max(axis=0)
+
+
+def percentile_envelope(series_list: list, lo: float = 25.0, hi: float = 75.0):
+    """(p_lo, mean, p_hi) per frame across scenarios -- same (band, mean,
+    band) shape as envelope(), just a robust/IQR-style band instead of the
+    full min-max spread, so a single outlier scenario doesn't stretch the
+    band to cover the whole range (Analysis UX + reliability pass: an
+    "Ensemble spread" panel improvement, requested as an alternative,
+    less-extreme band alongside min-max, not a replacement for it)."""
+    if not series_list:
+        return np.array([]), np.array([]), np.array([])
+    n = min(len(s) for s in series_list)
+    m = np.vstack([np.asarray(s, dtype=float)[:n] for s in series_list])
+    return (np.percentile(m, lo, axis=0), m.mean(axis=0),
+            np.percentile(m, hi, axis=0))
