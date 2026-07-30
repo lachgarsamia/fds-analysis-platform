@@ -87,7 +87,12 @@ class CausePanel(QtWidgets.QWidget):
         layout.addWidget(body, 1)
 
         self.scenario_combo.currentIndexChanged.connect(self._reload)
-        self.frame_slider.valueChanged.connect(self._render)
+        # NOT `.connect(self._render)`: QSpinBox.valueChanged(int) passes its
+        # new value positionally into whatever it's connected to, which would
+        # land in _render's `trace` parameter -- crashing (`for r, c in
+        # trace:` on a bare int) on any nonzero frame. Discard the emitted
+        # value so _render always runs with its real default (trace=None).
+        self.frame_slider.valueChanged.connect(lambda _v: self._render())
         self.canvas.mpl_connect("button_press_event", self._on_click)
 
     def showEvent(self, event):

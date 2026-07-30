@@ -2437,6 +2437,72 @@ class TestCausePanel:
         assert panel.chain.count() >= 1
         window.close()
 
+    def test_changing_the_frame_does_not_crash_the_application(self, qapp):
+        """Regression: frame_slider.valueChanged used to be wired directly
+        to _render(self, trace=None) -- QSpinBox.valueChanged(int) passes
+        its new value positionally, so every frame change delivered the
+        raw frame index into `trace`; `if trace and ...: for r, c in
+        trace:` then raised TypeError (`'int' object is not iterable`) for
+        any nonzero frame. This is an ordinary Python exception (confirmed
+        by direct reproduction with faulthandler -- no native frames
+        involved), not a native/segfault crash, so this plain assertion is
+        genuine, full protection against it recurring."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        panel = window.cause_panel
+        panel.ensure_loaded()
+        for value in (1, 2, panel.frame_slider.maximum(), 0, 5):
+            panel.frame_slider.setValue(value)  # must not raise
+        window.close()
+
+    def test_open_render_close_reopen_cycle(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        panel = window.cause_panel
+        window.pages["analysis"].show_tab(panel)
+        panel.ensure_loaded()
+        panel.frame_slider.setValue(3)
+        panel.hide()
+        panel.show()
+        panel.frame_slider.setValue(7)  # still works after hide/reshow
+        window.close()
+
+    def test_switching_analysis_view_away_and_back_still_works(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        panel = window.cause_panel
+        window.pages["analysis"].show_tab(panel)
+        panel.ensure_loaded()
+        window.pages["analysis"].show_tab(window.study_panel)  # switch away
+        window.pages["analysis"].show_tab(panel)                # and back
+        panel.frame_slider.setValue(4)
+        assert panel._data is not None
+        window.close()
+
+    def test_changing_scenario_and_timestep_while_visible_keeps_the_app_usable(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        panel = window.cause_panel
+        window.pages["analysis"].show_tab(panel)
+        panel.ensure_loaded()
+        panel.scenario_combo.setCurrentIndex(min(2, panel.scenario_combo.count() - 1))
+        panel.frame_slider.setValue(min(6, panel.frame_slider.maximum()))
+        window.selection_bus.update(origin=None, time_s=1.0)
+        assert panel._data is not None
+        window.close()
+
 
 class TestHeightPanel:
     """V4-M1: height-aware analysis workspace."""
@@ -3880,6 +3946,25 @@ class TestAnalysisPlayback:
         assert window.time_controller.index == 5
         window._analysis_stop()
         assert window.time_controller.index == 0
+
+    def test_transport_bar_is_visible_above_overview_and_interpretation(self, qapp):
+        """The shared playback bar sits above the outer tab group
+        (pages/analysis.py), so it's visible regardless of which group is
+        active -- confirm this explicitly for Overview & Interpretation,
+        the group this was requested for."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        analysis_page = window.pages["analysis"]
+        group_names = [analysis_page.tabs.tabText(i) for i in range(analysis_page.tabs.count())]
+        assert "Overview & Interpretation" in group_names
+        analysis_page.tabs.setCurrentIndex(group_names.index("Overview & Interpretation"))
+        assert not window.analysis_timeline.isHidden()
+        window._on_seek_requested(12)
+        assert window.time_controller.index == 12  # transport still drives the shared clock
+        window.close()
 
     def test_playback_time_broadcasts_to_bus(self, qapp):
         window = MainWindow(load_simulation_data())
