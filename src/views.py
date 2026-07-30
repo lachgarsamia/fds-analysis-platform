@@ -51,6 +51,19 @@ _ROOM_WALL_LW = 1.4
 _ROOM_DOOR_LW = 2.6
 _ROOM_VENT_LW = 4.0
 
+# Virtual device marker shapes, one per device kind (Analysis UX +
+# reliability pass): heat_detector (instant threshold) and sprinkler (RTI
+# thermal-lag ODE) are independent devices with independently different,
+# both-correct response models -- a sprinkler is *supposed* to lag a heat
+# detector at the same point. Previously every kind drew as the same
+# diamond, distinguished only by active/idle fill color, so two correctly-
+# disagreeing devices were visually indistinguishable from "the alarm
+# system is broken." Duplicated here (not imported from devices.py) for
+# the same view-layer/data-layer boundary EnsemblePickerDialog's
+# FACTOR_LABELS already keeps -- just the 3 literal kind strings devices.py
+# uses, not a real dependency.
+_DEVICE_MARKER_SHAPES = {"thermocouple": "o", "heat_detector": "^", "sprinkler": "s"}
+
 
 class PlotView(Protocol):
     """Minimum interface every view-cell type must implement. Concrete
@@ -142,10 +155,13 @@ class SliceView:
         self._arrow_rows = None
         self._arrow_cols = None
         # Virtual device markers (V6-M2): same blit-tracked-artist treatment
-        # as embers/arrows -- a fixed-position, per-frame-recolored scatter,
+        # as embers/arrows -- fixed-position, per-frame-recolored scatters,
         # never recreated. No color-mapping (literal facecolors only), so
-        # (unlike the heatmap) it needs no cmap/clim bookkeeping.
-        self.device_scatter = None
+        # (unlike the heatmap) they need no cmap/clim bookkeeping. One
+        # scatter per device kind (Analysis UX + reliability pass) so kind
+        # is visible as marker shape, not just active/idle color -- see
+        # _DEVICE_MARKER_SHAPES.
+        self.device_scatters: dict = {}
         # True velocity vectors (V6-M3): a *different* artist from the
         # cinema-mode `velocity_quiver` above (that one is a heuristic
         # direction guess from |v| + a temperature gradient, explicitly not
@@ -202,10 +218,17 @@ class SliceView:
         # silently overwritten back to empty on the very next blit.
         self.ember_scatter = self.ax.scatter([], [], s=[], zorder=5)
         # Virtual device markers (V6-M2): scientific style -- a small fixed
-        # diamond per placed device, above embers/quiver. No c=... at
-        # construction for the same scalar-mappable reason as ember_scatter.
-        self.device_scatter = self.ax.scatter([], [], s=70, marker="D", zorder=7,
-                                              edgecolors="#14171F", linewidths=1.0)
+        # marker per placed device, above embers/quiver, shaped by device
+        # kind (Analysis UX + reliability pass -- see _DEVICE_MARKER_SHAPES)
+        # so a heat detector and a sprinkler are visually distinguishable at
+        # a glance, not just by their (independently, correctly differing)
+        # active/idle fill color. No c=... at construction for the same
+        # scalar-mappable reason as ember_scatter.
+        self.device_scatters = {
+            kind: self.ax.scatter([], [], s=70, marker=shape, zorder=7,
+                                  edgecolors="#14171F", linewidths=1.0)
+            for kind, shape in _DEVICE_MARKER_SHAPES.items()
+        }
         # True velocity streamlines (V6-M3): empty until a panel supplies
         # segments; the quiver itself is created lazily on first real data
         # (see set_vector_field) since its arrow positions are fixed for a
@@ -294,7 +317,7 @@ class SliceView:
             self.canvas.blit_update(self._animated_artists())
 
     def _animated_artists(self) -> list:
-        artists = [self.heatmap, self.ember_scatter, self.device_scatter,
+        artists = [self.heatmap, self.ember_scatter, *self.device_scatters.values(),
                   self.streamline_collection, self.hover_highlight,
                   self.room_walls, self.room_door, self.room_vents]
         if self.velocity_quiver is not None:
@@ -336,19 +359,25 @@ class SliceView:
         self.canvas.set_dpi_scale(scale)
 
     def set_device_markers(self, markers: list) -> None:
-        """markers: [(x, z, color), ...] physical positions (V6-M2 Virtual
-        Device Network) -- MainWindow recomputes this cheaply every tick
-        from each device's already-cached results (state_at()), never a
-        recompute here. No-op (markers cleared) when this cell has no
-        physical extent to place a point on."""
-        if not markers or self._extent is None:
-            self.device_scatter.set_offsets(np.empty((0, 2)))
-            self.device_scatter.set_facecolor([])
-            return
-        offsets = [(x, z) for x, z, _color in markers]
-        colors = [color for _x, _z, color in markers]
-        self.device_scatter.set_offsets(offsets)
-        self.device_scatter.set_facecolor(colors)
+        """markers: [(x, z, color, kind), ...] physical positions (V6-M2
+        Virtual Device Network) -- MainWindow recomputes this cheaply every
+        tick from each device's already-cached results (state_at()), never
+        a recompute here. Bucketed by kind into device_scatters (Analysis
+        UX + reliability pass) so each kind keeps its own marker shape;
+        unrecognized kinds are silently skipped (never guessed). No-op
+        (every kind's markers cleared) when this cell has no physical
+        extent to place a point on."""
+        by_kind: dict = {kind: ([], []) for kind in self.device_scatters}
+        if markers and self._extent is not None:
+            for x, z, color, kind in markers:
+                if kind in by_kind:
+                    offsets, colors = by_kind[kind]
+                    offsets.append((x, z))
+                    colors.append(color)
+        for kind, scatter in self.device_scatters.items():
+            offsets, colors = by_kind[kind]
+            scatter.set_offsets(offsets if offsets else np.empty((0, 2)))
+            scatter.set_facecolor(colors)
 
     def set_vector_field(self, quiver: tuple = None, streamlines: list = None) -> None:
         """V6-M3: `quiver` is (xs, zs, us, ws) or None to clear; `streamlines`

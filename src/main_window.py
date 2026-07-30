@@ -2323,9 +2323,16 @@ class MainWindow(QtWidgets.QMainWindow):
         return None
 
     def _device_markers_for(self, case_index: int, index: int) -> list:
-        """(x, z, color) for every V6-M2 device placed on `case_index`, at
-        already-cached frame `index` -- Device.state_at() is a plain index
-        into results computed once at placement/edit, never a recompute."""
+        """(x, z, color, kind) for every V6-M2 device placed on `case_index`,
+        at already-cached frame `index` -- Device.state_at() is a plain
+        index into results computed once at placement/edit, never a
+        recompute. `kind` (Analysis UX + reliability pass) lets the view
+        draw each device type with its own marker shape -- heat_detector
+        and sprinkler are independent devices with independently different,
+        both-correct response models (a sprinkler's RTI thermal lag means
+        it's *supposed* to activate later than a heat detector at the same
+        point), so the marker shape must make which is which obvious rather
+        than relying on active/idle color alone."""
         panel = getattr(self, "device_panel", None)
         if panel is None:
             return []
@@ -2337,7 +2344,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 color = "#3DA5FF"
             else:
                 color = "#FF5252" if d.state_at(index).get("active") else "#3DA5FF"
-            markers.append((d.position[0], d.position[1], color))
+            markers.append((d.position[0], d.position[1], color, d.type))
         return markers
 
     def _refresh_device_markers(self) -> None:

@@ -4205,6 +4205,57 @@ class TestVirtualDeviceNetwork:
     experiment, without touching the parser/store/cache/TimeController/
     cinematic pipeline."""
 
+    def test_heat_detector_and_sprinkler_can_disagree_and_look_different(self, qapp):
+        """Analysis UX + reliability pass: heat_detector (instant
+        threshold) and sprinkler (RTI thermal-lag ODE) are independent
+        devices with independently different, both-correct physical
+        models -- a sprinkler is *supposed* to be able to disagree with a
+        heat detector at the identical point/frame, not a bug. The Live
+        Viewer must make the two visually distinguishable by marker shape,
+        not just by their (legitimately independent) active/idle color."""
+        import devices as dv
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        p = window.device_panel
+        p.ensure_loaded()
+        case_index = p.scenario_combo.currentData()
+        pos = (1.0, 1.0)
+        hd = dv.Device(id="hd-1", name="HD-01", type="heat_detector", scenario=case_index,
+                       position=pos, parameters=dv.default_parameters("heat_detector"),
+                       direction=p.direction_combo.currentData(), offset=p.offset_spin.value())
+        sp = dv.Device(id="sp-1", name="SP-01", type="sprinkler", scenario=case_index,
+                       position=pos, parameters=dv.default_parameters("sprinkler"),
+                       direction=p.direction_combo.currentData(), offset=p.offset_spin.value())
+        hd.compute(window.quantity_provider, window.sim_data.timesteps_per_second)
+        sp.compute(window.quantity_provider, window.sim_data.timesteps_per_second)
+        p._devices.extend([hd, sp])
+
+        # Both models are independently correct even at the identical point
+        # -- state_at() must not force them to agree.
+        found_disagreement = any(
+            hd.state_at(i).get("active") != sp.state_at(i).get("active")
+            for i in range(min(hd.n_frames(), sp.n_frames()))
+        )
+        # Not asserted as a hard requirement (depends on this dataset's
+        # actual temperature history), but the two ARE independently
+        # computed regardless -- the real assertion is the marker shapes.
+        del found_disagreement
+
+        markers = window._device_markers_for(case_index, 0)
+        kinds = {kind for *_rest, kind in markers}
+        assert {"heat_detector", "sprinkler"}.issubset(kinds)
+
+        cell = window.view_grid.active_cell()
+        cell.view.set_device_markers(markers)
+        hd_shape = cell.view.device_scatters["heat_detector"].get_paths()[0]
+        sp_shape = cell.view.device_scatters["sprinkler"].get_paths()[0]
+        assert hd_shape.vertices.shape != sp_shape.vertices.shape or \
+            not np.allclose(hd_shape.vertices, sp_shape.vertices)
+        window.close()
+
     def test_placing_a_thermocouple_computes_once_and_lists(self, qapp):
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)

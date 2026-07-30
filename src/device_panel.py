@@ -103,6 +103,23 @@ class DevicePanel(QtWidgets.QWidget):
         self.caption.setProperty("role", "caption")
         layout.addWidget(self.caption)
 
+        # Analysis UX + reliability pass: a heat detector and a sprinkler at
+        # the same point can legitimately disagree -- they're independent
+        # devices with independently different, both-correct physical
+        # models (instant threshold vs. an RTI thermal-lag ODE), not a
+        # synchronized pair. Spelled out explicitly rather than silently
+        # matching their booleans, since the Live Viewer map now also marks
+        # each kind with its own shape (see views.py's _DEVICE_MARKER_SHAPES)
+        # so the two are visually distinguishable, not just by color.
+        self.model_note = QtWidgets.QLabel(
+            "Heat detectors activate instantly at their threshold temperature; "
+            "sprinklers respond via a physical thermal-lag model (RTI) and are "
+            "expected to activate later than a heat detector at the same point "
+            "-- that's modeled behavior, not a fault.")
+        self.model_note.setWordWrap(True)
+        self.model_note.setProperty("role", "caption")
+        layout.addWidget(self.model_note)
+
         self.status = QtWidgets.QLabel("")
         self.status.setWordWrap(True)
         self.status.setProperty("role", "caption")
