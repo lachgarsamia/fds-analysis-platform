@@ -25,6 +25,7 @@ from layer_height import smoke_layer_height_series
 from summary_stats import read_hrr_table
 from linked_inspection import value_at_time
 from summary_stats import fmt_hrr as _fmt_hrr
+from analysis_panel_base import populate_scenario_combo
 import hazard_spaces as hz
 
 # Preset names only; main_window owns the tab+quantity focus (it holds the
@@ -67,8 +68,7 @@ class DashboardPanel(QtWidgets.QWidget):
         header.addWidget(QtWidgets.QLabel("Scenario:"))
         self.scenario_combo = QtWidgets.QComboBox()
         self.scenario_combo.setAccessibleName("Dashboard scenario")
-        for entry in self._manifest:
-            self.scenario_combo.addItem(entry.folder, entry.case_index)
+        populate_scenario_combo(self.scenario_combo, self._manifest)
         header.addWidget(self.scenario_combo)
         header.addStretch(1)
         header.addWidget(QtWidgets.QLabel("Workspace:"))

@@ -71,6 +71,7 @@ from measurement_panel import MeasurementPanel
 from advanced_compare_panel import AdvancedComparePanel
 from probe_measure_panel import ProbeMeasurePanel
 from spatiotemporal_panel import SpatiotemporalPanel
+import manifest as manifest_mod
 from quantities_panel import QuantitiesPanel
 from assistant_panel import AssistantPanel
 from assistant_query_panel import AssistantQueryPanel
@@ -1740,10 +1741,12 @@ class MainWindow(QtWidgets.QMainWindow):
         """[(label, case_index), ...] for a grid cell's per-cell scenario
         combo (M2.2.2), sourced from the manifest (M2.1). Empty in demo
         mode -- there's no real manifest to pick scenarios from, same
-        convention as the quantity combo's demo-mode fallback."""
+        convention as the quantity combo's demo-mode fallback. label is a
+        human-readable factor-level summary (manifest.scenario_label),
+        not the raw "c1_d0_vod0_voc0" disk folder name."""
         if not self.sim_data.manifest:
             return []
-        return [(e.folder, e.case_index)
+        return [(self._scenario_label(e.case_index), e.case_index)
                 for e in sorted(self.sim_data.manifest, key=lambda e: e.case_index)]
 
     def _quantity_options(self) -> list:
@@ -2458,9 +2461,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.selection_bus.update(origin=self, time_s=current_time)
 
     def _scenario_label(self, case_index: int) -> str:
+        """A human-readable scenario identity (manifest.scenario_label),
+        e.g. for the grid cell's own scenario combo, the Inspector's
+        static-info line, and the difference-over-time dialog's legend --
+        not the raw "c1_d0_vod0_voc0" disk folder name."""
         for entry in (self.sim_data.manifest or []):
             if entry.case_index == case_index:
-                return entry.folder
+                return manifest_mod.scenario_label(entry)
         return f"scenario {case_index}"
 
     def _slice_location_label(self, slice_key) -> str:

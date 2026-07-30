@@ -3342,6 +3342,94 @@ class TestStudyPanel:
         assert window.sensitivity_panel.tabs.count() == 3
         window.close()
 
+    def test_correlation_matrix_cells_are_annotated_with_values(self, qapp):
+        """Compare/Study UX polish: the matrix used to be color-only, with
+        no way to read the exact r without a separate tool."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        panel = window.study_panel
+        import study_analytics as sa
+        ax = panel.corr_canvas.fig.axes[0]
+        assert len(ax.texts) == len(sa.RESPONSE_KEYS) ** 2
+        window.close()
+
+    def test_correlation_filter_recomputes_over_the_matching_subset(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        panel = window.study_panel
+        full_n = len(panel._table)
+        door_combo = panel._corr_filter_combos["door"]
+        idx = door_combo.findData(0)  # a specific door level, not "All"
+        assert idx > 0
+        door_combo.setCurrentIndex(idx)
+        filtered = panel._filtered_table()
+        assert 0 < len(filtered) < full_n
+        assert all(int(r["params"]["door"]) == 0 for r in filtered)
+        assert f"{len(filtered)} of {full_n} scenarios" in panel.stats_label.text()
+        window.close()
+
+    def test_reset_filters_restores_the_full_table(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        panel = window.study_panel
+        full_n = len(panel._table)
+        panel._corr_filter_combos["door"].setCurrentIndex(1)
+        assert len(panel._filtered_table()) < full_n
+        panel._reset_corr_filters()
+        assert len(panel._filtered_table()) == full_n
+        assert all(v is None for v in panel._corr_filters.values())
+        window.close()
+
+    def test_clicking_a_diagonal_cell_shows_the_distribution(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        panel = window.study_panel
+        import types
+        event = types.SimpleNamespace(inaxes=object(), xdata=0.0, ydata=0.0)
+        panel._on_corr_click(event)
+        ax = panel.corr_drilldown_canvas.fig.axes[0]
+        assert "distribution" in ax.get_title()
+        window.close()
+
+    def test_clicking_an_off_diagonal_cell_shows_a_scatter_with_r(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        panel = window.study_panel
+        import types
+        event = types.SimpleNamespace(inaxes=object(), xdata=0.0, ydata=1.0)
+        panel._on_corr_click(event)
+        ax = panel.corr_drilldown_canvas.fig.axes[0]
+        assert "r =" in ax.get_title()
+        assert len(ax.collections) >= 1  # the scatter itself
+        window.close()
+
+    def test_click_outside_the_matrix_is_a_no_op(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        panel = window.study_panel
+        import types
+        event = types.SimpleNamespace(inaxes=None, xdata=None, ydata=None)
+        panel._on_corr_click(event)  # must not raise
+        window.close()
+
     def test_experiments_subsection_is_fully_removed(self, qapp):
         """UX consolidation pass: Experiments (self-contained batch CRUD,
         no scenario/quantity/time controls, no scientific conclusion of its

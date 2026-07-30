@@ -19,6 +19,7 @@ from widgets import MplCanvas
 from registry import get_quantity, AMBIENT_C
 from insight import InsightList, Insight
 from layer_height import smoke_layer_height_series
+from analysis_panel_base import populate_scenario_combo
 import height_analysis as ha
 
 
@@ -117,8 +118,7 @@ class HeightPanel(QtWidgets.QWidget):
             return
         self._loaded = True
         self.scenario_combo.blockSignals(True)
-        for entry in self._manifest:
-            self.scenario_combo.addItem(entry.folder, entry.case_index)
+        populate_scenario_combo(self.scenario_combo, self._manifest)
         self.scenario_combo.blockSignals(False)
         self._reload()
 

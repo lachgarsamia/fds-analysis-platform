@@ -22,6 +22,7 @@ from insight import InsightList
 from descriptors import compute_descriptors
 import advanced_compare as ac
 import semantic_diff as sd
+from analysis_panel_base import populate_scenario_combo
 
 
 class AdvancedComparePanel(QtWidgets.QWidget):
@@ -141,8 +142,7 @@ class AdvancedComparePanel(QtWidgets.QWidget):
         self._loaded = True
         for combo in (self.combo_a, self.combo_b):
             combo.blockSignals(True)
-            for entry in self._manifest:
-                combo.addItem(entry.folder, entry.case_index)
+            populate_scenario_combo(combo, self._manifest)
             combo.blockSignals(False)
         self.combo_b.setCurrentIndex(1)  # default to two different scenarios
         self._recompute()

@@ -7,6 +7,7 @@ matplotlib internals directly. Single-view mode (MainWindow) is just a
 1-cell user of this same interface -- not a special case.
 """
 
+import re
 from typing import Protocol
 
 import matplotlib as mpl
@@ -1039,6 +1040,13 @@ class EnsemblePickerDialog(QtWidgets.QDialog):
         'voc': {0: 'Vent 2 open', 1: 'Vent 2 closed'},
     }
     FACTORS = ('candles', 'door', 'vod', 'voc')
+    # Same pattern manifest.py's own scan_scenarios() matches -- a generic
+    # (non-factorial) study's folders never match it, and its 4 factor
+    # fields are meaningless placeholders (always zeroed), so decoding them
+    # would show the same misleading label for every scenario. Duplicated
+    # here rather than imported (see class docstring: this dialog
+    # deliberately avoids a view-layer -> data-layer dependency).
+    _FACTORIAL_FOLDER_RE = re.compile(r'^c\d+_d\d+_vod\d+_voc\d+$')
 
     def __init__(self, manifest_entries: list, initial_selection: list, parent=None):
         super().__init__(parent)
@@ -1066,7 +1074,8 @@ class EnsemblePickerDialog(QtWidgets.QDialog):
         self.list_widget.setAccessibleName("Ensemble scenario checklist")
         initial = set(initial_selection)
         for entry in self._entries:
-            item = QtWidgets.QListWidgetItem(entry.folder)
+            item = QtWidgets.QListWidgetItem(self._label_for(entry))
+            item.setToolTip(entry.folder)
             item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
             item.setCheckState(QtCore.Qt.Checked if entry.case_index in initial else QtCore.Qt.Unchecked)
             item.setData(QtCore.Qt.UserRole, entry.case_index)
@@ -1087,6 +1096,12 @@ class EnsemblePickerDialog(QtWidgets.QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _label_for(self, entry) -> str:
+        if not self._FACTORIAL_FOLDER_RE.match(entry.folder):
+            return entry.folder
+        return " · ".join(self.FACTOR_LABELS[f].get(getattr(entry, f), f"{f}={getattr(entry, f)}")
+                          for f in self.FACTORS)
 
     def _apply_filter(self, factor: str, value):
         for i in range(self.list_widget.count()):
@@ -1148,6 +1163,7 @@ class GridCell(QtWidgets.QWidget):
 
         self.cell_type = "slice"
         self.view = SliceView(self)
+        self._install_activation_filter()
         self.case_index = self._scenario_options[0][1] if self._scenario_options else 0
         self.case_index_a = self.case_index
         self.case_index_b = (self._scenario_options[1][1] if len(self._scenario_options) > 1
@@ -1192,6 +1208,23 @@ class GridCell(QtWidgets.QWidget):
     def mousePressEvent(self, event):
         self.activated.emit(self)
         super().mousePressEvent(event)
+
+    def _install_activation_filter(self) -> None:
+        """A click almost anywhere in a cell lands on its plot canvas (the
+        canvas fills nearly the whole cell; mousePressEvent above only
+        fires for the ~2px margin around it), and FigureCanvasQTAgg's own
+        mousePressEvent consumes the click without forwarding it to this
+        widget -- so "click a cell to make it active" previously only
+        worked from that sliver of margin, not from clicking the heatmap
+        itself. An event filter on the canvas catches the click before the
+        canvas processes it, without changing that processing (the filter
+        doesn't consume the event, just observes it)."""
+        self.view.widget().installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if obj is self.view.widget() and event.type() == QtCore.QEvent.MouseButtonPress:
+            self.activated.emit(self)
+        return super().eventFilter(obj, event)
 
     def set_active(self, is_active: bool):
         self._is_active = is_active
@@ -1245,6 +1278,7 @@ class GridCell(QtWidgets.QWidget):
             self.view = DifferenceView(self)
         elif cell_type == "ensemble":
             self.view = EnsembleView(self)
+        self._install_activation_filter()
         self._outer_layout.addWidget(self.view.widget(), 1)
 
     # Header widget attribute names per type, dropped in _clear_header so a

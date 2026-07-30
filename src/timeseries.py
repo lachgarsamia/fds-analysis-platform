@@ -23,6 +23,7 @@ from scipy.ndimage import map_coordinates
 
 from widgets import MplCanvas, plot_fg_color
 from views import EnsemblePickerDialog
+from analysis_panel_base import populate_scenario_combo
 
 MODES = ("point", "line", "region")
 MODE_LABELS = {
@@ -208,8 +209,7 @@ class TimeSeriesPanel(QtWidgets.QWidget):
             return
         self._loaded = True
         self.scenario_combo.blockSignals(True)
-        for entry in self._manifest:
-            self.scenario_combo.addItem(entry.folder, entry.case_index)
+        populate_scenario_combo(self.scenario_combo, self._manifest)
         self.scenario_combo.blockSignals(False)
         self._overlay_cases = [self._manifest[0].case_index]
         self._reload_locator()

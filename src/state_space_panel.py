@@ -18,6 +18,7 @@ from widgets import MplCanvas
 from slice_key import DEFAULT_SLICE_KEY
 from descriptors import compute_descriptors
 from events import detect_events
+from analysis_panel_base import populate_scenario_combo
 import state_space as ss
 
 
@@ -75,8 +76,7 @@ class StateSpacePanel(QtWidgets.QWidget):
             return
         self._loaded = True
         self.scenario_combo.blockSignals(True)
-        for entry in self._manifest:
-            self.scenario_combo.addItem(entry.folder, entry.case_index)
+        populate_scenario_combo(self.scenario_combo, self._manifest)
         self.scenario_combo.blockSignals(False)
         self._compute_genomes()
         self._render()

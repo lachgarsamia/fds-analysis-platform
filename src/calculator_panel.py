@@ -20,6 +20,7 @@ from widgets import MplCanvas, plot_fg_color
 from slice_key import SliceKey
 from registry import get_quantity
 import field_calculator as fc
+from analysis_panel_base import populate_scenario_combo
 
 
 class CalculatorPanel(QtWidgets.QWidget):
@@ -67,8 +68,7 @@ class CalculatorPanel(QtWidgets.QWidget):
         controls.addWidget(QtWidgets.QLabel("Preview on:"))
         self.scenario_combo = QtWidgets.QComboBox()
         self.scenario_combo.setAccessibleName("Calculator preview scenario")
-        for e in self._manifest:
-            self.scenario_combo.addItem(e.folder, e.case_index)
+        populate_scenario_combo(self.scenario_combo, self._manifest)
         controls.addWidget(self.scenario_combo)
         self.save_button = QtWidgets.QPushButton("Save field")
         self.save_button.setEnabled(False)

@@ -16,6 +16,7 @@ from PyQt5 import QtCore, QtWidgets
 
 from registry import QUANTITY_REGISTRY, get_quantity, quantity_status
 from slice_key import SliceKey
+from analysis_panel_base import populate_scenario_combo
 import derived_quantities as dq
 
 _STATUS_LABEL = {"available": "Available", "derived": "Derived (computable)",
@@ -39,8 +40,7 @@ class QuantitiesPanel(QtWidgets.QWidget):
         header.addStretch(1)
         self.scenario_combo = QtWidgets.QComboBox()
         self.scenario_combo.setAccessibleName("Preview scenario")
-        for entry in self._manifest:
-            self.scenario_combo.addItem(entry.folder, entry.case_index)
+        populate_scenario_combo(self.scenario_combo, self._manifest)
         header.addWidget(QtWidgets.QLabel("Preview on:"))
         header.addWidget(self.scenario_combo)
         layout.addLayout(header)

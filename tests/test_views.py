@@ -874,6 +874,27 @@ class TestGridCell:
         cell.activated.emit(cell)  # mousePressEvent needs a real QMouseEvent; test the contract directly
         assert received == [cell]
 
+    def test_clicking_the_plot_canvas_also_activates_the_cell(self, qapp):
+        """The canvas fills nearly the whole cell and swallows its own
+        mouse press (matplotlib's FigureCanvasQTAgg) -- previously only the
+        ~2px margin around it made the cell active. An event filter on the
+        canvas must catch the click too."""
+        cell = GridCell(self.SCENARIOS, self.QUANTITIES)
+        received = []
+        cell.activated.connect(received.append)
+        event = QtCore.QEvent(QtCore.QEvent.MouseButtonPress)
+        cell.eventFilter(cell.view.widget(), event)
+        assert received == [cell]
+
+    def test_activation_filter_survives_a_cell_type_switch(self, qapp):
+        cell = GridCell(self.SCENARIOS, self.QUANTITIES)
+        cell.set_cell_type("difference")
+        received = []
+        cell.activated.connect(received.append)
+        event = QtCore.QEvent(QtCore.QEvent.MouseButtonPress)
+        cell.eventFilter(cell.view.widget(), event)
+        assert received == [cell]
+
     def test_set_active_changes_border_style(self, qapp):
         cell = GridCell(self.SCENARIOS, self.QUANTITIES)
         cell.set_active(False)
@@ -1055,6 +1076,21 @@ class TestEnsemblePickerDialog:
         from views import EnsemblePickerDialog
         dialog = EnsemblePickerDialog([], initial_selection=[])
         assert dialog.selected_case_indices() == []
+
+    def test_checklist_shows_human_labels_with_folder_as_tooltip(self, qapp):
+        from views import EnsemblePickerDialog
+        dialog = EnsemblePickerDialog(self.ENTRIES, initial_selection=[])
+        item = dialog.list_widget.item(2)   # c1_d1_vod0_voc0 -> door=1
+        assert item.text() == "1 candle · Wide door · Vent 1 open · Vent 2 open"
+        assert item.toolTip() == "c1_d1_vod0_voc0"
+
+    def test_checklist_falls_back_to_folder_for_a_generic_non_factorial_study(self, qapp):
+        from views import EnsemblePickerDialog
+        entries = [FakeEntry(0, "run_alpha", candles=0, door=0, vod=0, voc=0),
+                  FakeEntry(1, "run_beta", candles=0, door=0, vod=0, voc=0)]
+        dialog = EnsemblePickerDialog(entries, initial_selection=[])
+        assert dialog.list_widget.item(0).text() == "run_alpha"
+        assert dialog.list_widget.item(1).text() == "run_beta"
 
 
 class TestViewGrid:

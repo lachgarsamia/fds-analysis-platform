@@ -26,6 +26,7 @@ from PyQt5 import QtWidgets
 
 from widgets import MplCanvas
 import study_analytics as sa
+from analysis_panel_base import populate_scenario_combo
 
 
 class ParallelCoordinatesPanel(QtWidgets.QWidget):
@@ -50,8 +51,7 @@ class ParallelCoordinatesPanel(QtWidgets.QWidget):
         header.addWidget(QtWidgets.QLabel("Scenario:"))
         self.scenario_combo = QtWidgets.QComboBox()   # bound to the bus by main_window (M1)
         self.scenario_combo.setAccessibleName("Parallel coordinates scenario")
-        for s in self._summaries:
-            self.scenario_combo.addItem(s.folder, s.case_index)
+        populate_scenario_combo(self.scenario_combo, self._summaries)
         header.addWidget(self.scenario_combo)
         layout.addLayout(header)
 

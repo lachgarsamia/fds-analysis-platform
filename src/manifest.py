@@ -186,6 +186,45 @@ def get_manifest(sim_root: str, manifest_path: str = None, force_regenerate: boo
     return entries
 
 
+# Human-readable factor-level text for scenario_label() below -- a
+# standalone, full-phrase dict ("Wide door", not just "Wide") tuned for a
+# scenario picker item that has to read clearly on its own, distinct from
+# browser.py's own FACTOR_LABELS (tuned to sit under a "Door" column
+# header, where "Wide" alone already reads fine) or views.py's
+# EnsemblePickerDialog (which deliberately keeps its own local copy to
+# avoid a view-layer -> data-layer dependency on this module).
+LEVEL_LABELS = {
+    "candles": {0: "1 candle", 1: "2 candles"},
+    "door": {0: "Narrow door", 1: "Wide door"},
+    "vod": {0: "Vent 1 open", 1: "Vent 1 closed", 2: "Vent 1 HVAC"},
+    "voc": {0: "Vent 2 open", 1: "Vent 2 closed"},
+}
+
+
+def scenario_label(entry) -> str:
+    """A human-readable scenario identity ("2 candles · Wide door · Vent 1
+    open · Vent 2 closed") in place of the raw disk folder name
+    ("c1_d0_vod0_voc0") -- entry.folder is still the scenario's actual
+    on-disk identity (kept as a combo item's tooltip by callers, for
+    provenance/reports), just not something a researcher should have to
+    decode to tell scenarios apart in a picker.
+
+    Falls back to entry.folder verbatim for a non-factorial (generic)
+    study: its folders don't match the c<n>_d<n>_vod<n>_voc<n> pattern,
+    and its 4 factor fields are meaningless placeholders (scan_generic_
+    study always zeros them), so decoding them would produce the same
+    misleading label for every scenario.
+
+    Duck-typed like ScenarioEntry itself: works equally for a
+    summary_stats.ScenarioSummary, which carries the identical folder/
+    candles/door/vod/voc fields.
+    """
+    if not _FOLDER_RE.match(entry.folder):
+        return entry.folder
+    return " · ".join(LEVEL_LABELS[f].get(getattr(entry, f), f"{f}={getattr(entry, f)}")
+                      for f in _FACTORS)
+
+
 def factor_counts(entries: list) -> tuple:
     """(n_candles, n_door, n_vod, n_voc) actually present across entries."""
     return tuple(max((e.factor_index(f) for e in entries), default=-1) + 1 for f in _FACTORS)

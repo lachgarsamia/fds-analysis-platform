@@ -26,6 +26,7 @@ from PyQt5 import QtCore, QtWidgets
 
 from slice_key import DEFAULT_SLICE_KEY
 from widgets import MplCanvas
+from manifest import scenario_label
 
 _ML_RESULTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ml", "model_results.json")
 
@@ -91,8 +92,12 @@ class ForecastingPanel(QtWidgets.QWidget):
 
         by_case = {e.case_index: e for e in self._manifest}
         for case_index in prediction_store.case_indices:
-            label = by_case[case_index].folder if case_index in by_case else f"scenario {case_index}"
+            entry = by_case.get(case_index)
+            label = scenario_label(entry) if entry is not None else f"scenario {case_index}"
             self.scenario_combo.addItem(label, case_index)
+            if entry is not None:
+                self.scenario_combo.setItemData(
+                    self.scenario_combo.count() - 1, entry.folder, QtCore.Qt.ToolTipRole)
         self.scenario_combo.currentIndexChanged.connect(self._plot_scenario)
 
         self._metrics = self._load_metrics()
