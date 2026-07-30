@@ -1,11 +1,20 @@
 """Sensitivity Explorer panel (V5-M3), an Analysis-page tab.
 
 Parameter sliders for the four design factors (candles/door/vod/voc) that
-interpolate across the existing 24-run factorial. Moving them estimates every
-response (a "what-if" table), draws a local response surface for a chosen
-response over two factors, and a tornado of each factor's local swing. Every
-estimate is labelled "Estimated from Existing Scenarios by interpolation" --
-never a new simulation.
+interpolate across the existing 24-run factorial, drawing a local response
+surface for a chosen response over two factors. Every estimate is labelled
+"Estimated from Existing Scenarios by interpolation" -- never a new
+simulation.
+
+Tornado (each factor's local swing) and What-if (all-responses table) were
+removed as their own tabs (Analysis UX + reliability pass) -- Response
+surface already answers "how does this response change near my current
+setting" for the two factors that matter most, and the two removed views
+were rarely-needed detail on top of that. sensitivity.tornado() and
+predict_all() were deleted with them (used only by the removed render
+methods); sensitivity.predict() and nearest_scenario() stay -- both are
+still used by this panel's own bus-sync (_update, below) and by "Pin
+what-if to Knowledge Graph" (_pin_hypothesis).
 
 SelectionBus (M1): the sliders publish the *nearest existing scenario* so the
 Live Viewer and linked panels show a real run; selecting a scenario elsewhere
@@ -112,12 +121,6 @@ class SensitivityPanel(QtWidgets.QWidget):
         self.surface_canvas = MplCanvas(self)
         self.surface_canvas.setAccessibleName("Response surface")
         self.tabs.addTab(self.surface_canvas, "Response surface")
-        self.tornado_canvas = MplCanvas(self)
-        self.tornado_canvas.setAccessibleName("Tornado")
-        self.tabs.addTab(self.tornado_canvas, "Tornado")
-        self.whatif_table = QtWidgets.QTableWidget()
-        self.whatif_table.setAccessibleName("What-if estimates")
-        self.tabs.addTab(self.whatif_table, "What-if (all responses)")
         layout.addWidget(self.tabs, 1)
 
         self._init_sliders()
@@ -182,9 +185,7 @@ class SensitivityPanel(QtWidgets.QWidget):
             + ("  (exact)" if dist < 1e-6 else "  — response between runs is interpolated"))
         if self._bus is not None and ci is not None and not self._syncing:
             self._bus.update(origin=self, scenario=ci)
-        self._render_whatif(settings)
         self._render_surface(settings)
-        self._render_tornado(settings)
 
     def _pin_hypothesis(self) -> None:
         """Pin the current interpolated estimate as a hypothesis node in the
@@ -210,18 +211,6 @@ class SensitivityPanel(QtWidgets.QWidget):
         })
         self.pin_status.setText(f"Pinned: {label} — see it in the Knowledge Graph tab.")
 
-    def _render_whatif(self, settings) -> None:
-        preds = se.predict_all(self._table, settings)
-        self.whatif_table.clear()
-        self.whatif_table.setColumnCount(3)
-        self.whatif_table.setRowCount(len(sa.RESPONSE_KEYS))
-        self.whatif_table.setHorizontalHeaderLabels(["Response", "Estimated", "Unit"])
-        for r, key in enumerate(sa.RESPONSE_KEYS):
-            self.whatif_table.setItem(r, 0, QtWidgets.QTableWidgetItem(sa.RESPONSE_LABEL[key]))
-            self.whatif_table.setItem(r, 1, QtWidgets.QTableWidgetItem(f"{preds[key]:.1f}"))
-            self.whatif_table.setItem(r, 2, QtWidgets.QTableWidgetItem(sa.RESPONSE_UNIT[key]))
-        self.whatif_table.resizeColumnsToContents()
-
     def _render_surface(self, settings) -> None:
         response = self.response_combo.currentData()
         fx, fy = self.fx_combo.currentData(), self.fy_combo.currentData()
@@ -245,23 +234,3 @@ class SensitivityPanel(QtWidgets.QWidget):
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         fig.subplots_adjust(top=0.92, bottom=0.14, left=0.12, right=0.98)
         self.surface_canvas.draw_idle()
-
-    def _render_tornado(self, settings) -> None:
-        response = self.response_combo.currentData()
-        rows = se.tornado(self._table, response, settings)
-        base = se.predict(self._table, response, settings)
-        fig = self.tornado_canvas.fig
-        fig.clear()
-        ax = fig.add_subplot(111)
-        names = [sa.PARAM_LABELS[p] for p, _lo, _hi, _s in rows][::-1]
-        for i, (p, lo, hi, _swing) in enumerate(rows[::-1]):
-            ax.barh(i, hi - lo, left=min(lo, hi), color="#E8622C", alpha=0.85)
-        ax.axvline(base, color="#00E5FF", linewidth=1.2, label="current estimate")
-        ax.set_yticks(range(len(names))); ax.set_yticklabels(names, fontsize=8)
-        ax.set_xlabel(f"Estimated {sa.RESPONSE_LABEL[response]} "
-                      f"({sa.RESPONSE_UNIT[response]})", fontsize=8)
-        ax.set_title("Local factor swing (each factor low→high)", fontsize=9)
-        ax.legend(fontsize=6, loc="lower right")
-        ax.tick_params(labelsize=7)
-        fig.subplots_adjust(top=0.9, bottom=0.16, left=0.2, right=0.96)
-        self.tornado_canvas.draw_idle()

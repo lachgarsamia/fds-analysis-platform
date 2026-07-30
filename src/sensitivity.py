@@ -6,10 +6,16 @@ A response at arbitrary (continuous) factor settings is therefore estimated by
 **multilinear interpolation across the existing runs** -- never a new
 simulation. Every consumer must show ESTIMATE_NOTE alongside these numbers.
 
-Provides: an interpolator over the factor grid, single/all-response prediction,
-a 2-factor response surface, a tornado (local factor swing at an operating
-point), and the nearest existing scenario to a setting (for SelectionBus
-hand-off). Reuses M2's table + factor axes. Pure NumPy/scipy, Qt-free.
+Provides: an interpolator over the factor grid, single-response prediction, a
+2-factor response surface, and the nearest existing scenario to a setting
+(for SelectionBus hand-off). Reuses M2's table + factor axes. Pure
+NumPy/scipy, Qt-free.
+
+predict_all() (all-responses table) and tornado() (local factor swing) were
+removed (Analysis UX + reliability pass) along with the Sensitivity panel's
+What-if/Tornado tabs that were their only callers -- Response surface
+already answers "how does this response change near my current setting"
+for the two factors that matter most.
 """
 
 from __future__ import annotations
@@ -62,11 +68,6 @@ def predict(table: list, response: str, settings: dict) -> float:
     return float(interp(_point(settings))[0])
 
 
-def predict_all(table: list, settings: dict) -> dict:
-    """{response: estimated value} at `settings`, for every response."""
-    return {k: predict(table, k, settings) for k in sa.RESPONSE_KEYS}
-
-
 def response_surface(table: list, response: str, fx: str, fy: str,
                      settings: dict, n: int = 25):
     """(xs, ys, Z) grid of estimates varying fx, fy over their level ranges,
@@ -83,23 +84,6 @@ def response_surface(table: list, response: str, fx: str, fy: str,
             pts[i] = [s[p] for p in sa.PARAMS]
         z[j] = interp(pts)
     return xs, ys, z
-
-
-def tornado(table: list, response: str, settings: dict) -> list:
-    """Local sensitivity at `settings`: per factor, the predicted response at
-    its low and high level (others held), ranked by swing. Returns
-    [(param, low, high, swing), ...] high-to-low."""
-    interp, levels = make_interpolator(table, response)
-    base = {p: float(settings[p]) for p in sa.PARAMS}
-    out = []
-    for p in sa.PARAMS:
-        lo_s = dict(base); lo_s[p] = min(levels[p])
-        hi_s = dict(base); hi_s[p] = max(levels[p])
-        lo = float(interp(_point(lo_s))[0])
-        hi = float(interp(_point(hi_s))[0])
-        out.append((p, lo, hi, abs(hi - lo)))
-    out.sort(key=lambda t: t[3], reverse=True)
-    return out
 
 
 def nearest_scenario(table: list, settings: dict):

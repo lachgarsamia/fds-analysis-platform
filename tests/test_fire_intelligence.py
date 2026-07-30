@@ -1262,19 +1262,18 @@ class TestSensitivity:
         s = {"candles": 0, "door": 0, "vod": 0.5, "voc": 0}
         assert sen.predict(t, "max_temp_c", s) == pytest.approx(200.0)  # between 100 and 300
 
-    def test_predict_all_covers_every_response(self):
-        t = self._table()
-        preds = sen.predict_all(t, {"candles": 0, "door": 0, "vod": 1, "voc": 0})
-        assert set(preds) == set(sam.RESPONSE_KEYS)
-        assert preds["max_temp_c"] == pytest.approx(300.0)
-
-    def test_tornado_ranks_the_driver(self):
-        t = self._table()
-        s = {"candles": 0, "door": 0, "vod": 1, "voc": 0}
-        tor = sen.tornado(t, "max_temp_c", s)
-        assert tor[0][0] == "vod"                      # vod has the largest swing
-        assert tor[0][3] == pytest.approx(400.0)       # 100 (vod=0) -> 500 (vod=2)
-        assert all(row[3] == 0.0 for row in tor if row[0] != "vod")
+    def test_predict_all_and_tornado_were_removed(self):
+        """Analysis UX + reliability pass: What-if (all-responses) and
+        Tornado were removed from the Sensitivity panel, and predict_all()/
+        tornado() -- used only by those two render methods -- were deleted
+        with them. Response surface (response_surface(), still present)
+        already answers "how does this response change near my current
+        setting" for the two factors that matter most."""
+        assert not hasattr(sen, "predict_all")
+        assert not hasattr(sen, "tornado")
+        assert callable(sen.response_surface)
+        assert callable(sen.predict)
+        assert callable(sen.nearest_scenario)
 
     def test_nearest_scenario_exact_and_between(self):
         t = self._table()

@@ -91,14 +91,12 @@ from narrative_panel import NarrativePanel
 from ensemble_panel import EnsemblePanel
 from graph_panel import GraphPanel
 from history import InvestigationHistory
-from calculator_panel import CalculatorPanel
 import field_calculator as field_calculator_mod
 from device_panel import DevicePanel
 from velocity_panel import VelocityPanel
 from figure_export import save_figure
 from report_builder import build_publication_manifest
 import study_analytics as study_analytics_mod
-from sessions_panel import SessionsPanel
 import session_store
 from evidence_notebook_panel import EvidenceNotebookDock
 from evidence_notebook import EvidenceNotebook
@@ -780,10 +778,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.quantity_provider = QuantityProvider(
                 self.controller.store, fps=self.sim_data.timesteps_per_second)
             # V6-M1: restore any calculated fields before the panels read the
-            # registry (a fresh window starts with none).
+            # registry (a fresh window starts with none). CalculatorPanel
+            # (the only UI to author a *new* calculated field) was removed
+            # (Analysis UX + reliability pass) -- field_calculator.py itself
+            # stays: quantity_provider.py calls it directly for every
+            # calculated-field read, and session save/restore round-trips
+            # CalculatedField here independent of any panel.
             field_calculator_mod.clear()
-            self.calculator_panel = CalculatorPanel(
-                self.quantity_provider, self.sim_data.manifest)
             # Virtual Device Network (V6-M2): thermocouples/detectors/
             # sprinklers placed at a point, computed once and cached.
             self.device_panel = DevicePanel(
@@ -918,9 +919,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.graph_panel = GraphPanel(
                 self.controller.store, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second, app=self)
-            # Named analysis sessions (V4-M6): save/browse/reload/export the
-            # whole investigation. Pure UI; main_window collects/applies state.
-            self.sessions_panel = SessionsPanel()
             # Factor-effect maps (M3.1) need the candle factorial's factor
             # axes; a generic guest study has none, so it's factorial-only.
             self.factor_effects_panel = (
@@ -971,7 +969,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 clustering=(self.analytics_panel.widget() if self.analytics_panel is not None else None))
         else:
             self.quantity_provider = None
-            self.calculator_panel = None
             self.device_panel = None
             self.velocity_panel = None
             self.timeseries_panel = None
@@ -1004,7 +1001,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.narrative_panel = None
             self.ensemble_panel = None
             self.graph_panel = None
-            self.sessions_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
         # The dock objects themselves are now empty shells (their content
@@ -1039,10 +1035,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 spacetime_content=self.spacetime_panel,
                 narrative_content=self.narrative_panel,
                 graph_content=self.graph_panel,
-                calculator_content=self.calculator_panel,
                 quantities_content=self.quantities_panel,
-                assistant_content=self.assistant_query_panel,
-                sessions_content=self.sessions_panel),
+                assistant_content=self.assistant_query_panel),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
             "about": AboutPage(),
@@ -1107,7 +1101,7 @@ class MainWindow(QtWidgets.QMainWindow):
                      "energy_panel", "forecasting_panel", "quantities_panel",
                      "advanced_compare_panel", "study_panel", "parallel_coordinates_panel",
                      "hazard_panel", "spacetime_panel", "narrative_panel", "ensemble_panel",
-                     "device_panel", "velocity_panel", "calculator_panel", "dashboard_panel"):
+                     "device_panel", "velocity_panel", "dashboard_panel"):
             panel = getattr(self, attr, None)
             if panel is not None:
                 bind_to_bus(panel, self.selection_bus, fps)
@@ -1142,11 +1136,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # rebuilds its selected-scenario events when the selection changes.
         if self.graph_panel is not None:
             self.graph_panel.set_bus(self.selection_bus)
-        # V6-M1.5: when a calculated field is created/deleted, refresh the Live
-        # Viewer quantity combo so it appears/disappears as a visual quantity,
-        # and invalidate the provider's computed-field memo.
-        if self.calculator_panel is not None:
-            self.calculator_panel.fields_changed.connect(self._refresh_quantity_list)
         # V6-M2: a placed/edited/deleted device refreshes the Live Viewer's
         # markers; clicking a device's result (an Insight) seeks/highlights
         # through the same shared navigation every other V3 feature uses.
@@ -1258,17 +1247,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self.selection_bus.update(origin=None, **fields)
 
     def _build_sessions(self) -> None:
-        """Named analysis sessions (V4-M6): wire the Sessions panel's
-        intents to state collection/application here (main_window owns the
-        grid, notebook, zones, and time window), and populate its list."""
+        """Named analysis sessions (V4-M6): _sessions_dir is still needed by
+        the autosave-on-close draft (closeEvent, below) even though the
+        Sessions tab's own UI (which used to wire save/load/delete/export
+        signals here) was removed (Analysis UX + reliability pass) --
+        session_store.py itself, and every function still reachable through
+        it (_refresh_sessions/_on_session_*/_apply_analysis_session), stay
+        as reusable session-management logic, just not wired to a visible
+        tab today."""
         self._sessions_dir = session_store.default_sessions_dir()
-        if self.sessions_panel is None:
-            return
-        self.sessions_panel.save_requested.connect(self._on_session_save)
-        self.sessions_panel.load_requested.connect(self._on_session_load)
-        self.sessions_panel.delete_requested.connect(self._on_session_delete)
-        self.sessions_panel.export_requested.connect(self._on_session_export)
-        self._refresh_sessions()
         # V4-M12: the Safe Assistant runs on computed context supplied here.
         if self.assistant_panel is not None:
             self.assistant_panel.action_requested.connect(self._on_assistant_action)
@@ -3714,9 +3701,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # --------------------------------------------------- named sessions (M6)
     def _refresh_sessions(self) -> None:
-        if self.sessions_panel is not None:
-            self.sessions_panel.set_sessions(
-                session_store.list_sessions(self._sessions_dir))
+        """No-op today (the Sessions tab that displayed this list was
+        removed, Analysis UX + reliability pass) -- kept as a safe no-op
+        rather than deleted, since _on_session_save/_on_session_delete
+        below still call it."""
+        panel = getattr(self, "sessions_panel", None)
+        if panel is not None:
+            panel.set_sessions(session_store.list_sessions(self._sessions_dir))
 
     def _on_session_save(self, name: str, intent: str) -> None:
         session = self._collect_session_dict(name, intent)
@@ -3787,8 +3778,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 field_calculator_mod.register(field_calculator_mod.CalculatedField.from_dict(d))
             except Exception:  # noqa: BLE001 - a bad definition must not block the load
                 continue
-        if self.calculator_panel is not None:
-            self.calculator_panel._refresh_list()
         self._refresh_quantity_list()   # V6-M1.5: reflect restored fields in the Live combo
         # V6-M2: restore devices with their cached results verbatim (no recompute).
         if self.device_panel is not None:
@@ -4199,8 +4188,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("splitter_state", self.splitter.saveState())
         # V4-M6: autosave a draft session so an unsaved investigation is
-        # recoverable next launch (best-effort; never blocks close).
-        if getattr(self, "sessions_panel", None) is not None and self.sim_data.manifest:
+        # recoverable next launch (best-effort; never blocks close). Gated
+        # only on having a manifest -- not on the (now-removed, Analysis UX
+        # + reliability pass) Sessions tab existing, since this must keep
+        # firing for everyone regardless of that UI.
+        if self.sim_data.manifest:
             try:
                 session_store.save_draft(self._sessions_dir, self._collect_session_dict())
             except OSError:

@@ -2780,13 +2780,21 @@ class TestNamedSessions:
         window.time_window_panel._t0 = 10.0
         window.time_window_panel._t1 = 40.0
 
-    def test_panel_present_only_with_manifest(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            assert window.sessions_panel is None
-        else:
-            assert window.sessions_panel is not None
+    def test_sessions_tab_is_removed_but_session_management_still_works(self, qapp):
+        """Analysis UX + reliability pass: the Sessions tab (Reference &
+        Communication) was removed -- session_store.py and main_window's
+        own _on_session_save/_on_session_load (tested directly below,
+        independent of any UI) stay, since they're genuine session-
+        management capability, not the tab itself."""
+        window = MainWindow(load_simulation_data())
+        assert not hasattr(window, "sessions_panel")
+        if window.sim_data.manifest:
+            labels = [window.pages["analysis"].tabs.tabText(i)
+                     for i in range(window.pages["analysis"].tabs.count())]
+            group = window.pages["analysis"].tabs.widget(
+                labels.index("Reference & Communication"))
+            inner_labels = [group.tabText(i) for i in range(group.count())]
+            assert "Sessions" not in inner_labels
         window.close()
 
     def test_save_then_reopen_restores_state_exactly(self, qapp, tmp_path):
@@ -2814,7 +2822,7 @@ class TestNamedSessions:
     def test_export_report_writes_html(self, qapp, tmp_path):
         import session_store
         window = MainWindow(load_simulation_data())
-        if window.sessions_panel is None:
+        if window.sim_data.is_demo:
             window.close()
             return
         window._sessions_dir = str(tmp_path)
@@ -2831,7 +2839,7 @@ class TestNamedSessions:
     def test_empty_session_roundtrips(self, qapp, tmp_path):
         import session_store
         window = MainWindow(load_simulation_data())
-        if window.sessions_panel is None:
+        if window.sim_data.is_demo:
             window.close()
             return
         window._sessions_dir = str(tmp_path)
@@ -3367,10 +3375,16 @@ class TestStudyPanel:
         assert panel.scenario_combo.currentData() == 9
         window.close()
 
-    def test_response_curve_answers_factor_times_response(self, qapp):
-        """UX consolidation pass (Study-Level interpretation, item 6): pick
-        a factor and a response and get the per-level mean curve directly
-        -- e.g. "how does ventilation (vod) affect peak temperature?"."""
+    def test_response_curve_tab_is_removed_but_backend_function_still_used(self, qapp):
+        """Analysis UX + reliability pass: the "Response curve" tab was
+        removed (Factor influence already answers "what moves this
+        response" more concisely) -- but study_analytics.response_curve()
+        itself must survive, since factor_influence() (the kept "Factor
+        influence" tab) calls it directly to build each factor's spread-
+        of-means. Backend coverage for response_curve() lives in
+        test_fire_intelligence.py::TestStudyAnalytics::
+        test_response_curve_gives_the_per_level_means_factor_influence_
+        summarizes, independent of this UI tab."""
         import study_analytics as sa
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
@@ -3379,17 +3393,11 @@ class TestStudyPanel:
             return
         panel = window.study_panel
         labels = [panel.tabs.tabText(i) for i in range(panel.tabs.count())]
-        assert "Response curve" in labels
-        idx = panel.curve_factor_combo.findData("vod")
-        panel.curve_factor_combo.setCurrentIndex(idx)
-        jdx = panel.curve_response_combo.findData("max_temp_c")
-        panel.curve_response_combo.setCurrentIndex(jdx)
-        expected = sa.response_curve(panel._table, "max_temp_c", "vod")
-        assert len(expected) >= 2   # this study varies vod
-        assert panel.curve_canvas.fig.axes
-        ax = panel.curve_canvas.fig.axes[0]
-        assert "vod" in ax.get_xlabel().lower() or "VOD" in ax.get_xlabel()
-        assert ax.get_title() != ""
+        assert "Response curve" not in labels
+        assert not hasattr(panel, "curve_factor_combo")
+        assert not hasattr(panel, "curve_canvas")
+        assert "Factor influence" in labels  # the tab that still needs it
+        assert callable(sa.response_curve)
         window.close()
 
     def test_factor_effects_folded_in_as_a_sub_tab(self, qapp):
@@ -3414,9 +3422,10 @@ class TestStudyPanel:
         """Analysis section consolidation Phase 5: the Sensitivity
         Explorer (local sensitivity at a chosen factor setting) is a
         sub-tab here now, complementing this panel's own global spread
-        across observed levels (Factor influence/Response curve) -- not a
-        structurally-separate top-level tab. The panel itself (sliders,
-        its own 3-tab layout, SelectionBus wiring) is unchanged."""
+        across observed levels (Factor influence) -- not a structurally-
+        separate top-level tab. Analysis UX + reliability pass further
+        removed Sensitivity's own Tornado/What-if sub-tabs, so only
+        Response surface remains."""
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo or not window.is_factorial:
@@ -3427,8 +3436,7 @@ class TestStudyPanel:
         assert "Sensitivity" in labels
         idx = labels.index("Sensitivity")
         assert panel.tabs.widget(idx) is window.sensitivity_panel
-        # the folded-in panel's own sliders/tabs are untouched.
-        assert window.sensitivity_panel.tabs.count() == 3
+        assert window.sensitivity_panel.tabs.count() == 1
         window.close()
 
     def test_correlation_matrix_cells_are_annotated_with_values(self, qapp):
@@ -3618,6 +3626,23 @@ class TestSensitivityPanel:
             window.close()
             return
         assert "Estimated from Existing Scenarios" in window.sensitivity_panel.note.text()
+        window.close()
+
+    def test_tornado_and_whatif_tabs_are_removed_response_surface_kept(self, qapp):
+        """Analysis UX + reliability pass: Tornado and What-if (all
+        responses) were removed; Response surface -- and the "Pin what-if
+        to Knowledge Graph" button, which uses predict()/nearest_scenario()
+        rather than either removed tab -- remain."""
+        window = MainWindow(load_simulation_data())
+        if window.sensitivity_panel is None:
+            window.close()
+            return
+        panel = window.sensitivity_panel
+        labels = [panel.tabs.tabText(i) for i in range(panel.tabs.count())]
+        assert labels == ["Response surface"]
+        assert not hasattr(panel, "tornado_canvas")
+        assert not hasattr(panel, "whatif_table")
+        assert hasattr(panel, "pin_button")
         window.close()
 
 
@@ -4014,43 +4039,30 @@ class TestFieldCalculator:
         import field_calculator as fc
         fc.clear()
 
-    def test_preview_scenario_combo_is_bus_bound(self, qapp):
-        """Analysis-improvement roadmap Phase A: the "Preview on:" combo was
-        a disconnected local picker -- now it follows (and publishes to)
-        the SelectionBus like every other panel's scenario_combo, via the
-        same generic bind_to_bus every other panel already uses."""
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            window.close()
-            return
-        p = window.calculator_panel
-        if p.scenario_combo.count() < 2:
-            window.close()
-            return
-        p.scenario_combo.setCurrentIndex(1)
-        assert window.selection_bus.current.scenario == p.scenario_combo.currentData()
-        other_case = next(c for c in window.sim_data.data_matrix.flatten()
-                          if c != p.scenario_combo.currentData())
-        window.selection_bus.update(origin=None, scenario=int(other_case))
-        assert p.scenario_combo.currentData() == int(other_case)
+    def test_calculator_tab_is_removed_field_calculator_backend_stays(self, qapp):
+        """Analysis UX + reliability pass: CalculatorPanel (the only UI to
+        author a *new* calculated field) was removed -- field_calculator.py
+        itself stays, since quantity_provider.py calls it directly for
+        every calculated-field read (Live Viewer included), and session
+        save/restore round-trips CalculatedField independent of any panel.
+        Existing calculated fields keep working; creating new ones now
+        requires calling field_calculator.py directly (as every other test
+        in this class does)."""
+        window = MainWindow(load_simulation_data())
+        assert not hasattr(window, "calculator_panel")
         window.close()
 
     def test_create_field_registers_and_provider_computes(self, qapp):
         import numpy as np
+        import field_calculator as fc
         from slice_key import SliceKey
         from registry import QUANTITY_REGISTRY, get_quantity
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo:
-            assert getattr(window, "calculator_panel", None) is None
             window.close()
             return
-        p = window.calculator_panel
-        p.name_edit.setText("Temperature Rise")
-        p.expr_edit.setText("Temperature - 20")
-        assert p.save_button.isEnabled()          # valid expression
-        p._save()
+        fc.register(fc.make_field("Temperature Rise", "Temperature - 20"))
         assert "Temperature Rise" in QUANTITY_REGISTRY
         q = get_quantity("Temperature Rise")
         assert q.calculated and q.kind == "derived" and q.expression == "Temperature - 20"
@@ -4059,27 +4071,24 @@ class TestFieldCalculator:
         assert np.allclose(calc, raw - 20)        # plots/exports can load it via the provider
         window.close()
 
-    def test_unsafe_expression_disables_save(self, qapp):
+    def test_unsafe_expression_is_rejected(self, qapp):
+        import field_calculator as fc
         window = MainWindow(load_simulation_data())
-        if window.calculator_panel is None:
-            window.close()
-            return
-        p = window.calculator_panel
-        p.expr_edit.setText("__import__('os')")
-        assert not p.save_button.isEnabled() and "✗" in p.status.text()
+        with pytest.raises(fc.CalculatorError):
+            fc.make_field("Bad", "__import__('os')")
         window.close()
 
     def test_gradient_and_rate_fields_compute(self, qapp):
         import numpy as np
+        import field_calculator as fc
         from slice_key import SliceKey
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo:
             window.close()
             return
-        p = window.calculator_panel
-        p.name_edit.setText("Grad"); p.expr_edit.setText("gradient(Temperature)"); p._save()
-        p.name_edit.setText("Rate"); p.expr_edit.setText("rate(Temperature)"); p._save()
+        fc.register(fc.make_field("Grad", "gradient(Temperature)"))
+        fc.register(fc.make_field("Rate", "rate(Temperature)"))
         raw = np.asarray(window.controller.store.get(0, SliceKey("TEMPERATURE")))
         assert np.asarray(window.quantity_provider.get(0, SliceKey("Grad"))).shape == raw.shape
         assert np.asarray(window.quantity_provider.get(0, SliceKey("Rate"))).shape == raw.shape
@@ -4093,8 +4102,7 @@ class TestFieldCalculator:
         if sim_data.is_demo:
             window.close()
             return
-        p = window.calculator_panel
-        p.name_edit.setText("Exposure"); p.expr_edit.setText("Temperature * 2"); p._save()
+        fc.register(fc.make_field("Exposure", "Temperature * 2"))
         sd = window._collect_session_dict("t", "")
         assert len(sd["calculated_fields"]) == 1
         fc.clear()
@@ -4135,6 +4143,7 @@ class TestCalculatedFieldsInLiveViewer:
 
     def test_calculated_field_selectable_and_renders(self, qapp):
         import numpy as np
+        import field_calculator as fc
         from slice_key import SliceKey
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
@@ -4142,8 +4151,12 @@ class TestCalculatedFieldsInLiveViewer:
             window.close()
             return
         window.show()
-        p = window.calculator_panel
-        p.name_edit.setText("TR"); p.expr_edit.setText("Temperature - 20"); p._save()
+        fc.register(fc.make_field("TR", "Temperature - 20"))
+        # fields_changed used to trigger this automatically via
+        # CalculatorPanel (removed, Analysis UX + reliability pass) --
+        # main_window still exposes it directly for any caller that
+        # registers a field outside that UI.
+        window._refresh_quantity_list()
         labels = [window.quantity_combo.itemText(i) for i in range(window.quantity_combo.count())]
         assert "TR" in labels                      # appears in the Live combo
         window.quantity_combo.setCurrentIndex(labels.index("TR"))

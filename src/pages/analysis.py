@@ -22,6 +22,12 @@ Phase 6 similarly folded Height/Time series/Time Window into
 spatiotemporal_panel.py's SpatiotemporalPanel (three modes of one
 "Field & Time Explorer" tab) -- see that module's docstring for why
 Space-time stays a separate top-level tab instead.
+
+Analysis UX + reliability pass removed Calculator and Sessions from
+Reference & Communication entirely (not hidden -- their backends,
+field_calculator.py and session_store.py respectively, are called
+directly by main_window.py/quantity_provider.py independent of either
+panel, and stay).
 """
 
 from __future__ import annotations
@@ -69,7 +75,7 @@ _GROUPS = [
     ("Probe & Measure", ["Spatial Probes"]),
     ("Factors & Sensitivity", ["Study"]),
     ("Spatiotemporal Analysis", ["Field & Time Explorer", "Space-time"]),
-    ("Reference & Communication", ["Calculator", "Quantities", "Graph", "Assistant", "Sessions"]),
+    ("Reference & Communication", ["Quantities", "Graph", "Assistant"]),
 ]
 # Fire MRI, Attention, Why is it hot?, and Forecasting are each individually
 # gated/heuristic/exploratory (per-panel disclaimers already say so) --
@@ -132,10 +138,8 @@ class AnalysisPage(Page):
                  spacetime_content: QtWidgets.QWidget = None,
                  narrative_content: QtWidgets.QWidget = None,
                  graph_content: QtWidgets.QWidget = None,
-                 calculator_content: QtWidgets.QWidget = None,
                  quantities_content: QtWidgets.QWidget = None,
-                 assistant_content: QtWidgets.QWidget = None,
-                 sessions_content: QtWidgets.QWidget = None, parent=None):
+                 assistant_content: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self._on_shown = on_shown
         layout = QtWidgets.QVBoxLayout(self)
@@ -165,9 +169,7 @@ class AnalysisPage(Page):
             ("Spatial Probes", probe_measure_content),
             ("Graph", graph_content),
             ("Quantities", quantities_content),
-            ("Calculator", calculator_content),
             ("Assistant", assistant_content),
-            ("Sessions", sessions_content),
             ("Fire MRI", fire_mri_content),
             ("Attention", attention_content),
             ("Why is it hot?", cause_content),
