@@ -3168,6 +3168,41 @@ class TestCompareDiscoverPanel:
         assert window.selection_bus.current.scenario == expected
         window.close()
 
+    def test_parallel_coordinates_color_by_factor_differentiates_lines(self, qapp):
+        """Analysis UX + reliability pass: previously every non-selected
+        scenario rendered as an identical gray line -- now lines are
+        colored by the chosen factor's level, so level separation is
+        visible across all axes, not just which single scenario is
+        selected."""
+        window = MainWindow(load_simulation_data())
+        if window.parallel_coordinates_panel is None:
+            window.close()
+            return
+        pc = window.parallel_coordinates_panel
+        idx = pc.color_by_combo.findData("door")
+        assert idx >= 0
+        pc.color_by_combo.setCurrentIndex(idx)
+        ax = pc.parallel_canvas.fig.axes[0]
+        line_colors = {line.get_color() for line in ax.get_lines()}
+        # at least 2 distinct non-selected colors (door has 2 levels) plus
+        # the selected-scenario cyan -- not one flat gray for everything.
+        assert len(line_colors) >= 2
+        assert ax.get_legend() is not None
+        window.close()
+
+    def test_parallel_coordinates_axes_show_real_value_labels(self, qapp):
+        """Each axis must show its own real min/max (not just the shared
+        0-1 normalized scale), so magnitudes are readable."""
+        window = MainWindow(load_simulation_data())
+        if window.parallel_coordinates_panel is None:
+            window.close()
+            return
+        pc = window.parallel_coordinates_panel
+        ax = pc.parallel_canvas.fig.axes[0]
+        # 2 labels (min + max) per axis
+        assert len(ax.texts) == 2 * len(pc._axis_keys)
+        window.close()
+
 
 class TestPublicationExport:
     """V4-M10: export presets + panel figure export + notebook report."""
