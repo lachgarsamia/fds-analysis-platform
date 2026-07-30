@@ -1466,6 +1466,17 @@ class TestGraphModel:
         assert nodes[0].scenario == 1 and nodes[0].point == (1.0, 1.0)
         assert nodes[0].to_selection().scenario == 1
 
+    def test_device_links_to_its_scenario(self):
+        """Analysis UX + reliability pass: devices used to be edge-less
+        (floating) nodes, only navigable via to_selection(); now they link
+        to their owning scenario, same g.link() pattern as scenario<->tag,
+        since devices.py's Device genuinely carries a `scenario` field."""
+        import devices as dv
+        d = dv.Device(id="d1", name="TC-01", type="thermocouple",
+                     scenario=1, position=(1.0, 1.0))
+        g = gmod.build_graph(self._scenarios(), devices=[d])
+        assert "scenario:1" in g.neighbors(f"device:{d.id}")
+
     def test_vector_probes_become_graph_nodes(self):
         import velocity as vel
         p = vel.VectorProbe(id="p1", name="VP-01", scenario=2, position=(0.5, 0.5))
@@ -1473,6 +1484,26 @@ class TestGraphModel:
         nodes = g.nodes_of("vector_probe")
         assert len(nodes) == 1
         assert nodes[0].scenario == 2 and nodes[0].to_selection().point == (0.5, 0.5)
+
+    def test_vector_probe_links_to_its_scenario(self):
+        import velocity as vel
+        p = vel.VectorProbe(id="p1", name="VP-01", scenario=2, position=(0.5, 0.5))
+        g = gmod.build_graph(self._scenarios(), vector_probes=[p])
+        assert "scenario:2" in g.neighbors(f"vector_probe:{p.id}")
+
+    def test_zones_and_measurements_stay_scenario_agnostic(self):
+        """Zones/measurements have no `scenario` field in their own domain
+        model (zone_stats.py: "a zone applies to any scenario and is
+        compared across them") -- linking them to one specific scenario
+        would invent a relationship the data doesn't have, so (unlike
+        device/vector_probe/hypothesis) they stay unlinked."""
+        import zone_stats as zst
+        import measure as mz
+        zone = zst.Zone("doorway", 0.8, 1.0, 0.0, 0.3)
+        meas = mz.Measurement(kind="probe", points=[(0.5, 0.5)])
+        g = gmod.build_graph(self._scenarios(), zones=[zone], measurements=[meas])
+        assert g.neighbors("zone:0") == []
+        assert g.neighbors("measurement:0") == []
 
     def test_no_devices_or_probes_is_unaffected(self):
         g = gmod.build_graph(self._scenarios())
@@ -1489,6 +1520,26 @@ class TestGraphModel:
         assert nodes[0].label == h["label"]
         assert nodes[0].to_selection().scenario == 2
 
+    def test_hypothesis_links_to_its_nearest_scenario(self):
+        h = {"id": "whatif-0", "label": "HRR ~ 12.3 kW", "nearest_scenario": 2}
+        g = gmod.build_graph(self._scenarios(), hypotheses=[h])
+        assert "scenario:2" in g.neighbors("hypothesis:whatif-0")
+
     def test_no_hypotheses_is_unaffected(self):
         g = gmod.build_graph(self._scenarios())
         assert g.nodes_of("hypothesis") == []
+
+    def test_hazard_node_links_to_its_scenario(self):
+        """Analysis UX + reliability pass: a hazard node (worst
+        hazard_spaces.py tenability class reached, computed by the
+        caller) linked to its scenario -- hazard severity as a direct
+        graph relationship, not absent entirely."""
+        g = gmod.build_graph(self._scenarios(), hazard_by_scenario={2: "Critical"})
+        nodes = g.nodes_of("hazard")
+        assert len(nodes) == 1
+        assert nodes[0].label == "Critical" and nodes[0].scenario == 2
+        assert "scenario:2" in g.neighbors("hazard:2")
+
+    def test_no_hazard_data_is_unaffected(self):
+        g = gmod.build_graph(self._scenarios())
+        assert g.nodes_of("hazard") == []

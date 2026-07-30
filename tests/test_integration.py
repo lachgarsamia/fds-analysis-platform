@@ -3992,6 +3992,49 @@ class TestKnowledgeGraph:
         assert "tag:vod2" in visible and len(visible) == len(neigh) + 1
         window.close()
 
+    def test_hazard_node_appears_and_links_to_the_current_scenario(self, qapp):
+        """Analysis UX + reliability pass: hazard_by_scenario (reusing
+        hazard_spaces.py's own worst-tenability-class classification) is
+        computed for the currently-selected scenario, same bound as
+        narrative events, and produces a hazard node linked to it."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        g = window.graph_panel
+        g._current_scenario = sim_data.manifest[0].case_index
+        g._loaded = True
+        g._rebuild()
+        hazard_nodes = g._graph.nodes_of("hazard")
+        assert len(hazard_nodes) == 1
+        assert hazard_nodes[0].scenario == sim_data.manifest[0].case_index
+        assert f"scenario:{sim_data.manifest[0].case_index}" in g._graph.neighbors(hazard_nodes[0].id)
+        window.close()
+
+    def test_focus_on_selected_hides_everything_outside_the_neighborhood(self, qapp):
+        """Analysis UX + reliability pass: the "Focus on selected" toggle
+        must actually narrow what's visible, reusing the same neighbor
+        computation click-highlighting already relies on."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        g = window.graph_panel
+        g._loaded = True
+        g._rebuild()
+        full_count = len(g._visible_ids())
+        g._select_node("tag:vod2")
+        g.focus_checkbox.setChecked(True)
+        focused = g._visible_ids()
+        neigh = g._graph.neighbors("tag:vod2")
+        assert focused == {"tag:vod2", *neigh}
+        assert len(focused) < full_count
+        g.focus_checkbox.setChecked(False)
+        assert len(g._visible_ids()) == full_count
+        window.close()
+
 
 class TestReleaseCandidatePolish:
     """RC polish: theme-aware plots, HRR/Fire-Story states, layout, theme resolve."""
