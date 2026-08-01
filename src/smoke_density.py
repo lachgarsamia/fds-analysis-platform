@@ -62,3 +62,53 @@ def soot_alpha(frame: np.ndarray, ceiling: float, max_alpha: float = MAX_OVERLAY
     opacity, never a boolean on/off."""
     clean = np.clip(np.nan_to_num(np.asarray(frame, dtype=float), nan=0.0, posinf=0.0, neginf=0.0), 0.0, None)
     return np.clip(clean / max(float(ceiling), 1e-9), 0.0, 1.0) * max_alpha
+
+
+# Percentile pair for soot_display_range: chosen to trim outlier cells at
+# both ends of the *nonzero* population (see that function's docstring for
+# why the floor matters as much as the ceiling here).
+DISPLAY_FLOOR_PERCENTILE = 1.0
+DISPLAY_CEILING_PERCENTILE = 99.0
+
+
+def soot_display_range(data: np.ndarray, floor_percentile: float = DISPLAY_FLOOR_PERCENTILE,
+                        ceiling_percentile: float = DISPLAY_CEILING_PERCENTILE) -> tuple:
+    """A data-driven (vmin, vmax) for displaying SOOT DENSITY as the
+    *primary* heatmap quantity (not the temperature overlay soot_alpha/
+    soot_ceiling above serve) -- one scenario's whole run (all frames),
+    computed once and reused, same "stable across playback" convention as
+    soot_ceiling.
+
+    Investigated directly (Analysis final-polish follow-up, "smoke view
+    looks weird" report): a fixed vmin=0 wastes almost the entire color
+    ramp on empty space. This dataset's SOOT DENSITY is bimodal -- most
+    cells are exactly 0, and wherever soot IS present, concentration
+    already sits within a narrow band close to a local ceiling (observed
+    directly: one scenario's peak frame had nonzero values ranging only
+    ~4100-5043 mg/m3, a real relative spread the fixed 0-3000/10000 scale
+    compresses into a sliver at the very top, making distinct real
+    concentrations look like one flat blob). Anchoring vmin at a low
+    percentile of the *nonzero* population instead of 0 spends the full
+    ramp on the range where real variation actually exists; exact zeros
+    still render at the low (white, for gray_r) end because imshow clips
+    values below vmin to vmin's color, so "no soot" and "trace soot at
+    the floor" both read as near-white, which is honest -- neither has
+    much soot. Confirmed empirically this reveals genuine variation (e.g.
+    a thinner-smoke region vs. a denser one) that a fixed 0-vmax scale
+    could not distinguish; it does not manufacture gradient detail that
+    isn't in the data -- a scenario whose nonzero population truly is
+    one tight cluster will still look mostly flat, honestly.
+
+    Returns (0.0, MIN_CEILING_MG_M3) if there's no nonzero data at all
+    (a scenario/plane with no soot ever) -- same floor-safety fallback
+    soot_ceiling uses, so an all-zero run just renders all-white rather
+    than dividing by a near-zero range."""
+    finite = data[np.isfinite(data)]
+    nonzero = finite[finite > 0]
+    if nonzero.size == 0:
+        return 0.0, MIN_CEILING_MG_M3
+    floor = float(np.percentile(nonzero, floor_percentile))
+    ceiling = float(np.percentile(nonzero, ceiling_percentile))
+    if ceiling <= floor:
+        ceiling = floor + 1e-6
+    return floor, max(ceiling, MIN_CEILING_MG_M3)

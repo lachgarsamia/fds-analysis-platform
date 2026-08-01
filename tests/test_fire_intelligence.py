@@ -692,6 +692,47 @@ class TestSmokeDensity:
         a3 = smd.soot_alpha(np.array([3000.0]), ceiling)[0]
         assert (a2 - a1) == pytest.approx(a3 - a2, abs=1e-9)
 
+    def test_display_range_anchors_vmin_at_the_nonzero_floor_not_zero(self):
+        """The "smoke view looks weird" fix: a fixed vmin=0 wastes almost
+        the whole color ramp on empty space when (as this dataset's real
+        SOOT DENSITY does) nonzero values already cluster in a narrow band
+        near a ceiling. vmin must come from the nonzero population, not 0,
+        or real internal variation stays invisible."""
+        data = np.zeros((5, 4, 4))
+        data[0, 0, 0] = 4100.0
+        data[0, 1, 1] = 4990.0
+        vmin, vmax = smd.soot_display_range(data, floor_percentile=0.0, ceiling_percentile=100.0)
+        assert vmin == pytest.approx(4100.0)
+        assert vmax == pytest.approx(4990.0)
+        assert vmin > 0.0   # the whole point: not pinned at the physical zero
+
+    def test_display_range_zeros_are_unaffected_by_the_floor(self):
+        """Exact zeros must still read as "no soot" -- imshow clips values
+        below vmin to vmin's own color, so this only matters if some
+        caller ever queries a zero cell's position explicitly; asserting it
+        stays outside [vmin, vmax] documents that expectation."""
+        data = np.array([[0.0, 4100.0], [4990.0, 0.0]]).reshape(1, 2, 2)
+        vmin, vmax = smd.soot_display_range(data, floor_percentile=0.0, ceiling_percentile=100.0)
+        assert 0.0 < vmin
+
+    def test_display_range_floors_at_min_ceiling_for_a_near_empty_scenario(self):
+        data = np.zeros((10, 5, 5))
+        vmin, vmax = smd.soot_display_range(data)
+        assert vmin == 0.0
+        assert vmax == smd.MIN_CEILING_MG_M3
+
+    def test_display_range_handles_nan(self):
+        vmin, vmax = smd.soot_display_range(np.full((3, 3), np.nan))
+        assert vmin == 0.0
+        assert vmax == smd.MIN_CEILING_MG_M3
+
+    def test_display_range_ceiling_never_below_floor(self):
+        """A degenerate case (every nonzero value identical) must not
+        produce an inverted/zero-width range."""
+        data = np.array([0.0, 4200.0, 4200.0, 4200.0]).reshape(1, 2, 2)
+        vmin, vmax = smd.soot_display_range(data, floor_percentile=0.0, ceiling_percentile=100.0)
+        assert vmax > vmin
+
 
 @requires_real_dataset
 class TestHeightRealData:

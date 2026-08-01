@@ -1,5 +1,6 @@
 """Tests for the Time-Series Workspace (V2 roadmap M1.1)."""
 
+import logging
 import os
 import sys
 
@@ -8,6 +9,11 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+import colormaps  # noqa: E402,F401 -- registers "fds_fire"/"fds_flow" etc. with
+                   # matplotlib at import time; main_window.py normally
+                   # guarantees this via its own import chain before any
+                   # panel renders, which a standalone panel test bypasses.
+from slice_key import SliceKey  # noqa: E402
 from timeseries import (  # noqa: E402
     TimeSeriesPanel, line_profile, phys_to_index, point_series,
     region_series, write_series_csv,
@@ -94,7 +100,11 @@ class TestPureHelpers:
 def panel(qapp):
     store = FakeStore()
     manifest = [FakeEntry(0, "case_a"), FakeEntry(1, "case_b")]
-    quantity_options = [("Temperature", "TEMP_KEY")]
+    # A real SliceKey, not a bare placeholder string: current_key.quantity
+    # is read by production code (_reload_locator's colormap lookup), and
+    # every real quantity_options list (built in main_window.py) is always
+    # (label, SliceKey) pairs.
+    quantity_options = [("Temperature", SliceKey("TEMPERATURE"))]
     p = TimeSeriesPanel(store, manifest, quantity_options, fps=4)
     p.ensure_loaded()
     yield p
@@ -197,3 +207,142 @@ class TestTimeSeriesPanel:
         assert not panel._frame_row_widget.isVisibleTo(panel)
         panel.mode_combo.setCurrentIndex(1)
         assert panel._frame_row_widget.isVisibleTo(panel)
+
+
+#: Live-polish follow-up: Time Series/Height now route through field_fn/
+#: extent_fn (the same computed-quantity dispatch main_window.py uses
+#: elsewhere) instead of calling store.get() directly, so DYNAMIC PRESSURE
+#: and TEMPERATURE RISE can be plotted here. These tests use real SliceKeys
+#: (quantity options used to be plain opaque strings in this suite's
+#: original FakeStore-based fixture above) since current_key.quantity is
+#: now read by production code (see the get_quantity fix below).
+COMPUTED_QUANTITY_OPTIONS = [
+    ("Temperature", SliceKey("TEMPERATURE")),
+    ("Dynamic pressure", SliceKey("DYNAMIC PRESSURE")),
+    ("Temperature rise (ΔT)", SliceKey("TEMPERATURE RISE")),
+    ("Smoke — doorway (x = 0.25 m)", SliceKey("SOOT DENSITY")),
+]
+
+
+def _computed_field_fn(case_index, key):
+    return np.random.rand(5, 6, 11).astype(np.float32)
+
+
+def _computed_extent_fn(case_index, key):
+    return (0.0, 1.0, 0.0, 0.3)
+
+
+@pytest.fixture
+def computed_panel(qapp):
+    manifest = [FakeEntry(0, "case_a")]
+    p = TimeSeriesPanel(None, manifest, COMPUTED_QUANTITY_OPTIONS, fps=4,
+                         field_fn=_computed_field_fn, extent_fn=_computed_extent_fn)
+    p.ensure_loaded()
+    yield p
+    p.deleteLater()
+
+
+class TestTimeSeriesComputedQuantityRouting:
+    def test_field_fn_is_used_instead_of_bare_store_get(self, qapp):
+        """Regression guard for the store.get() bypass bug class fixed
+        this session across main_window.py: a store that raises if ever
+        touched directly proves field_fn/extent_fn are the only data path."""
+        class ExplodingStore:
+            def get(self, *a, **k):
+                raise AssertionError("bypassed field_fn, called store.get() directly")
+
+            def get_extent(self, *a, **k):
+                raise AssertionError("bypassed extent_fn, called store.get_extent() directly")
+
+        manifest = [FakeEntry(0, "case_a")]
+        p = TimeSeriesPanel(ExplodingStore(), manifest, COMPUTED_QUANTITY_OPTIONS, fps=4,
+                             field_fn=_computed_field_fn, extent_fn=_computed_extent_fn)
+        p.ensure_loaded()
+        for i in range(p.quantity_combo.count()):
+            p.quantity_combo.setCurrentIndex(i)
+        p.deleteLater()
+
+    def test_all_computed_and_native_quantities_selectable(self, computed_panel):
+        for i in range(computed_panel.quantity_combo.count()):
+            computed_panel.quantity_combo.setCurrentIndex(i)
+
+    def test_locator_uses_the_selected_quantitys_own_colormap(self, computed_panel):
+        """Regression test for a real bug found while writing this test:
+        _reload_locator was calling get_quantity(self.current_key) --
+        passing the whole SliceKey instead of its .quantity string -- so
+        the lookup always missed and silently fell back to TEMPERATURE's
+        colormap ("fds_fire") no matter what was selected."""
+        from registry import get_quantity
+        idx = next(i for i, (_l, k) in enumerate(COMPUTED_QUANTITY_OPTIONS)
+                    if k.quantity == "DYNAMIC PRESSURE")
+        computed_panel.quantity_combo.setCurrentIndex(idx)
+        assert computed_panel._locator_image.get_cmap().name == get_quantity("DYNAMIC PRESSURE").cmap
+
+    def test_temperature_rise_auto_probes_doorway_mid_height(self, computed_panel):
+        """Live-polish follow-up: TEMPERATURE RISE's default view is a
+        fixed-height point probe at x=0.25 m (doorway), z=0.11 m (this
+        scaled model's own geometric mid-height, ROOM_Z=(0.0, 0.22) in
+        schematic.py -- not a human "head height" guess), not the raw 2D
+        slice, so the layer-descent signal isn't lost in the rest of the
+        domain."""
+        idx = next(i for i, (_l, k) in enumerate(COMPUTED_QUANTITY_OPTIONS)
+                    if k.quantity == "TEMPERATURE RISE")
+        computed_panel.quantity_combo.setCurrentIndex(idx)
+        assert computed_panel._mode == "point"
+        assert computed_panel._probe == (0.25, 0.11)
+        assert len(computed_panel._last_curves) == 1
+
+    def test_temperature_rise_auto_probe_does_not_override_an_existing_pick(self, computed_panel):
+        temp_idx = next(i for i, (_l, k) in enumerate(COMPUTED_QUANTITY_OPTIONS)
+                         if k.quantity == "TEMPERATURE")
+        rise_idx = next(i for i, (_l, k) in enumerate(COMPUTED_QUANTITY_OPTIONS)
+                         if k.quantity == "TEMPERATURE RISE")
+        computed_panel.quantity_combo.setCurrentIndex(temp_idx)
+        computed_panel._apply_click(0.6, 0.2)
+        computed_panel.quantity_combo.setCurrentIndex(rise_idx)
+        assert computed_panel._probe == (0.6, 0.2)
+
+
+class TestTimeSeriesSafetyNet:
+    """PyQt5 aborts the whole process (qFatal -> abort(), no catchable
+    Python exception) on an unhandled error inside a slot connected to a
+    signal -- quantity_combo's currentIndexChanged is exactly such a slot,
+    so _on_quantity_changed must never let an exception escape into Qt's
+    event loop (the actual bug found this session: a stale column index
+    out of bounds for a narrower quantity's array, in the sibling Height
+    panel)."""
+
+    def test_exception_in_field_fn_is_caught_not_raised(self, qapp, caplog):
+        def exploding_field_fn(case_index, key):
+            if key.quantity == "DYNAMIC PRESSURE":
+                raise RuntimeError("simulated resolver failure")
+            return _computed_field_fn(case_index, key)
+
+        manifest = [FakeEntry(0, "case_a")]
+        p = TimeSeriesPanel(None, manifest, COMPUTED_QUANTITY_OPTIONS, fps=4,
+                             field_fn=exploding_field_fn, extent_fn=_computed_extent_fn)
+        p.ensure_loaded()
+        idx = next(i for i, (_l, k) in enumerate(COMPUTED_QUANTITY_OPTIONS)
+                    if k.quantity == "DYNAMIC PRESSURE")
+        with caplog.at_level(logging.ERROR):
+            p.quantity_combo.setCurrentIndex(idx)  # must not raise/abort
+        assert any(r.levelno >= logging.ERROR for r in caplog.records)
+        p.deleteLater()
+
+    def test_recovers_after_a_failed_switch(self, qapp):
+        def exploding_field_fn(case_index, key):
+            if key.quantity == "DYNAMIC PRESSURE":
+                raise RuntimeError("simulated resolver failure")
+            return _computed_field_fn(case_index, key)
+
+        manifest = [FakeEntry(0, "case_a")]
+        p = TimeSeriesPanel(None, manifest, COMPUTED_QUANTITY_OPTIONS, fps=4,
+                             field_fn=exploding_field_fn, extent_fn=_computed_extent_fn)
+        p.ensure_loaded()
+        bad_idx = next(i for i, (_l, k) in enumerate(COMPUTED_QUANTITY_OPTIONS)
+                        if k.quantity == "DYNAMIC PRESSURE")
+        good_idx = next(i for i, (_l, k) in enumerate(COMPUTED_QUANTITY_OPTIONS)
+                         if k.quantity == "TEMPERATURE")
+        p.quantity_combo.setCurrentIndex(bad_idx)
+        p.quantity_combo.setCurrentIndex(good_idx)  # must still work afterwards
+        p.deleteLater()

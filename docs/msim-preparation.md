@@ -46,6 +46,7 @@ For a y-normal (PBY) slice, **U (x) and W (z) are the two in-plane components** 
 - **U/W-VELOCITY → F14 real streamlines / quiver** (roadmap Phase 3–4, gated). Today the science views cannot draw honest streamlines because only |v| is stored; the cinema mode's ∇T pseudo-advection is explicitly *not* science-grade. This is the single feature most blocked by current output.
 - **CO → real FED tenability** (M3.2 becomes full FED instead of temperature-only partial). The M3.2 disclaimer ("no CO/CO₂ → not a full FED") is written to be retired exactly when this lands.
 - **U/W-VELOCITY also feeds the cinema smoke Tier-2 advection** (`ROADMAP-FIRELAB.md` Phase 2.1f flagged this same wishlist item).
+- **U/V/W-VELOCITY → neutral-plane diagnostic for DYNAMIC PRESSURE** (Live-polish follow-up, height_panel.py's vertical profile). DYNAMIC PRESSURE = 0.5·ρ·|v|² is derived from the scalar speed and can never go negative, so its vertical profile cannot show the classic vent-flow neutral plane (the height where signed pressure crosses zero and flow direction reverses) -- it can only show where flow forcing concentrates, labeled "flow-forcing profile" rather than claiming a neutral-plane finder it isn't. Revisit once a future run exposes signed U/V/W and dynamic pressure can be computed with a real sign.
 
 ## 5. How to execute (once the gate opens)
 

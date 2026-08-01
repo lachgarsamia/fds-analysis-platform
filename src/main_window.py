@@ -98,6 +98,7 @@ from figure_export import save_figure
 from report_builder import build_publication_manifest
 import study_analytics as study_analytics_mod
 import smoke_density
+import derived_quantities
 import session_store
 from evidence_notebook_panel import EvidenceNotebookDock
 from evidence_notebook import EvidenceNotebook
@@ -117,6 +118,11 @@ logger = logging.getLogger(__name__)
 
 ORG_NAME = "FZJuelich"
 APP_NAME = "FDSSLCFVisualizer"
+
+# Live-polish follow-up ("only see a blue heatmap"): DYNAMIC PRESSURE needs
+# the same data-driven display ceiling as SOOT_QUANTITY -- see
+# _dynamic_pressure_ceiling_for/derived_quantities.display_ceiling.
+DYNAMIC_PRESSURE_QUANTITY = "DYNAMIC PRESSURE"
 
 # Compare page story presets (FireLab roadmap Phase 4, pages/compare.py):
 # each key resolves to two scenarios differing in exactly one factor
@@ -811,7 +817,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.sim_data.timesteps_per_second)
             self.timeseries_panel = TimeSeriesPanel(
                 self.controller.store, self.sim_data.manifest,
-                self._quantity_options(), self.sim_data.timesteps_per_second)
+                self._analysis_quantity_options_with_computed(), self.sim_data.timesteps_per_second,
+                field_fn=self._field_fn_for_analysis_panels(), extent_fn=self._extent_for)
             self.energy_panel = EnergyBudgetPanel(self.sim_data.manifest)
             # Tenability screening (M3.2; full FED V6-M6): works for any
             # study with a manifest, factorial or not (it's per-scenario, no
@@ -841,7 +848,8 @@ class MainWindow(QtWidgets.QMainWindow):
             # smoke layer, plume, ceiling jet.
             self.height_panel = HeightPanel(
                 self.controller.store, self.sim_data.manifest,
-                self._quantity_options(), self.sim_data.timesteps_per_second)
+                self._analysis_quantity_options_with_computed(), self.sim_data.timesteps_per_second,
+                field_fn=self._field_fn_for_analysis_panels(), extent_fn=self._extent_for)
             # Named region / zone statistics (V4-M4): persistent zones with
             # a full stats bundle, compared across scenarios, session-saved.
             self.zone_panel = ZonePanel(
@@ -1755,9 +1763,33 @@ class MainWindow(QtWidgets.QMainWindow):
         combo (self.quantity_infos, computed in _build_control_panel).
 
         Native quantities only -- calculated/derived fields are computed via the
-        QuantityProvider and the analysis panels still read the store directly,
-        so this list (which drives their combos) stays native (V6-M1.5)."""
+        QuantityProvider and most analysis panels still read the store directly,
+        so this list (which drives their combos) stays native (V6-M1.5). See
+        _analysis_quantity_options_with_computed for the two panels (Height,
+        Time series) that were extended to accept computed quantities too."""
         return [(self._quantity_label(info), info.key) for info in self.quantity_infos]
+
+    def _analysis_quantity_options_with_computed(self) -> list:
+        """_quantity_options() plus DYNAMIC PRESSURE/TEMPERATURE RISE (Live-
+        polish follow-up: a vertical profile at the vent is the standard way
+        to find dynamic pressure's neutral plane -- where flow reverses
+        direction -- and a fixed-height time series shows when the hot layer
+        descends to a given elevation; neither view is meaningful from a
+        heatmap alone). Only Height and Time series were extended -- Zones
+        has no quantity selector at all (hardcoded TEMPERATURE) and SOOT
+        DENSITY isn't in scope here (kind="volume", a separate concern from
+        the two "derived" quantities this list adds)."""
+        return self._quantity_options() + [
+            (self._quantity_label(info), info.key) for info in self._computed_quantity_infos()]
+
+    def _field_fn_for_analysis_panels(self):
+        """Bound (case_index, key) -> ndarray callable for Height/Time series
+        (Live-polish follow-up): self._field already knows computed vs.
+        native routing (see _field's own docstring) -- this just fixes the
+        store argument to self.controller.store, which is all these two
+        panels ever use (no store_override/prediction-source concept for
+        them, unlike a grid cell)."""
+        return lambda case_index, key: self._field(self.controller.store, case_index, key)
 
     # --- V6-M1.5: computed quantities as first-class visual quantities ----
     @staticmethod
@@ -1998,7 +2030,14 @@ class MainWindow(QtWidgets.QMainWindow):
         (M2.1). Called right after self.current_quantity_key changes, so
         the temp_slider.setValue() below -- via _on_temp_changed, which
         reads self.current_quantity_key -- already computes the correct
-        vmin/unit for the new quantity."""
+        vmin/unit for the new quantity.
+
+        SOOT DENSITY (Analysis final-polish follow-up, "smoke view looks
+        weird"): the slider default seeds from smoke_density.
+        soot_display_range's data-driven ceiling instead of the registry's
+        fixed 3000 -- see _soot_display_range_for's docstring for why a
+        fixed scale wastes almost its whole range on empty (zero-soot)
+        space for this quantity specifically."""
         display = self._display_for(quantity)
         self.current_colormap = display['cmap']
         self.settings.setValue("colormap", display['cmap'])
@@ -2006,12 +2045,29 @@ class MainWindow(QtWidgets.QMainWindow):
             action.setChecked(cmap == display['cmap'])
         self.view_grid.active_view().set_cmap(display['cmap'])
 
+        slider_default = display['slider_default']
+        if quantity == SOOT_QUANTITY:
+            _floor, ceiling = self._soot_display_range_for(
+                self.controller.current_case_index(), self.current_quantity_key)
+            # QSlider.setValue() is int-only; soot_display_range's ceiling
+            # is a float (a percentile) -- round, don't truncate, and clamp
+            # into the slider's own [slider_min, slider_max] range so a
+            # ceiling outside that range (e.g. a very smoky scenario) can't
+            # raise a Qt range error either.
+            slider_default = max(display['slider_min'],
+                                 min(display['slider_max'], round(ceiling)))
+        elif quantity == DYNAMIC_PRESSURE_QUANTITY:
+            ceiling = self._dynamic_pressure_ceiling_for(
+                self.controller.current_case_index(), self.current_quantity_key)
+            slider_default = max(display['slider_min'],
+                                 min(display['slider_max'], round(ceiling)))
+
         self.temp_slider.setRange(display['slider_min'], display['slider_max'])
         self.temp_slider.setAccessibleName(
             f"Maximum {display['label'].lower()} scale, {display['unit']}")
         self.temp_slider.setToolTip(
             f"Adjust the maximum {display['label'].lower()} shown on the color scale")
-        self.temp_slider.setValue(display['slider_default'])
+        self.temp_slider.setValue(slider_default)
 
         self.view_grid.active_view().set_colorbar_label(f"{display['label']} ({display['unit']})")
         self._apply_contour_overlay_state(self.view_grid.active_cell())  # levels are quantity-specific
@@ -2187,6 +2243,52 @@ class MainWindow(QtWidgets.QMainWindow):
         idx = min(index, data.shape[0] - 1)
         return data[idx], self._soot_ceiling_cache[cache_key]
 
+    def _dynamic_pressure_ceiling_for(self, case_index: int, key) -> float:
+        """Data-driven display ceiling for DYNAMIC PRESSURE -- see
+        derived_quantities.display_ceiling's docstring for why a fixed
+        registry default doesn't fit this quantity's ~15x scale swing
+        across ventilation modes. Computed once per (scenario, key) via
+        the QuantityProvider (this is a "derived" quantity -- see
+        _is_computed/_field) and cached, same convention as
+        _soot_display_range_for. Falls back to the registry's static
+        slider_default on any fetch failure."""
+        if not hasattr(self, "_dynamic_pressure_ceiling_cache"):
+            self._dynamic_pressure_ceiling_cache = {}
+        cache_key = (case_index, key)
+        if cache_key not in self._dynamic_pressure_ceiling_cache:
+            try:
+                data = self.quantity_provider.get(case_index, key)
+                self._dynamic_pressure_ceiling_cache[cache_key] = derived_quantities.display_ceiling(data)
+            except Exception as e:  # noqa: BLE001 - display range is a nice-to-have, must not crash the view
+                logger.warning("dynamic pressure ceiling: failed to fetch DYNAMIC PRESSURE for case %s: %s",
+                               case_index, e)
+                display = self._display_for(DYNAMIC_PRESSURE_QUANTITY)
+                self._dynamic_pressure_ceiling_cache[cache_key] = display['slider_default']
+        return self._dynamic_pressure_ceiling_cache[cache_key]
+
+    def _soot_display_range_for(self, case_index: int, key) -> tuple:
+        """(vmin, vmax) for displaying SOOT DENSITY as the *primary*
+        heatmap quantity (distinct from _soot_overlay_frame_for_cell's
+        ceiling-only, temperature-overlay use above) -- smoke_density.
+        soot_display_range's data-driven floor/ceiling over the whole run,
+        computed once per (scenario, key) and cached, same reasoning as
+        _soot_ceiling_cache above. Falls back to the registry's static
+        (vmin=0, slider_default) on any fetch failure, so a store error
+        degrades to the old flat scale rather than crashing the view."""
+        if not hasattr(self, "_soot_display_range_cache"):
+            self._soot_display_range_cache = {}
+        cache_key = (case_index, key)
+        if cache_key not in self._soot_display_range_cache:
+            try:
+                data = self.controller.store.get(case_index, key)
+                self._soot_display_range_cache[cache_key] = smoke_density.soot_display_range(data)
+            except Exception as e:  # noqa: BLE001 - display range is a nice-to-have, must not crash the view
+                logger.warning("soot display range: failed to fetch SOOT DENSITY for case %s: %s",
+                               case_index, e)
+                display = self._display_for(SOOT_QUANTITY)
+                self._soot_display_range_cache[cache_key] = (display['vmin'], display['slider_default'])
+        return self._soot_display_range_cache[cache_key]
+
     def _velocity_overlay_frame_for_cell(self, cell, index: int):
         """The VELOCITY frame to overlay on `cell` at timeline `index` --
         only ever called for a "slice" cell showing TEMPERATURE. VELOCITY
@@ -2225,13 +2327,20 @@ class MainWindow(QtWidgets.QMainWindow):
         display = self._display_for(cell.quantity_key.quantity)
         is_active = cell is self.view_grid.active_cell()
         cmap = self.current_colormap if is_active else display['cmap']
-        vmax = self.temp_slider.value() if is_active else display['slider_default']
+        vmin = display['vmin']
+        slider_default = display['slider_default']
+        if cell.quantity_key.quantity == SOOT_QUANTITY:
+            vmin, ceiling = self._soot_display_range_for(cell.case_index, cell.quantity_key)
+            slider_default = ceiling
+        elif cell.quantity_key.quantity == DYNAMIC_PRESSURE_QUANTITY:
+            slider_default = self._dynamic_pressure_ceiling_for(cell.case_index, cell.quantity_key)
+        vmax = self.temp_slider.value() if is_active else slider_default
         index = min(self.time_controller.index, data.shape[0] - 1)
         cell.view.init_plot(
             data[index],
             cmap=cmap,
             interpolation=self.current_interpolation,
-            vmin=display['vmin'],
+            vmin=vmin,
             vmax=vmax,
             colorbar_label=f"{display['label']} ({display['unit']})",
             extent=self._extent_for(cell.case_index, cell.quantity_key),
@@ -2381,14 +2490,18 @@ class MainWindow(QtWidgets.QMainWindow):
             return self._field(store, cell.case_index, cell.quantity_key)[index]
         if cell.cell_type == "difference":
             store_b = cell.store_override_b if cell.store_override_b is not None else self.controller.store
-            data_a = self.controller.store.get(cell.case_index_a, cell.quantity_key)
-            data_b = store_b.get(cell.case_index_b, cell.quantity_key)
+            # self._field(), not store.get() directly -- a computed/derived
+            # quantity (DYNAMIC PRESSURE, TEMPERATURE RISE) isn't in the
+            # store at all (see _redraw_cell_now/_apply_link_clim above).
+            data_a = self._field(self.controller.store, cell.case_index_a, cell.quantity_key)
+            data_b = self._field(store_b, cell.case_index_b, cell.quantity_key)
             idx = min(index, data_a.shape[0] - 1, data_b.shape[0] - 1)
             return DifferenceView.compute_diff(data_a, data_b, idx)
         if cell.cell_type == "ensemble":
             if not cell.ensemble_case_indices:
                 return None
-            arrays = [self.controller.store.get(ci, cell.quantity_key) for ci in cell.ensemble_case_indices]
+            arrays = [self._field(self.controller.store, ci, cell.quantity_key)
+                     for ci in cell.ensemble_case_indices]
             idx = min(index, min(a.shape[0] for a in arrays) - 1)
             return EnsembleView.compute_composite(arrays, idx, cell.ensemble_stat)
         return None
@@ -3065,8 +3178,16 @@ class MainWindow(QtWidgets.QMainWindow):
         for cell in cells:
             by_quantity.setdefault(cell.quantity_key.quantity, []).append(cell)
         for quantity, group in by_quantity.items():
-            vmax = max(float(np.max(self.controller.store.get(c.case_index, c.quantity_key))) for c in group)
-            vmin = QUANTITY_DISPLAY[quantity]['vmin']
+            # A computed/derived quantity (e.g. DYNAMIC PRESSURE, TEMPERATURE
+            # RISE) isn't backed by its own FDS slice file -- self._field()
+            # is the one routing point that knows to fetch it via
+            # self.quantity_provider instead of the raw store (same
+            # reasoning as _init_cell_view/_redraw_cell_now); calling
+            # store.get() directly here (as before) raised for any computed
+            # quantity the moment two cells shared it with linking on.
+            vmax = max(float(np.max(self._field(self._store_for_cell(c), c.case_index, c.quantity_key)))
+                      for c in group)
+            vmin = self._display_for(quantity)['vmin']
             for c in group:
                 c.view.set_clim(vmin, vmax)
 
@@ -3409,9 +3530,38 @@ class MainWindow(QtWidgets.QMainWindow):
         """Assumes cell.case_index/quantity_key are already cached."""
         store = self._store_for_cell(cell)
         display = self._display_for(cell.quantity_key.quantity)
-        data = store.get(cell.case_index, cell.quantity_key)
+        # self._field(), not store.get() directly: a computed/derived
+        # quantity (DYNAMIC PRESSURE, TEMPERATURE RISE) isn't backed by its
+        # own FDS slice file and isn't in the store at all -- same
+        # computed/native routing _init_cell_view and _apply_link_clim
+        # (above) already rely on. Calling store.get() unconditionally here
+        # raised the moment a non-active cell's own combo was switched to
+        # either derived quantity.
+        data = self._field(store, cell.case_index, cell.quantity_key)
+        vmin, vmax = display['vmin'], display['slider_default']
+        if cell.quantity_key.quantity == SOOT_QUANTITY:
+            # `data` is already fetched from this cell's own store (which
+            # may be a PredictionSource override, not self.controller.store
+            # -- see _soot_display_range_for's docstring) -- computed
+            # directly from it rather than re-fetching through that helper.
+            if not hasattr(self, "_soot_display_range_cache"):
+                self._soot_display_range_cache = {}
+            cache_key = (cell.case_index, cell.quantity_key)
+            if cache_key not in self._soot_display_range_cache:
+                self._soot_display_range_cache[cache_key] = smoke_density.soot_display_range(data)
+            vmin, vmax = self._soot_display_range_cache[cache_key]
+        elif cell.quantity_key.quantity == DYNAMIC_PRESSURE_QUANTITY:
+            # Same "use this cell's own already-fetched data" reasoning as
+            # the SOOT DENSITY branch above (a PredictionSource override
+            # may differ from self.quantity_provider).
+            if not hasattr(self, "_dynamic_pressure_ceiling_cache"):
+                self._dynamic_pressure_ceiling_cache = {}
+            cache_key = (cell.case_index, cell.quantity_key)
+            if cache_key not in self._dynamic_pressure_ceiling_cache:
+                self._dynamic_pressure_ceiling_cache[cache_key] = derived_quantities.display_ceiling(data)
+            vmax = self._dynamic_pressure_ceiling_cache[cache_key]
         cell.view.set_cmap(display['cmap'])
-        cell.view.set_clim(display['vmin'], display['slider_default'])
+        cell.view.set_clim(vmin, vmax)
         cell.view.set_colorbar_label(f"{display['label']} ({display['unit']})")
         self._sync_cell_extent(cell)  # M2.2: a SOOT-plane switch may change the extent
         self._apply_contour_overlay_state(cell)  # levels are quantity-specific; quantity may have just changed
@@ -3514,8 +3664,10 @@ class MainWindow(QtWidgets.QMainWindow):
         _load_cell's docstring, which applies equally here)."""
         key = cell.quantity_key
         store_b = cell.store_override_b if cell.store_override_b is not None else self.controller.store
-        data_a = self.controller.store.get(cell.case_index_a, key)
-        data_b = store_b.get(cell.case_index_b, key)
+        # self._field(), not store.get() directly -- a computed/derived
+        # quantity (DYNAMIC PRESSURE, TEMPERATURE RISE) isn't in the store.
+        data_a = self._field(self.controller.store, cell.case_index_a, key)
+        data_b = self._field(store_b, cell.case_index_b, key)
         vmin, vmax = cell.view.symmetric_clim(
             data_a, data_b, cache_key=(cell.case_index_a, cell.case_index_b, key))
         display = self._display_for(key.quantity)
@@ -3543,7 +3695,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if not cell.ensemble_case_indices:
             return
         key = cell.quantity_key
-        arrays = [self.controller.store.get(ci, key) for ci in cell.ensemble_case_indices]
+        # self._field(), not store.get() directly -- see _render_difference_cell above.
+        arrays = [self._field(self.controller.store, ci, key) for ci in cell.ensemble_case_indices]
         display = self._display_for(key.quantity)
         stat = cell.ensemble_stat
         cmap = EnsembleView.cmap_for(stat, display['cmap'])
@@ -3584,8 +3737,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if cell is None or cell.cell_type != "difference":
             return
         key = cell.quantity_key
-        data_a = self.controller.store.get(cell.case_index_a, key)
-        data_b = self.controller.store.get(cell.case_index_b, key)
+        # self._field(), not store.get() directly -- see _render_difference_cell above.
+        data_a = self._field(self.controller.store, cell.case_index_a, key)
+        data_b = self._field(self.controller.store, cell.case_index_b, key)
         display = self._display_for(key.quantity)
         dialog = DifferenceOverTimeDialog(
             data_a, data_b, self.time_controller.timesteps_per_second,
@@ -3611,7 +3765,15 @@ class MainWindow(QtWidgets.QMainWindow):
         # "Link color scales" is on). SliceView.set_clim does the full
         # redraw (not blit) + recapture itself: the colorbar's tick range
         # depends on clim and needs to actually repaint.
-        self.view_grid.active_view().set_clim(display['vmin'], value)
+        # SOOT DENSITY: "physical floor" is a data-driven percentile of the
+        # nonzero population, not 0 -- see _soot_display_range_for. Clamped
+        # so a slider value dragged below that floor can't invert clim.
+        vmin = display['vmin']
+        if self.current_quantity_key.quantity == SOOT_QUANTITY:
+            vmin, _ceiling = self._soot_display_range_for(
+                self.controller.current_case_index(), self.current_quantity_key)
+        vmax = max(value, vmin + 1e-6)
+        self.view_grid.active_view().set_clim(vmin, vmax)
         self._apply_link_clim()
 
     # -------------------------------------------------------------- export
@@ -4026,7 +4188,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if not path.lower().endswith(options["extension"]):
             path += options["extension"]
 
-        data = self.controller.store.get(cell.case_index, cell.quantity_key)
+        # self._field(), not store.get() directly -- a computed/derived
+        # quantity (DYNAMIC PRESSURE, TEMPERATURE RISE) isn't in the store.
+        data = self._field(self.controller.store, cell.case_index, cell.quantity_key)
         index = min(self.time_controller.index, data.shape[0] - 1)
         frame = np.asarray(data[index])
         display = self._display_for(cell.quantity_key.quantity)
