@@ -633,6 +633,66 @@ class TestHeightAnalysis:
         assert jet[1] == pytest.approx(20.0)  # the 500 is at the floor, ignored
 
 
+import smoke_density as smd  # noqa: E402
+
+
+class TestSmokeDensity:
+    """Continuous soot-density smoke intensity mapping (Analysis "smoke"
+    pass) -- linear, data-driven ceiling, not a threshold."""
+
+    def test_ceiling_uses_percentile_not_bare_max(self):
+        data = np.concatenate([np.full(9999, 2000.0), np.array([50000.0])])  # one spike
+        ceiling = smd.soot_ceiling(data, percentile=99.5)
+        assert ceiling < 50000.0   # the spike alone doesn't set the scale
+        assert ceiling >= 2000.0
+
+    def test_ceiling_floors_at_min_for_a_near_empty_scenario(self):
+        data = np.zeros((10, 5, 5))
+        assert smd.soot_ceiling(data) == smd.MIN_CEILING_MG_M3
+
+    def test_ceiling_handles_nan_and_empty(self):
+        assert smd.soot_ceiling(np.full((3, 3), np.nan)) == smd.MIN_CEILING_MG_M3
+        assert smd.soot_ceiling(np.array([])) == smd.MIN_CEILING_MG_M3
+
+    def test_alpha_is_zero_at_exactly_zero_soot(self):
+        frame = np.zeros((4, 4))
+        alpha = smd.soot_alpha(frame, ceiling=5000.0)
+        assert (alpha == 0.0).all()
+
+    def test_alpha_is_continuous_and_monotonic_up_to_the_ceiling(self):
+        """The core "not thresholded" requirement: strictly increasing
+        opacity for strictly increasing concentration up to the ceiling,
+        not a step -- values beyond the ceiling correctly clip (see the
+        separate max_alpha test), so they're excluded here."""
+        values = np.array([0.0, 500.0, 1000.0, 2500.0, 5000.0])
+        alphas = smd.soot_alpha(values, ceiling=5000.0)
+        assert np.all(np.diff(alphas) > 0)   # strictly increasing, no plateau/step
+        assert len(set(np.round(alphas, 6))) == len(values)  # every distinct input -> distinct output
+
+    def test_alpha_never_exceeds_max_alpha(self):
+        frame = np.array([1e9, 5000.0, 0.0])   # a huge outlier well past the ceiling
+        alpha = smd.soot_alpha(frame, ceiling=5000.0, max_alpha=0.85)
+        assert alpha.max() == pytest.approx(0.85)
+        assert (alpha <= 0.85 + 1e-9).all()
+
+    def test_alpha_handles_nan_safely(self):
+        frame = np.array([np.nan, 1000.0, np.inf, -np.inf])
+        alpha = smd.soot_alpha(frame, ceiling=5000.0)
+        assert np.isfinite(alpha).all()
+        assert alpha[0] == 0.0   # NaN treated as no soot, not fabricated
+
+    def test_alpha_is_linear_not_logarithmic(self):
+        """Confirms the documented choice: equal concentration steps
+        produce equal opacity steps (linear), not compressed steps
+        (log/asinh) -- this is the actual, data-driven design decision,
+        not just a docstring claim."""
+        ceiling = 5000.0
+        a1 = smd.soot_alpha(np.array([1000.0]), ceiling)[0]
+        a2 = smd.soot_alpha(np.array([2000.0]), ceiling)[0]
+        a3 = smd.soot_alpha(np.array([3000.0]), ceiling)[0]
+        assert (a2 - a1) == pytest.approx(a3 - a2, abs=1e-9)
+
+
 @requires_real_dataset
 class TestHeightRealData:
     def test_gas_layer_stratifies_hot_over_cool(self):

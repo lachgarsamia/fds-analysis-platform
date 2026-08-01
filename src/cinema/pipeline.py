@@ -92,7 +92,8 @@ class EffectsPipeline:
         self._ambient_backdrop: np.ndarray = None
 
     def render(self, frame: np.ndarray, hrr_intensity: float = 1.0,
-               velocity_frame: np.ndarray = None) -> np.ndarray:
+               velocity_frame: np.ndarray = None,
+               soot_frame: np.ndarray = None, soot_ceiling: float = None) -> np.ndarray:
         """hrr_intensity: a scenario's current HRR(t) normalized to its own
         peak (1.0 = at-or-near peak), or 1.0 (neutral) if no HRR data is
         available -- scales both the flicker amplitude and the bloom
@@ -101,8 +102,16 @@ class EffectsPipeline:
 
         velocity_frame: this cell's VELOCITY data at the same timestep, or
         None -- drives the smoke layer's Tier 2 advection (see
-        cinema/smoke.py); Tier 1 (fixed upward drift) is used when it's
-        absent."""
+        cinema/smoke.py) when real soot data isn't available; Tier 1
+        (fixed upward drift) is used when it's absent too.
+
+        soot_frame/soot_ceiling (continuous soot-density visualization
+        pass -- cinema/smoke.py's Tier 3): this cell's real SOOT DENSITY
+        data and its normalization ceiling. When given, the smoke layer is
+        a smoothed rendering of this *real* field instead of a
+        temperature-derived proxy -- velocity_frame's Tier-2 advection is
+        then skipped (FDS's own physics already computed where the smoke
+        moved; re-advecting it would distort the real spatial pattern)."""
         t0 = time.perf_counter()
         vmax = self.exposure.update(frame)
         span = max(vmax - self.vmin, 1e-6)
@@ -121,7 +130,7 @@ class EffectsPipeline:
             self._smoke = SmokeSimulator(frame.shape, ambient_c=self.vmin)
         if self._ambient_backdrop is None or self._ambient_backdrop.shape[:2] != frame.shape:
             self._ambient_backdrop = _ambient_backdrop(frame.shape)
-        density = self._smoke.step(frame, velocity_frame)
+        density = self._smoke.step(frame, velocity_frame, soot_frame=soot_frame, soot_ceiling=soot_ceiling)
         composited = composite_over(smoke_rgba(density), self._ambient_backdrop)
         composited = composite_over(fire_rgba, composited)
         composited = self._shimmer.warp(composited, frame, self.vmin)

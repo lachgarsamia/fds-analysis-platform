@@ -97,6 +97,7 @@ from velocity_panel import VelocityPanel
 from figure_export import save_figure
 from report_builder import build_publication_manifest
 import study_analytics as study_analytics_mod
+import smoke_density
 import session_store
 from evidence_notebook_panel import EvidenceNotebookDock
 from evidence_notebook import EvidenceNotebook
@@ -479,6 +480,18 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.velocity_overlay_action.triggered.connect(self._set_velocity_overlay_enabled)
         view_menu.addAction(self.velocity_overlay_action)
+
+        self.soot_overlay_action = QtWidgets.QAction("Show smoke (soot density) overlay", self, checkable=True)
+        self.soot_overlay_action.setToolTip(
+            "Draw the real SOOT DENSITY field as a semi-transparent overlay on top of "
+            "any cell currently showing Temperature at the y=0 plane (the only plane "
+            "SOOT DENSITY is currently registered for) -- continuous opacity, not a "
+            "threshold: exactly-zero soot is fully transparent, higher concentration "
+            "reads as denser smoke. Off by default; a plain temperature view stays "
+            "available."
+        )
+        self.soot_overlay_action.triggered.connect(self._set_soot_overlay_enabled)
+        view_menu.addAction(self.soot_overlay_action)
         view_menu.addSeparator()
 
         self.cinematic_action = QtWidgets.QAction("Cinematic fire view", self, checkable=True)
@@ -2096,12 +2109,14 @@ class MainWindow(QtWidgets.QMainWindow):
     def _apply_contour_overlay_state(self, cell):
         """Sync one cell's contour overlays to their global View-menu
         toggles and quantity-specific levels (config.ISOTHERM_LEVELS) --
-        called for every cell whenever either toggle changes, and once for
-        each cell right after its view is first initialized. Two
+        called for every cell whenever any toggle changes, and once for
+        each cell right after its view is first initialized. Three
         independent overlays: the cell's own quantity's isotherms/speed-
-        bands (drawn on itself), and -- only for a "slice" cell currently
-        showing TEMPERATURE -- the opt-in VELOCITY overlay (GUI
-        modernization pass, item 6)."""
+        bands (drawn on itself), the opt-in VELOCITY overlay (GUI
+        modernization pass, item 6), and the opt-in real SOOT DENSITY
+        smoke overlay (continuous soot-density visualization pass) --
+        both of the latter only for a "slice" cell currently showing
+        TEMPERATURE."""
         quantity = cell.quantity_key.quantity if cell.quantity_key else None
         levels = ISOTHERM_LEVELS.get(quantity, [])
         cell.view.set_isotherm_levels(levels)
@@ -2115,6 +2130,62 @@ class MainWindow(QtWidgets.QMainWindow):
             velocity_frame = self._velocity_overlay_frame_for_cell(cell, self.time_controller.index)
             if velocity_frame is not None:
                 cell.view.show_frame(cell.view.heatmap.get_array(), velocity_frame=velocity_frame)
+
+        soot_overlay_on = getattr(self, "_soot_overlay_enabled", False)
+        soot_applies_here = soot_overlay_on and self._soot_supported_for_cell(cell)
+        cell.view.set_soot_overlay_enabled(soot_applies_here)
+        if soot_applies_here and cell.view.heatmap is not None:
+            soot_frame, soot_ceiling = self._soot_overlay_frame_for_cell(cell, self.time_controller.index)
+            if soot_frame is not None:
+                cell.view.show_frame(cell.view.heatmap.get_array(),
+                                     soot_frame=soot_frame, soot_ceiling=soot_ceiling)
+
+    def _soot_supported_for_cell(self, cell) -> bool:
+        """Whether real SOOT DENSITY can meaningfully be fetched for
+        `cell` at all -- a "slice" cell currently showing TEMPERATURE at
+        the y=0 plane (offset 0), the one plane SOOT DENSITY is confirmed
+        (empirically, against the real dataset) to share TEMPERATURE's
+        exact grid/frame-count for every scenario. Shared by both the
+        opt-in scientific overlay toggle and cinematic mode's smoke layer
+        (see _apply_cinematic_state / _on_time_changed) so the two paths
+        agree on exactly when real soot data is usable."""
+        quantity = cell.quantity_key.quantity if cell.quantity_key else None
+        return (cell.cell_type == "slice" and quantity == "TEMPERATURE"
+               and cell.quantity_key.direction == AXIS_TO_DIRECTION['y']
+               and cell.quantity_key.offset == 0)
+
+    def _soot_overlay_frame_for_cell(self, cell, index: int):
+        """(frame, ceiling) to overlay on `cell` at timeline `index`, or
+        (None, None) -- only ever called for a "slice" cell showing
+        TEMPERATURE at the y=0 plane (offset 0), the one plane SOOT
+        DENSITY is confirmed (empirically, against the real dataset, not
+        assumed) to share TEMPERATURE's exact grid and frame count for
+        every scenario. Other planes (e.g. the x=0.25 doorway plane) are
+        not currently supported here -- SOOT DENSITY's `plane_pos` is a
+        physical position that must land exactly on a registered mesh
+        boundary, and only y=0/x=0.25 are pre-verified anywhere in this
+        app (see main_window.py's own raw "Smoke" quantity options); a
+        different plane would need that same verification first rather
+        than being assumed to align.
+
+        The normalization ceiling (smoke_density.soot_ceiling) is
+        computed once per (scenario, plane) and cached -- it's a
+        percentile over the *whole* run's array, too expensive to redo
+        every tick, and doesn't change once computed."""
+        store = self._store_for_cell(cell)
+        soot_key = SliceKey(SOOT_QUANTITY, cell.quantity_key.direction, cell.quantity_key.offset, 0.0)
+        try:
+            data = store.get(cell.case_index, soot_key)
+        except Exception as e:  # noqa: BLE001 - overlay is a nice-to-have, must not blank the cell
+            logger.warning("soot overlay: failed to fetch SOOT DENSITY for case %s: %s", cell.case_index, e)
+            return None, None
+        if not hasattr(self, "_soot_ceiling_cache"):
+            self._soot_ceiling_cache = {}
+        cache_key = (cell.case_index, soot_key)
+        if cache_key not in self._soot_ceiling_cache:
+            self._soot_ceiling_cache[cache_key] = smoke_density.soot_ceiling(data)
+        idx = min(index, data.shape[0] - 1)
+        return data[idx], self._soot_ceiling_cache[cache_key]
 
     def _velocity_overlay_frame_for_cell(self, cell, index: int):
         """The VELOCITY frame to overlay on `cell` at timeline `index` --
@@ -2436,6 +2507,19 @@ class MainWindow(QtWidgets.QMainWindow):
                     quiver, streamlines, colors = self._vector_field_for(cell.case_index, index)
                     cell.view.set_streamline_colors(colors)
                     cell.view.set_vector_field(quiver=quiver, streamlines=streamlines)
+                # Cinematic mode's smoke layer (Tier 3, continuous soot-
+                # density visualization pass) wants real SOOT DENSITY every
+                # tick too, regardless of the separate overlay checkbox --
+                # same "cinematic always gets it" reasoning as VELOCITY
+                # above, and the same plane-support gate the scientific
+                # overlay uses (_soot_supported_for_cell) so both paths
+                # agree on when real soot data is usable.
+                if ((getattr(cell.view, "soot_overlay_enabled", False) or cinematic)
+                        and self._soot_supported_for_cell(cell)):
+                    soot_frame, soot_ceiling = self._soot_overlay_frame_for_cell(cell, index)
+                    if soot_frame is not None:
+                        extra["soot_frame"] = soot_frame
+                        extra["soot_ceiling"] = soot_ceiling
                 if cell.view.velocity_overlay_enabled or cinematic:
                     velocity_frame = self._velocity_overlay_frame_for_cell(cell, index)
                     cell.view.show_frame(frame, velocity_frame=velocity_frame, **extra)
@@ -2908,6 +2992,19 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self.time_controller.is_playing():
             self._on_time_changed(self.time_controller.index)
 
+    def _set_soot_overlay_enabled(self, checked: bool):
+        """View -> Show smoke (soot density) overlay toggle (continuous
+        soot-density visualization pass). Same "every visible cell" reach
+        and the same "only applies to a slice cell currently showing
+        TEMPERATURE at a plane SOOT DENSITY is registered for" gating as
+        the velocity overlay (see _apply_contour_overlay_state) -- any
+        other cell/quantity/plane is a no-op, not an error."""
+        self._soot_overlay_enabled = checked
+        for cell in self.view_grid.visible_cells():
+            self._apply_contour_overlay_state(cell)
+        if not self.time_controller.is_playing():
+            self._on_time_changed(self.time_controller.index)
+
     def _set_cinematic_enabled(self, checked: bool):
         """View -> Cinematic fire view toggle (FireLab roadmap Phase 2.1).
         Grid-wide like the isotherm/velocity-overlay toggles, but only
@@ -3320,10 +3417,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_contour_overlay_state(cell)  # levels are quantity-specific; quantity may have just changed
         self._apply_cinematic_state(cell)  # cinematic mode is TEMPERATURE-only; quantity may have just changed
         index = min(self.time_controller.index, data.shape[0] - 1)
+        extra = {}
+        if getattr(cell.view, "soot_overlay_enabled", False):
+            soot_frame, soot_ceiling = self._soot_overlay_frame_for_cell(cell, index)
+            if soot_frame is not None:
+                extra["soot_frame"] = soot_frame
+                extra["soot_ceiling"] = soot_ceiling
         if cell.view.velocity_overlay_enabled:
-            cell.view.show_frame(data[index], velocity_frame=self._velocity_overlay_frame_for_cell(cell, index))
+            cell.view.show_frame(data[index], velocity_frame=self._velocity_overlay_frame_for_cell(cell, index),
+                                 **extra)
         else:
-            cell.view.show_frame(data[index])
+            cell.view.show_frame(data[index], **extra)
 
     def _on_grid_prefetch_finished(self, case_idx: int):
         """A background prefetch completed -- check every grid cell

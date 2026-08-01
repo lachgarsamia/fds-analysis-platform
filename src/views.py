@@ -23,6 +23,7 @@ from cinema.pipeline import EffectsPipeline
 from cinema.interp import lerp_frames
 from cinema.particles import EmberParticles
 from cinema.velocity_arrows import sample_points, compute_deltas
+import smoke_density as smd
 
 # Sub-frame interpolation (FireLab roadmap Phase 2.1d): visual refresh
 # rate while cinematic mode is on, decoupled from the data's native
@@ -127,6 +128,20 @@ class SliceView:
         self._velocity_overlay_enabled = False
         self._velocity_contour_artist = None
         self._velocity_frame = None
+        # Real soot-density smoke overlay (continuous soot-density
+        # visualization pass): a second, always-present-but-empty imshow
+        # over the temperature heatmap, same "always present, empty by
+        # default" convention as device_scatters/ember_scatter below --
+        # updated via set_data()/set_alpha() (not remove+recreate like the
+        # isotherm/velocity contour artists), so it blit-updates cheaply.
+        # Continuous opacity, driven by the real SOOT DENSITY field
+        # (smoke_density.py) -- never a threshold. Meaningful only for a
+        # "slice" cell showing TEMPERATURE at a plane SOOT DENSITY is
+        # actually registered for (see main_window.py's
+        # _soot_overlay_frame_for_cell); off by default.
+        self.soot_overlay = None
+        self.soot_colorbar = None
+        self._soot_overlay_enabled = False
         # Cinematic fire rendering (FireLab roadmap Phase 2, task 1):
         # off by default, so every existing "science mode" call site
         # (research views, tests) is pixel-unaffected.
@@ -143,6 +158,8 @@ class SliceView:
         self._interp_phase = 1.0
         self._interp_bloom_intensity = 1.0
         self._interp_velocity_frame = None
+        self._interp_soot_frame = None
+        self._interp_soot_ceiling = None
         # Ember particles (FireLab roadmap Phase 2.1g): a second,
         # independently blit-tracked artist -- see widgets.py's
         # multi-artist blit_update() extension.
@@ -209,6 +226,19 @@ class SliceView:
         if extent is not None:
             imshow_kwargs["extent"] = extent
         self.heatmap = self.ax.imshow(first_frame, **imshow_kwargs)
+        # Real soot-density smoke overlay (continuous soot-density
+        # visualization pass): a second image over the heatmap, initially
+        # fully transparent (alpha=0 everywhere) -- same shape/extent as
+        # the primary heatmap so it's pixel-aligned by construction. Uses
+        # SOOT DENSITY's own registry colormap (gray_r), not a new color
+        # convention. zorder above the heatmap, below devices/room/hover
+        # so those stay legible through the smoke.
+        soot_q = get_quantity("SOOT DENSITY")
+        self.soot_overlay = self.ax.imshow(
+            np.zeros_like(first_frame, dtype=np.float32), cmap=soot_q.cmap,
+            vmin=0.0, vmax=smd.MIN_CEILING_MG_M3,
+            alpha=np.zeros_like(first_frame, dtype=np.float32),
+            aspect="auto", zorder=2, **({"extent": extent} if extent is not None else {}))
         # Ember particles (Phase 2.1g): always present, empty/invisible
         # outside cinematic mode -- zorder puts it above the heatmap.
         # Deliberately no c=... at construction: passing a color arg (even
@@ -258,7 +288,8 @@ class SliceView:
         self.canvas.capture_background()
 
     def show_frame(self, frame: np.ndarray, velocity_frame: np.ndarray = None,
-                    next_frame: np.ndarray = None, bloom_intensity: float = 1.0) -> None:
+                    next_frame: np.ndarray = None, bloom_intensity: float = 1.0,
+                    soot_frame: np.ndarray = None, soot_ceiling: float = None) -> None:
         """velocity_frame (GUI modernization pass, item 6): this cell's
         VELOCITY data at the same timestep -- meaningful when the velocity
         overlay is on (drives the contour overlay) and/or cinematic mode
@@ -275,11 +306,26 @@ class SliceView:
         interpolation is simply skipped that tick. bloom_intensity scales
         the pipeline's bloom/flicker strength (typically the scenario's
         current HRR normalized to its own peak); ignored outside cinematic
-        mode."""
+        mode.
+
+        soot_frame/soot_ceiling (continuous soot-density visualization
+        pass): this cell's real SOOT DENSITY data at the same timestep,
+        and the normalization ceiling MainWindow computed once for this
+        (scenario, plane). Drives two *different* things depending on
+        mode, deliberately kept distinct (never both at once, to avoid
+        double-rendering smoke): outside cinematic mode, the separate
+        scientific soot_overlay artist (see set_soot_overlay_enabled) --
+        the actual SOOT DENSITY field, continuously mapped to opacity.
+        Inside cinematic mode, the fire pipeline's own smoke layer (see
+        cinema/smoke.py) -- a visually-enhanced (smoothed) rendering of
+        that same real field, not a separate/fabricated effect. Both None
+        outside either case, the default for every pre-existing caller."""
         self._last_frame = frame
         if self._cinematic_enabled:
             self._interp_bloom_intensity = bloom_intensity
             self._interp_velocity_frame = velocity_frame
+            self._interp_soot_frame = soot_frame
+            self._interp_soot_ceiling = soot_ceiling
             if next_frame is not None:
                 self._interp_from = frame
                 self._interp_to = next_frame
@@ -291,11 +337,19 @@ class SliceView:
                 self._interp_from = None
                 self._interp_to = None
             display_data = self._cinema_pipeline.render(
-                frame, hrr_intensity=bloom_intensity, velocity_frame=velocity_frame)
+                frame, hrr_intensity=bloom_intensity, velocity_frame=velocity_frame,
+                soot_frame=soot_frame, soot_ceiling=soot_ceiling)
             self._update_ember_scatter(frame, velocity_frame)
             self._update_velocity_arrows(frame, velocity_frame)
+            # The cinema pipeline's own smoke layer (above) is the smoke
+            # representation while cinematic mode is on -- the separate
+            # scientific overlay artist stays cleared so the two never
+            # composite on top of each other.
+            self._clear_soot_overlay()
         else:
             display_data = frame
+            if soot_frame is not None and soot_ceiling is not None:
+                self._update_soot_overlay(soot_frame, soot_ceiling)
         self.heatmap.set_data(display_data)
         self._velocity_frame = velocity_frame
         overlay_active = (
@@ -317,7 +371,8 @@ class SliceView:
             self.canvas.blit_update(self._animated_artists())
 
     def _animated_artists(self) -> list:
-        artists = [self.heatmap, self.ember_scatter, *self.device_scatters.values(),
+        artists = [self.heatmap, self.soot_overlay, self.ember_scatter,
+                  *self.device_scatters.values(),
                   self.streamline_collection, self.hover_highlight,
                   self.room_walls, self.room_door, self.room_vents]
         if self.velocity_quiver is not None:
@@ -597,7 +652,8 @@ class SliceView:
         self._interp_phase = min(1.0, self._interp_phase + _INTERP_INTERVAL_MS / _NOMINAL_TICK_MS)
         blended = lerp_frames(self._interp_from, self._interp_to, self._interp_phase)
         rgba = self._cinema_pipeline.render(
-            blended, hrr_intensity=self._interp_bloom_intensity, velocity_frame=self._interp_velocity_frame)
+            blended, hrr_intensity=self._interp_bloom_intensity, velocity_frame=self._interp_velocity_frame,
+            soot_frame=self._interp_soot_frame, soot_ceiling=self._interp_soot_ceiling)
         self._update_ember_scatter(blended, self._interp_velocity_frame)
         self._update_velocity_arrows(blended, self._interp_velocity_frame)
         self.heatmap.set_data(rgba)
@@ -693,6 +749,55 @@ class SliceView:
             self._velocity_contour_artist = self.ax.contour(xs, zs, frame, levels=levels, **style)
         else:
             self._velocity_contour_artist = self.ax.contour(frame, levels=levels, **style)
+
+    # ------------------------ real soot-density smoke overlay ("smoke" pass)
+    def set_soot_overlay_enabled(self, enabled: bool) -> None:
+        if enabled == self._soot_overlay_enabled:
+            return
+        self._soot_overlay_enabled = enabled
+        if enabled:
+            if self.soot_colorbar is None and self.soot_overlay is not None:
+                # Lazily created only while the overlay is actually on, so
+                # a plain temperature view's layout is byte-for-byte
+                # unchanged when the overlay is off (never reserves this
+                # space by default).
+                self.soot_colorbar = self.canvas.fig.colorbar(
+                    self.soot_overlay, fraction=0.04, pad=0.10)
+                self.soot_colorbar.set_label(
+                    f"{get_quantity('SOOT DENSITY').label} ({get_quantity('SOOT DENSITY').unit})")
+        else:
+            self._clear_soot_overlay()
+            if self.soot_colorbar is not None:
+                self.soot_colorbar.remove()
+                self.soot_colorbar = None
+        self.canvas.capture_background()
+        # else (enabling): left to the next show_frame(..., soot_frame=...)
+        # call to actually draw it -- same "no current frame to redraw
+        # from yet" reasoning as the velocity overlay above.
+
+    @property
+    def soot_overlay_enabled(self) -> bool:
+        return self._soot_overlay_enabled
+
+    def _clear_soot_overlay(self) -> None:
+        if self.soot_overlay is None:
+            return
+        self.soot_overlay.set_alpha(np.zeros(self.soot_overlay.get_array().shape, dtype=np.float32))
+
+    def _update_soot_overlay(self, soot_frame: np.ndarray, soot_ceiling: float) -> None:
+        """One real SOOT DENSITY frame + its (externally computed, stable-
+        across-playback) normalization ceiling -- a continuous scalar->
+        opacity mapping (smoke_density.py), never a threshold. Ceiling is
+        supplied rather than computed here (same "MainWindow computes the
+        scale, the view just displays it" convention already used for the
+        primary heatmap's own vmin/vmax) so it's computed once per
+        (scenario, plane) by the caller, not re-derived from the whole
+        array on every tick."""
+        if self.soot_overlay is None or not self._soot_overlay_enabled or soot_frame is None:
+            return
+        self.soot_overlay.set_clim(0.0, soot_ceiling)
+        self.soot_overlay.set_data(soot_frame)
+        self.soot_overlay.set_alpha(smd.soot_alpha(soot_frame, soot_ceiling))
 
     # ------------------------------------------------------ probe (M2.6.1)
     def enable_probe(self, callback) -> None:
@@ -863,6 +968,19 @@ class DifferenceView:
     def velocity_overlay_enabled(self) -> bool:
         return self._inner.velocity_overlay_enabled
 
+    # Real soot-density smoke overlay: same "never actually applies to
+    # this cell type, but delegate straight through rather than crash on
+    # a missing attribute" reasoning as the velocity overlay above -- see
+    # main_window.py's _apply_smoke_overlay_state, which (like the
+    # velocity overlay) only ever turns this on for a "slice" cell showing
+    # TEMPERATURE.
+    def set_soot_overlay_enabled(self, enabled: bool) -> None:
+        self._inner.set_soot_overlay_enabled(enabled)
+
+    @property
+    def soot_overlay_enabled(self) -> bool:
+        return self._inner.soot_overlay_enabled
+
     def enable_probe(self, callback) -> None:
         self._inner.enable_probe(callback)
 
@@ -1001,6 +1119,19 @@ class EnsembleView:
     @property
     def velocity_overlay_enabled(self) -> bool:
         return self._inner.velocity_overlay_enabled
+
+    # Real soot-density smoke overlay: same "never actually applies to
+    # this cell type, but delegate straight through rather than crash on
+    # a missing attribute" reasoning as the velocity overlay above -- see
+    # main_window.py's _apply_smoke_overlay_state, which (like the
+    # velocity overlay) only ever turns this on for a "slice" cell showing
+    # TEMPERATURE.
+    def set_soot_overlay_enabled(self, enabled: bool) -> None:
+        self._inner.set_soot_overlay_enabled(enabled)
+
+    @property
+    def soot_overlay_enabled(self) -> bool:
+        return self._inner.soot_overlay_enabled
 
     def enable_probe(self, callback) -> None:
         self._inner.enable_probe(callback)

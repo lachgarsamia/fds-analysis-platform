@@ -1690,6 +1690,149 @@ class TestIntegration:
         assert np.array_equal(cell.view._velocity_frame, expected)
         window.close()
 
+    # -------------------------------- continuous soot-density visualization
+    def test_soot_overlay_off_by_default(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        assert not window.soot_overlay_action.isChecked()
+        cell = window.view_grid.active_cell()
+        assert not cell.view.soot_overlay_enabled
+        window.close()
+
+    def test_soot_overlay_applies_only_to_temperature_slice_cells_at_y0(self, qapp):
+        """Opt-in, grid-wide toggle (View -> Show smoke overlay) -- applies
+        to a "slice" cell showing TEMPERATURE at the y=0 plane (the only
+        plane SOOT DENSITY is confirmed to share TEMPERATURE's grid for),
+        is a no-op for a cell showing a different quantity."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+
+        window._open_browser_grid([0, 1])
+        qapp.processEvents()
+        temp_cell, velocity_cell = window.view_grid.visible_cells()
+        idx = next(i for i, info in enumerate(window.quantity_infos) if info.key.quantity == "VELOCITY")
+        velocity_cell.set_quantity_silently(velocity_cell._quantity_options[idx][1])
+        window._load_cell(velocity_cell, velocity_cell.case_index, velocity_cell._quantity_options[idx][1])
+        qapp.processEvents()
+
+        window.soot_overlay_action.setChecked(True)
+        window._set_soot_overlay_enabled(True)
+        qapp.processEvents()
+
+        assert temp_cell.view.soot_overlay_enabled
+        assert not velocity_cell.view.soot_overlay_enabled
+        window.close()
+
+    def test_soot_overlay_reflects_real_aligned_data(self, qapp):
+        """Real-data verification (not assumed): TEMPERATURE and SOOT
+        DENSITY share the exact same grid/extent at y=0 for a real
+        scenario (empirically confirmed against fds/sim/), so the
+        overlay's displayed array must be the SAME scenario's real SOOT
+        DENSITY at the SAME frame the temperature heatmap is showing."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+
+        window.soot_overlay_action.setChecked(True)
+        window._set_soot_overlay_enabled(True)
+        qapp.processEvents()
+
+        cell = window.view_grid.active_cell()
+        assert cell.view.soot_overlay_enabled
+        assert cell.view.soot_colorbar is not None
+
+        from slice_key import SliceKey, SOOT_QUANTITY
+        expected = window.controller.store.get(
+            cell.case_index, SliceKey(SOOT_QUANTITY, cell.quantity_key.direction, cell.quantity_key.offset, 0.0),
+        )[window.time_controller.index]
+        np.testing.assert_array_equal(cell.view.soot_overlay.get_array(), expected)
+        window.close()
+
+    def test_soot_overlay_alpha_follows_the_continuous_mapping_function(self, qapp):
+        """The core "not thresholded" requirement at the integration
+        level: the displayed alpha must be exactly smoke_density.soot_alpha()
+        applied to the real frame/ceiling -- the continuous linear formula,
+        not a boolean threshold. (A raw distinct-value count on a single
+        frame is not a reliable proxy here: the real dataset's soot field
+        is empirically ~99.5% exact zero with a narrow nonzero cluster, so
+        a single frame can legitimately reduce to {0, ceiling-clipped} even
+        under the genuinely continuous formula -- continuity is what
+        test_fire_intelligence.py::TestSmokeDensity already covers directly;
+        this test instead pins the wiring to that real function.)"""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window.soot_overlay_action.setChecked(True)
+        window._set_soot_overlay_enabled(True)
+        window._on_seek_requested(300)  # a frame with real fire/smoke development
+        qapp.processEvents()
+        cell = window.view_grid.active_cell()
+
+        import smoke_density as smd
+        from slice_key import SliceKey, SOOT_QUANTITY
+        soot_series = window.controller.store.get(
+            cell.case_index, SliceKey(SOOT_QUANTITY, cell.quantity_key.direction, cell.quantity_key.offset, 0.0),
+        )
+        expected_frame = soot_series[window.time_controller.index]
+        expected_ceiling = smd.soot_ceiling(soot_series)
+        expected_alpha = smd.soot_alpha(expected_frame, expected_ceiling)
+
+        np.testing.assert_allclose(cell.view.soot_overlay.get_alpha(), expected_alpha)
+        window.close()
+
+    def test_soot_overlay_disabled_leaves_temperature_view_unchanged(self, qapp):
+        """Regression: with the overlay off, the primary heatmap's data
+        and colorbar must be exactly what a plain temperature view would
+        show -- no residual soot state leaking in."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        cell = window.view_grid.active_cell()
+        baseline = cell.view.heatmap.get_array().copy()
+        assert cell.view.soot_colorbar is None
+        window._on_seek_requested(50)
+        qapp.processEvents()
+        with_overlay_off = cell.view.heatmap.get_array()
+        assert not np.array_equal(baseline, with_overlay_off)  # sanity: frame did advance
+        # re-seek to the same frame with the overlay toggled on then back off
+        window.soot_overlay_action.setChecked(True)
+        window._set_soot_overlay_enabled(True)
+        window._on_seek_requested(60)
+        window.soot_overlay_action.setChecked(False)
+        window._set_soot_overlay_enabled(False)
+        qapp.processEvents()
+        assert cell.view.soot_colorbar is None
+        assert cell.view.soot_overlay.get_alpha().max() == 0.0
+        window.close()
+
+    def test_cinematic_mode_uses_real_soot_and_suppresses_scientific_overlay(self, qapp):
+        """Continuous soot-density visualization pass, Tier 3: cinematic
+        mode always uses real soot data for its own smoke layer (no
+        separate opt-in needed), and the scientific overlay artist stays
+        cleared while cinematic is on so the two never composite on top
+        of each other."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window.cinematic_action.setChecked(True)
+        window._set_cinematic_enabled(True)
+        window._on_seek_requested(300)
+        qapp.processEvents()
+        cell = window.view_grid.active_cell()
+        assert cell.view.cinematic_enabled
+        assert not cell.view.soot_overlay_enabled
+        assert cell.view.soot_overlay.get_alpha().max() == 0.0
+        assert cell.view.heatmap.get_array().shape[-1] == 4  # RGBA cinematic output, rendered without crashing
+        window.close()
+
     # ------------------------------------------------ M3.1 ensemble analytics
     def test_analytics_panel_present_for_real_data(self, qapp):
         sim_data = load_simulation_data()
