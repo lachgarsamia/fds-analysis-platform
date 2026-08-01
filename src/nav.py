@@ -11,9 +11,9 @@ from PyQt5 import QtCore, QtWidgets
 
 from branding import build_logo_widget
 
-EXPANDED_WIDTH = 200
+EXPANDED_WIDTH = 340
 COLLAPSED_WIDTH = 48
-LOGO_HEIGHT = 96
+LOGO_HEIGHT = 150
 
 
 class NavRail(QtWidgets.QWidget):

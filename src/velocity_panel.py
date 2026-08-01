@@ -1,18 +1,24 @@
 """Velocity panel (V6-M3 True Velocity), an Analysis-page tab.
 
 Same locator-canvas + list/rename/delete/jump-to/export pattern as
-device_panel.py (V6-M2) and measurement_panel.py: click the map to place a
-vector probe (a seed point), see its local speed/direction reading, rename/
-delete/jump-to/export it. A whole-plane quiver and/or streamlines overlay
-the locator heatmap for the current scenario.
+device_panel.py (V6-M2): click the map to place a vector probe (a seed
+point), see its local speed/direction reading, rename/delete/jump-to/
+export it. A whole-plane quiver and/or streamlines overlay the locator
+heatmap for the current scenario.
 
-Gated on U-VELOCITY/W-VELOCITY (docs/msim-preparation.md section 3): the
-panel tries to compute a VectorField for a scenario once (lazily, cached in
-self._fields), and if that raises GatedQuantityError, shows the gate reason
-plainly in the caption/status instead of a broken plot -- a probe can still
-be placed (it will "light up" automatically once the M-SIM re-run adds the
-components, no re-placement needed), but its results are marked gated,
-never fabricated.
+Gated on U-VELOCITY/V-VELOCITY/W-VELOCITY (docs/msim-preparation.md
+section 3): the panel tries to compute a VectorField for a scenario once
+(lazily, cached in self._fields), and if that raises GatedQuantityError,
+shows the gate reason plainly -- a probe can still be placed (it will
+"light up" automatically once the M-SIM re-run adds the components, no
+re-placement needed), but its results are marked gated, never fabricated.
+
+Analysis final-polish pass: the caption is a structured, honest empty-state
+(_build_gate_explanation) rather than a terse "waiting for rerun" -- it
+names exactly which quantities/units are missing (read from the registry,
+never hand-guessed) and what a real vector field would let a researcher
+investigate (smoke transport, ventilation effects, recirculation, plume
+movement, streamlines), without changing the gate itself in any way.
 
 The background heatmap always shows a real quantity (VELOCITY speed or
 TEMPERATURE, both non-gated) regardless of whether the vector overlay
@@ -30,10 +36,31 @@ from PyQt5 import QtCore, QtWidgets
 
 from widgets import MplCanvas
 from slice_key import SliceKey
-from registry import get_quantity
+from registry import get_quantity, gated_quantities
 from quantity_provider import GatedQuantityError
 from analysis_panel_base import populate_scenario_combo
 import velocity as vel
+
+# The 3 registry entries this panel actually needs (Analysis final-polish
+# pass): filtered from registry.gated_quantities() rather than hardcoded,
+# so the empty-state text can never drift from what the registry actually
+# gates. All three are hard-gated (quantity_provider.GatedQuantityError),
+# never inferred from an absent array -- see _ensure_field below.
+_VELOCITY_COMPONENTS = ("U-VELOCITY", "V-VELOCITY", "W-VELOCITY")
+
+# What a real vector field would let a researcher investigate here --
+# framed as research questions this dataset cannot yet answer, not a
+# feature list. Grounded in what velocity.py's VectorField/VectorProbe
+# already implement (quiver, streamlines, per-probe speed/direction) plus
+# the physically obvious uses of a real in-plane vector field for this
+# kind of compartment-fire study.
+_RESEARCH_USES = (
+    "Smoke transport -- which way does smoke actually move, not just where it's hot",
+    "Ventilation effects -- how door/vent state redirects flow, not only temperature",
+    "Recirculation -- closed-loop flow the temperature field alone can't reveal",
+    "Plume movement -- the fire plume's lean/spread under any cross-flow",
+    "Streamlines and vector fields -- the true flow paths this panel is already built to draw",
+)
 
 _COLOR_BY_LABELS = {"speed": "Speed", "direction": "Direction", "temperature": "Temperature overlay"}
 _MODE_LABELS = {"quiver": "Quiver", "streamlines": "Streamlines", "both": "Both"}
@@ -116,12 +143,15 @@ class VelocityPanel(QtWidgets.QWidget):
         controls.addStretch(1)
         layout.addLayout(controls)
 
-        self.caption = QtWidgets.QLabel(
-            "Click the map to place a vector probe (a seed point). Requires U-VELOCITY/"
-            "W-VELOCITY (the true in-plane vector field); today's output only has VELOCITY "
-            "(speed magnitude, no direction) -- see docs/msim-preparation.md. A probe placed "
-            "now will start showing real streamlines/quiver automatically once that data "
-            "exists, with no need to re-place it.")
+        # Analysis final-polish pass: replaces a one-line "waiting for
+        # rerun" dead end with an honest, structured explanation -- what's
+        # missing (exactly, from the registry, never hand-guessed), why,
+        # and what it would unlock, framed as research questions. Never
+        # fabricates a value: the gate itself (quantity_provider's
+        # GatedQuantityError) is completely unchanged below, this only
+        # rewrites how it's explained.
+        self.caption = QtWidgets.QLabel(self._build_gate_explanation())
+        self.caption.setTextFormat(QtCore.Qt.RichText)
         self.caption.setWordWrap(True)
         self.caption.setProperty("role", "caption")
         layout.addWidget(self.caption)
@@ -173,6 +203,38 @@ class VelocityPanel(QtWidgets.QWidget):
         self.density_spin.valueChanged.connect(lambda _v: self._render())
         self.length_spin.valueChanged.connect(lambda _v: self._render())
         self.canvas.mpl_connect("button_press_event", self._on_press)
+
+    @staticmethod
+    def _build_gate_explanation() -> str:
+        """Rich text for the caption: exactly which quantities/units are
+        gated (read from the registry, not hand-written -- can't drift
+        from what quantity_provider.py actually enforces), and what a real
+        vector field would let a researcher investigate, framed as
+        research questions rather than a feature list. Static: this
+        dataset's gating is a fixed registry property, not
+        scenario-dependent, so it doesn't need to be rebuilt per-scenario."""
+        gated_now = set(gated_quantities())
+        rows = []
+        for name in _VELOCITY_COMPONENTS:
+            if name not in gated_now:
+                continue
+            q = get_quantity(name)
+            rows.append(f"<b>{name}</b> — {q.label} ({q.unit})")
+        rows.append("<b>|V|</b> — velocity magnitude (m/s), computed from the three above")
+        uses = "".join(f"<li>{u}</li>" for u in _RESEARCH_USES)
+        return (
+            "<b>Velocity data unavailable in this dataset.</b> This simulation's slice "
+            "output does not include the true in-plane/through-plane velocity "
+            "components, so this panel does not fabricate a direction or a vector "
+            "field from the speed magnitude that IS available (VELOCITY, |v| only, "
+            "no direction).<br><br>"
+            "<b>Requires an FDS rerun with velocity slice output enabled:</b><br>"
+            + "<br>".join(rows) +
+            "<br><br><b>What this would unlock:</b><ul style='margin:2px 0 0 -20px;'>"
+            + uses + "</ul>"
+            "A probe placed now will start showing a real reading automatically once "
+            "that data exists (M-SIM re-run) -- no need to re-place it."
+        )
 
     # ------------------------------------------------------------- lifecycle
     def showEvent(self, event):
@@ -274,7 +336,9 @@ class VelocityPanel(QtWidgets.QWidget):
         field = self._ensure_field(case_index)
         if field is None:
             probe.mark_gated(self._gate_reasons[case_index])
-            self.status.setText(f"Gated: {self._gate_reasons[case_index]}")
+            self.status.setText(
+                f"Placed, but not yet computable -- needs U/V/W velocity data. "
+                f"{self._gate_reasons[case_index]}")
         else:
             probe.compute(field, self._fps)
             self.status.setText("")
@@ -331,7 +395,7 @@ class VelocityPanel(QtWidgets.QWidget):
     # --------------------------------------------------------------- render
     def _headline(self, p: "vel.VectorProbe") -> str:
         if p.gated:
-            return "gated -- awaiting M-SIM re-run"
+            return "gated -- needs U/V/W velocity (M-SIM re-run)"
         r = p.results or {}
         if not r:
             return "not yet computed"
@@ -388,7 +452,8 @@ class VelocityPanel(QtWidgets.QWidget):
                         xs2 = [pt[0] for pt in pts]; zs2 = [pt[1] for pt in pts]
                         ax.plot(xs2, zs2, "-", color="#14171F", linewidth=1.2)
         elif gate_reason:
-            ax.set_title("Vectors gated -- see caption", fontsize=8, color="#B00020")
+            ax.set_title("Vectors unavailable -- needs U/V/W velocity data (see caption)",
+                        fontsize=8, color="#B00020")
         for p in self._probes:
             if p.scenario != case_index:
                 continue

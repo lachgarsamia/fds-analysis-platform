@@ -65,6 +65,22 @@ _ROOM_VENT_LW = 4.0
 # uses, not a real dependency.
 _DEVICE_MARKER_SHAPES = {"thermocouple": "o", "heat_detector": "^", "sprinkler": "s"}
 
+# Legend labels for the same 3 kinds (Analysis final-polish pass): the
+# marker-shape distinction above was previously only explained inside the
+# separate Devices analysis tab (device_panel.py's model_note caption) --
+# nothing on the Live Viewer itself, where the markers are actually
+# watched during playback, said what a triangle vs. a square means. A
+# small always-available legend closes that gap without touching
+# devices.py's activation math (already correct: heat detectors trip an
+# instant temperature threshold, sprinklers lag it via a genuine RTI
+# thermal-element ODE -- see devices.py -- so the two disagreeing is
+# expected physics, not a fault, and is never forced to agree here).
+_DEVICE_KIND_LABELS = {
+    "thermocouple": "Thermocouple",
+    "heat_detector": "Heat detector (instant threshold)",
+    "sprinkler": "Sprinkler (RTI thermal lag)",
+}
+
 
 class PlotView(Protocol):
     """Minimum interface every view-cell type must implement. Concrete
@@ -179,6 +195,8 @@ class SliceView:
         # is visible as marker shape, not just active/idle color -- see
         # _DEVICE_MARKER_SHAPES.
         self.device_scatters: dict = {}
+        self._device_legend = None
+        self._device_markers_present = False
         # True velocity vectors (V6-M3): a *different* artist from the
         # cinema-mode `velocity_quiver` above (that one is a heuristic
         # direction guess from |v| + a temperature gradient, explicitly not
@@ -259,6 +277,18 @@ class SliceView:
                                   edgecolors="#14171F", linewidths=1.0)
             for kind, shape in _DEVICE_MARKER_SHAPES.items()
         }
+        # Device-kind legend (Analysis final-polish pass): a static overlay
+        # artist added once, same convention as the colorbar above -- not
+        # in _animated_artists(), so it costs nothing per-frame. Built from
+        # the scatters themselves so its shapes always match what's
+        # actually drawn. Hidden until set_device_markers() sees at least
+        # one placed device (nothing to explain on a scenario with none).
+        self._device_legend = self.ax.legend(
+            handles=[self.device_scatters[k] for k in _DEVICE_MARKER_SHAPES],
+            labels=[_DEVICE_KIND_LABELS[k] for k in _DEVICE_MARKER_SHAPES],
+            loc="lower left", fontsize=6, framealpha=0.55, facecolor="#14171F",
+            labelcolor="white", borderpad=0.4, handletextpad=0.4)
+        self._device_legend.set_visible(False)
         # True velocity streamlines (V6-M3): empty until a panel supplies
         # segments; the quiver itself is created lazily on first real data
         # (see set_vector_field) since its arrow positions are fixed for a
@@ -433,6 +463,20 @@ class SliceView:
             offsets, colors = by_kind[kind]
             scatter.set_offsets(offsets if offsets else np.empty((0, 2)))
             scatter.set_facecolor(colors)
+        # Device-kind legend: only visible once something is actually
+        # placed (nothing to explain on a scenario with no devices), and
+        # only redrawn on the rare present/absent transition -- this is
+        # called every tick, but the legend isn't in _animated_artists()
+        # (a static overlay, like the colorbar), so a plain set_visible()
+        # wouldn't survive the next blit_update() without an explicit full
+        # draw + background recapture, same as the isotherm/overlay toggle.
+        present = any(offsets for offsets, _ in by_kind.values())
+        if present != self._device_markers_present:
+            self._device_markers_present = present
+            if self._device_legend is not None:
+                self._device_legend.set_visible(present)
+                self.canvas.draw_idle()
+                self.canvas.capture_background()
 
     def set_vector_field(self, quiver: tuple = None, streamlines: list = None) -> None:
         """V6-M3: `quiver` is (xs, zs, us, ws) or None to clear; `streamlines`

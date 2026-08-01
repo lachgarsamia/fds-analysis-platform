@@ -2511,25 +2511,6 @@ class TestQueryPanel:
         window.close()
 
 
-class TestStateSpacePanel:
-    """V3-M5: state-space + Fire Genome panel."""
-
-    def test_panel_builds_genomes_and_renders(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            assert getattr(window, "state_space_panel", None) is None
-            window.close()
-            return
-        panel = window.state_space_panel
-        panel.ensure_loaded()
-        assert len(panel._genomes) == len(sim_data.manifest)
-        assert panel.scenario_combo.count() == len(sim_data.manifest)
-        # a trajectory was computed and cached for the shown scenario
-        assert panel._traj_cache
-        window.close()
-
-
 class TestAttentionPanel:
     """V3-M6: physics attention map panel (heuristic saliency)."""
 
@@ -2993,93 +2974,6 @@ class TestNamedSessions:
         window.close()
 
 
-class TestMeasurementPanel:
-    """V4-M7: on-canvas measurement tools. UX consolidation pass: distance
-    and path (generic geometry, no scientific quantity attached) were
-    removed from the tool set -- only Rectangle (area + min/mean/max) and
-    Probe (heatmap probing) remain."""
-
-    def test_tool_set_is_reduced_to_rect_and_probe(self, qapp):
-        window = MainWindow(load_simulation_data())
-        if window.measurement_panel is None:
-            window.close()
-            return
-        panel = window.measurement_panel
-        items = [panel.tool_combo.itemText(i) for i in range(panel.tool_combo.count())]
-        assert items == ["Rectangle", "Probe"]
-        window.close()
-
-    def test_tools_readouts_and_session_roundtrip(self, qapp, tmp_path):
-        import measure as mz, session_store
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            assert getattr(window, "measurement_panel", None) is None
-            window.close()
-            return
-        panel = window.measurement_panel
-        panel.ensure_loaded()
-        assert panel.scenario_combo.count() == len(sim_data.manifest)
-        panel._add(mz.Measurement("probe", [(0.9, 0.05)]))
-        panel._add(mz.Measurement("rect", [(0.8, 0.0), (1.0, 0.3)]))
-        assert len(panel._measurements) == 2
-        assert "area" in panel._measurements[1].readout
-        # save/restore via a named session
-        window._sessions_dir = str(tmp_path)
-        window._on_session_save("Measure study", "probe+rect")
-        info = session_store.list_sessions(str(tmp_path))[0]
-        panel.set_measurements([])
-        assert len(panel._measurements) == 0
-        window._on_session_load(info.path)
-        assert len(panel._measurements) == 2
-        # report includes the measurements
-        from report_builder import build_session_report
-        html = build_session_report(session_store.load_session(info.path))
-        assert "Measurements" in html and "area" in html
-        window.close()
-
-    def test_legacy_distance_and_path_measurements_still_load_and_report(self, qapp):
-        """A session saved before the tool was removed must still load,
-        render, and print in reports -- only creating new ones is gone."""
-        import measure as mz
-        window = MainWindow(load_simulation_data())
-        if window.measurement_panel is None:
-            window.close()
-            return
-        panel = window.measurement_panel
-        panel.ensure_loaded()
-        legacy = [
-            mz.Measurement("distance", [(0.0, 0.24), (1.0, 0.24)], label="old ruler",
-                           readout="1.000 m  (Δx 1.000 m, Δz 0.000 m)").to_dict(),
-            mz.Measurement("path", [(0.0, 0.0), (0.5, 0.5)], label="old path",
-                           readout="0.707 m over 1 segment(s)").to_dict(),
-        ]
-        panel.set_measurements(legacy)
-        assert len(panel._measurements) == 2
-        panel._render()   # must not raise for the legacy kinds
-        from report_builder import build_session_report
-        session = {"name": "legacy", "measurements": legacy}
-        html = build_session_report(session)
-        assert "old ruler" in html and "old path" in html
-        window.close()
-
-    def test_interval_average_measurement(self, qapp):
-        import measure as mz
-        window = MainWindow(load_simulation_data())
-        if window.measurement_panel is None:
-            window.close()
-            return
-        panel = window.measurement_panel
-        panel.ensure_loaded()
-        panel.interval_check.setChecked(True)
-        panel.t0_spin.setValue(5.0)
-        panel.t1_spin.setValue(15.0)
-        panel._add(mz.Measurement("probe", [(0.9, 0.05)]))
-        assert panel._measurements[0].interval is True
-        assert "averaged" in panel._measurements[0].readout
-        window.close()
-
-
 class TestAdvancedComparePanel:
     """V4-M8: advanced comparison workflows (temporal / spatial / physics)."""
 
@@ -3183,23 +3077,26 @@ class TestAdvancedComparePanel:
 
 
 class TestProbeMeasurePanel:
-    """Analysis section consolidation Phase 4: Devices, Zones, Velocity,
-    and Measure are now four modes of one "Spatial Probes" workspace --
-    each child's own construction/store access/lazy-load/bus wiring is
-    unchanged, only the tab-level presentation is consolidated."""
+    """Analysis section consolidation Phase 4 (Analysis final-polish pass:
+    the disposable "Quick probe" mode was removed -- Devices/Zones/
+    Velocity already cover deliberate measurement more purposefully; see
+    probe_measure_panel.py's docstring): Devices, Zones, and Velocity are
+    three modes of one "Spatial Probes" workspace -- each child's own
+    construction/store access/lazy-load/bus wiring is unchanged, only the
+    tab-level presentation is consolidated."""
 
-    def test_wrapper_holds_all_four_children_as_tabs(self, qapp):
+    def test_wrapper_holds_all_three_children_as_tabs(self, qapp):
         window = MainWindow(load_simulation_data())
         if window.probe_measure_panel is None:
             window.close()
             return
         wrapper = window.probe_measure_panel
         labels = [wrapper.tabs.tabText(i) for i in range(wrapper.tabs.count())]
-        assert labels == ["Devices", "Zones", "Velocity", "Quick probe"]
+        assert labels == ["Devices", "Zones", "Velocity"]
         assert wrapper.tabs.widget(0) is window.device_panel
         assert wrapper.tabs.widget(1) is window.zone_panel
         assert wrapper.tabs.widget(2) is window.velocity_panel
-        assert wrapper.tabs.widget(3) is window.measurement_panel
+        assert not hasattr(window, "measurement_panel")
         window.close()
 
     def test_showing_wrapper_loads_all_children_not_just_visible_one(self, qapp):
@@ -3214,7 +3111,6 @@ class TestProbeMeasurePanel:
         assert window.device_panel._loaded
         assert window.zone_panel._loaded
         assert window.velocity_panel._loaded
-        assert window.measurement_panel._loaded
         window.close()
 
     def test_show_tab_reveals_a_specific_child_three_levels_deep(self, qapp):
@@ -3233,117 +3129,31 @@ class TestProbeMeasurePanel:
         window.close()
 
 
-class TestCompareDiscoverPanel:
-    """Analysis section consolidation Phase 3: Compare axes (pairwise),
-    parallel coordinates, Ensemble (envelope), and Ensemble analytics
-    (PCA/clustering) are now four modes of one "Cross-Scenario Comparison"
-    workspace -- each child's own construction/store access/lazy-load/bus
-    wiring is unchanged, only the tab-level presentation is consolidated."""
+class TestCompareDiscover:
+    """Analysis final-polish pass: Compare & Discover's former 4-mode
+    CompareDiscoverPanel wrapper (Pairwise/Parallel coordinates/Ensemble/
+    Clustering) is unwrapped -- Parallel coordinates and Ensemble spread
+    were removed outright (not enough standalone research value for their
+    complexity), which left only 2 children, no longer earning their own
+    indirection layer. Pairwise Comparison and PCA/Clustering are now
+    direct tabs under the Compare & Discover group."""
 
-    def test_wrapper_holds_all_four_children_as_tabs(self, qapp):
+    def test_pairwise_and_clustering_are_direct_analysis_tabs(self, qapp):
         window = MainWindow(load_simulation_data())
-        if window.compare_discover_panel is None:
+        if window.advanced_compare_panel is None:
             window.close()
             return
-        wrapper = window.compare_discover_panel
-        labels = [wrapper.tabs.tabText(i) for i in range(wrapper.tabs.count())]
-        assert labels == ["Pairwise", "Parallel coordinates", "Ensemble", "Clustering"]
-        assert wrapper.tabs.widget(0) is window.advanced_compare_panel
-        assert wrapper.tabs.widget(1) is window.parallel_coordinates_panel
-        assert wrapper.tabs.widget(2) is window.ensemble_panel
-        # analytics_panel (a QDockWidget) reparents its content widget on
-        # extraction, so its own .widget() accessor is empty afterward
-        # (same "dock objects are now empty shells" behavior main_window.py
-        # already documents) -- identity-check against the wrapper's own
-        # stored reference instead of re-querying the now-empty dock.
-        assert wrapper.tabs.widget(3) is wrapper.clustering_widget
-        assert wrapper.clustering_widget is not None
-        window.close()
-
-    def test_showing_wrapper_loads_all_children_not_just_visible_one(self, qapp):
-        window = MainWindow(load_simulation_data())
-        if window.compare_discover_panel is None:
-            window.close()
-            return
+        assert not hasattr(window, "compare_discover_panel")
+        assert not hasattr(window, "parallel_coordinates_panel")
+        assert not hasattr(window, "ensemble_panel")
         window.show()
         window._navigate_to("analysis")
-        window.pages["analysis"].show_tab(window.compare_discover_panel)
+        window.pages["analysis"].show_tab(window.advanced_compare_panel)
         QtWidgets.QApplication.processEvents()
         assert window.advanced_compare_panel._loaded
-        assert window.parallel_coordinates_panel._table is not None  # no lazy gate; always built
-        assert window.ensemble_panel._loaded
-        window.close()
-
-    def test_parallel_coordinates_click_propagates_to_bus(self, qapp):
-        """Relocated from the former StudyPanel parallel-coordinates tab
-        (extracted into parallel_coordinates_panel.py, Phase 3) -- same
-        click -> nearest-line -> scenario-select -> bus-publish behavior,
-        unchanged internally."""
-        import numpy as np
-        import study_analytics as sa
-        window = MainWindow(load_simulation_data())
-        if window.parallel_coordinates_panel is None:
-            window.close()
-            return
-        window.show()
-        pc = window.parallel_coordinates_panel
-        norm = sa.normalized_axes(pc._table, pc._axis_keys, pc._axis_kind)
-        # A continuous response axis (max_temp_c, right after sa.PARAMS) has an
-        # essentially-unique maximum across real scenarios (norm == 1.0 there),
-        # unlike a categorical factor axis where many rows tie -- picking the
-        # row at its peak makes "nearest line" unambiguous for this test.
-        axis_idx = len(sa.PARAMS)
-        target_row = int(np.nanargmax(norm[:, axis_idx]))
-        axes = pc.parallel_canvas.fig.axes
-        assert axes
-        expected = pc._table[target_row]["case_index"]
-        # Start from a different combo index so the click is a genuine
-        # change (PyQt doesn't emit currentIndexChanged for a same-index set).
-        target_idx = pc.scenario_combo.findData(int(expected))
-        pc.scenario_combo.setCurrentIndex((target_idx + 1) % pc.scenario_combo.count())
-        class FakeEvent:
-            inaxes = axes[0]
-            xdata = float(axis_idx)
-            ydata = float(norm[target_row][axis_idx])
-        pc._on_parallel_click(FakeEvent())
-        QtWidgets.QApplication.processEvents()
-        assert pc.scenario_combo.currentData() == expected
-        assert window.selection_bus.current.scenario == expected
-        window.close()
-
-    def test_parallel_coordinates_color_by_factor_differentiates_lines(self, qapp):
-        """Analysis UX + reliability pass: previously every non-selected
-        scenario rendered as an identical gray line -- now lines are
-        colored by the chosen factor's level, so level separation is
-        visible across all axes, not just which single scenario is
-        selected."""
-        window = MainWindow(load_simulation_data())
-        if window.parallel_coordinates_panel is None:
-            window.close()
-            return
-        pc = window.parallel_coordinates_panel
-        idx = pc.color_by_combo.findData("door")
-        assert idx >= 0
-        pc.color_by_combo.setCurrentIndex(idx)
-        ax = pc.parallel_canvas.fig.axes[0]
-        line_colors = {line.get_color() for line in ax.get_lines()}
-        # at least 2 distinct non-selected colors (door has 2 levels) plus
-        # the selected-scenario cyan -- not one flat gray for everything.
-        assert len(line_colors) >= 2
-        assert ax.get_legend() is not None
-        window.close()
-
-    def test_parallel_coordinates_axes_show_real_value_labels(self, qapp):
-        """Each axis must show its own real min/max (not just the shared
-        0-1 normalized scale), so magnitudes are readable."""
-        window = MainWindow(load_simulation_data())
-        if window.parallel_coordinates_panel is None:
-            window.close()
-            return
-        pc = window.parallel_coordinates_panel
-        ax = pc.parallel_canvas.fig.axes[0]
-        # 2 labels (min + max) per axis
-        assert len(ax.texts) == 2 * len(pc._axis_keys)
+        if window.clustering_content is not None:
+            window.pages["analysis"].show_tab(window.clustering_content)
+            QtWidgets.QApplication.processEvents()
         window.close()
 
 
@@ -3418,58 +3228,6 @@ class TestQuantitiesPanel:
         assert "preview on" in panel.detail.text() and "min" in panel.detail.text()
         window.close()
 
-
-class TestSafeAssistantPanel:
-    """V4-M12: bounded, deterministic assistant."""
-
-    def test_action_produces_savable_output(self, qapp):
-        from insight import Insight
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            assert getattr(window, "assistant_panel", None) is None
-            window.close()
-            return
-        window.evidence_dock.add_insight(Insight(
-            "Peak 469 C at t=8s.", category="query", quantity="TEMPERATURE",
-            time_s=8.0, basis="max"))
-        panel = window.assistant_panel
-        window._on_assistant_action("list_key_findings")
-        assert "Peak 469" in panel.output.toPlainText()
-        assert panel.save_button.isEnabled()
-        window.close()
-
-    def test_causal_query_is_refused_and_not_savable(self, qapp):
-        window = MainWindow(load_simulation_data())
-        if window.assistant_panel is None:
-            window.close()
-            return
-        panel = window.assistant_panel
-        window._on_assistant_query("why is the doorway hotter?")
-        assert "cannot infer why" in panel.output.toPlainText()
-        assert not panel.save_button.isEnabled()   # a refusal cannot be saved
-        window.close()
-
-    def test_saving_assistant_output_records_no_cause_basis(self, qapp):
-        window = MainWindow(load_simulation_data())
-        if window.assistant_panel is None:
-            window.close()
-            return
-        before = len(window.evidence_dock.notebook)
-        window._on_assistant_action("summarize_session")
-        window._on_assistant_save(window.assistant_panel.last_output)
-        assert len(window.evidence_dock.notebook) == before + 1
-        assert "no cause inferred" in window.evidence_dock.notebook.entries[-1].insight.basis
-        window.close()
-
-    def test_figure_caption_uses_computed_peak(self, qapp):
-        window = MainWindow(load_simulation_data())
-        if window.assistant_panel is None:
-            window.close()
-            return
-        cap = window._assistant_figure_caption()
-        assert "peak" in cap and "°C" in cap  # a real computed value, descriptive only
-        window.close()
 
 
 class TestSharedSelectionModel:
@@ -3993,75 +3751,10 @@ class TestWorkspaceAndCommunication:
 
 
 class TestPhase5Communication:
-    """V5-M5: ensemble spread, assistant search, publication bundle."""
-
-    def test_ensemble_envelope_and_bus_sync(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            window.close()
-            return
-        import numpy as np
-        panel = window.ensemble_panel
-        panel.ensure_loaded()
-        lo, mean, hi = panel._metric_data("spatial_max")["minmax"]
-        assert len(mean) > 0 and (lo <= mean).all() and (mean <= hi).all()
-        window.selection_bus.update(origin=None, scenario=5)
-        assert panel.scenario_combo.currentData() == 5
-        assert panel._overlay_cases[0] == 5   # bus-synced scenario is always the first overlay
-        window.close()
-
-    def test_ensemble_band_toggle_switches_between_minmax_and_iqr(self, qapp):
-        """Analysis UX + reliability pass: the "Band:" combo must actually
-        change what's rendered, not just exist."""
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            window.close()
-            return
-        panel = window.ensemble_panel
-        panel.ensure_loaded()
-        idx = panel.band_combo.findData("iqr")
-        assert idx > 0
-        panel.band_combo.setCurrentIndex(idx)
-        ax = panel.canvas.fig.axes[0]
-        assert "25" in ax.get_legend().get_texts()[0].get_text()
-        panel.band_combo.setCurrentIndex(0)
-        ax = panel.canvas.fig.axes[0]
-        assert "min" in ax.get_legend().get_texts()[0].get_text().lower()
-        window.close()
-
-    def test_ensemble_multi_scenario_overlay_via_picker(self, qapp):
-        """Analysis UX + reliability pass: the overlay picker (reusing
-        views.EnsemblePickerDialog, same widget timeseries.py already uses)
-        lets 2+ specific scenarios be compared against the envelope at
-        once, not just the single bus-synced scenario."""
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo or len(sim_data.manifest) < 3:
-            window.close()
-            return
-        panel = window.ensemble_panel
-        panel.ensure_loaded()
-        chosen = [e.case_index for e in sim_data.manifest[:3]]
-        panel._overlay_cases = chosen
-        panel._render()
-        ax = panel.canvas.fig.axes[0]
-        # band + mean + 3 overlay curves = 5 legend entries
-        assert len(ax.get_legend().get_texts()) == 5
-        window.close()
-
-    def test_assistant_search_routes_and_refuses_causal(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo or not window.is_factorial:
-            window.close()
-            return
-        window._on_assistant_query("show scenarios where temperature exceeds 400")
-        assert "Scenarios where" in window.assistant_panel.output.toPlainText()
-        window._on_assistant_query("why is it hotter")
-        assert "cannot infer why" in window.assistant_panel.output.toPlainText()
-        window.close()
+    """V5-M5: publication bundle. (Analysis final-polish pass: the
+    ensemble-spread and assistant-search tests that used to live here were
+    removed along with EnsemblePanel and the Assistant layer, both dropped
+    entirely in that pass.)"""
 
     def test_publication_bundle_writes_figures_and_manifest(self, qapp, tmp_path):
         from figure_export import save_figure
@@ -4176,6 +3869,67 @@ class TestKnowledgeGraph:
         assert len(focused) < full_count
         g.focus_checkbox.setChecked(False)
         assert len(g._visible_ids()) == full_count
+        window.close()
+
+    def test_legend_lists_every_node_type(self, qapp):
+        """Analysis final-polish pass: a compact always-visible legend
+        maps each node color to its type -- previously only decodable via
+        the x-axis column headers/tree grouping."""
+        import graph_model as gm
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        g = window.graph_panel
+        text = g.legend.text()
+        for t in gm.NODE_TYPES:
+            assert t.capitalize() in text
+        window.close()
+
+    def test_quantity_nodes_appear_for_the_current_scenario(self, qapp):
+        """Analysis final-polish pass: a small, bounded set of
+        summary_stats.py's per-scenario metrics becomes "quantity" nodes
+        for the currently selected scenario -- the graph shows what the
+        simulation actually measured, not only shared factor levels."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        g = window.graph_panel
+        case_index = sim_data.manifest[0].case_index
+        g._current_scenario = case_index
+        g._loaded = True
+        g._rebuild()
+        nodes = g._graph.nodes_of("quantity")
+        assert nodes  # summary_stats.py always computes at least peak temperature
+        for n in nodes:
+            assert n.scenario == case_index
+            assert f"scenario:{case_index}" in g._graph.neighbors(n.id)
+        window.close()
+
+    def test_opening_graph_starts_focused_on_current_scenario(self, qapp):
+        """Analysis final-polish pass: the first time the tab is shown
+        with a scenario already selected, it starts in "Focus on selected"
+        mode centered on that scenario, instead of the full graph -- avoids
+        the "hairball by default" problem. Uncheckable back to everything."""
+        from PyQt5 import QtGui
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        g = window.graph_panel
+        case_index = sim_data.manifest[0].case_index
+        g._current_scenario = case_index
+        g._loaded = False
+        g.showEvent(QtGui.QShowEvent())
+        assert g.focus_checkbox.isChecked()
+        assert g._selected == f"scenario:{case_index}"
+        focused = g._visible_ids()
+        g.focus_checkbox.setChecked(False)
+        assert len(g._visible_ids()) > len(focused)
         window.close()
 
 
@@ -4511,11 +4265,21 @@ class TestVirtualDeviceNetwork:
         assert {"heat_detector", "sprinkler"}.issubset(kinds)
 
         cell = window.view_grid.active_cell()
+        # Analysis final-polish pass: with nothing placed yet, the
+        # Live-Viewer legend explaining shape -> kind stays hidden (nothing
+        # to explain on a scenario with no devices).
+        cell.view.set_device_markers([])
+        assert cell.view._device_legend.get_visible() is False
         cell.view.set_device_markers(markers)
         hd_shape = cell.view.device_scatters["heat_detector"].get_paths()[0]
         sp_shape = cell.view.device_scatters["sprinkler"].get_paths()[0]
         assert hd_shape.vertices.shape != sp_shape.vertices.shape or \
             not np.allclose(hd_shape.vertices, sp_shape.vertices)
+        # Analysis final-polish pass: once markers exist, the legend
+        # becomes visible and explains the shapes -- this is what closes
+        # the "looks broken" gap on the Live Viewer itself, not just
+        # inside the separate Devices analysis tab.
+        assert cell.view._device_legend.get_visible() is True
         window.close()
 
     def test_placing_a_thermocouple_computes_once_and_lists(self, qapp):
@@ -4687,6 +4451,20 @@ class TestTrueVelocity:
         assert "M-SIM" in p.status.text() or "msim" in p.status.text().lower()
         window.close()
 
+    def test_gate_explanation_names_missing_quantities_and_research_value(self, qapp):
+        """Analysis final-polish pass: the caption must be an honest,
+        structured empty-state -- exactly which quantities/units are
+        missing (from the registry, never hand-guessed) and what a real
+        vector field would unlock -- never a fabricated value, and never
+        just a terse "waiting for rerun" dead end."""
+        from velocity_panel import VelocityPanel
+        text = VelocityPanel._build_gate_explanation()
+        for name in ("U-VELOCITY", "V-VELOCITY", "W-VELOCITY", "m/s"):
+            assert name in text
+        assert "unavailable" in text.lower()
+        for use in ("Smoke transport", "Ventilation", "Recirculation", "Plume", "Streamlines"):
+            assert use in text
+
     def test_get_vector_still_raises_gated_quantity_error(self, qapp):
         """V6-M3 must not weaken the gate: the real provider still raises."""
         from quantity_provider import GatedQuantityError
@@ -4856,14 +4634,18 @@ class TestUnifiedWorkspace:
 
     def test_point_story_combines_measurement_and_cause_chain(self, qapp):
         """Analysis-improvement roadmap Phase C: the synthesized point-story
-        pulls a local measurement reading (already-cached, no new store
-        read) and the Cause Explorer's last-traced chain (only when it's
-        near the selected point) into one paragraph. UX consolidation pass:
-        the standalone Context tab that used to display this was removed
-        as low-value, but context.gather_context (the data layer) is kept
-        -- still exercised directly here, and reusable by future consumers
-        (e.g. the Assistant restructure)."""
-        import measure as mz
+        pulls a local reading (already-cached, no new store read) and the
+        Cause Explorer's last-traced chain (only when it's near the
+        selected point) into one paragraph. UX consolidation pass: the
+        standalone Context tab that used to display this was removed as
+        low-value, but context.gather_context (the data layer) is kept --
+        still exercised directly here, and reusable by future consumers.
+        (Analysis final-polish pass: the "local reading" source used to be
+        a disposable Quick Probe measurement -- now removed, see
+        measurement_panel.py's removal -- so this uses a Zone instead,
+        _related_measurements' now-permanent [] falls through to
+        _related_zones exactly as context.py's own fallback order does.)"""
+        import zone_stats as zst
         from insight import Insight
         from selection import Selection
         from context import gather_context
@@ -4872,11 +4654,11 @@ class TestUnifiedWorkspace:
             window.close()
             return
         case_index = window.sim_data.manifest[0].case_index
-        window.measurement_panel._measurements.append(
-            mz.Measurement(kind="probe", points=[(1.0, 1.0)], label="P1", readout="123 degC"))
+        window.zone_panel.ensure_loaded()
+        window.zone_panel._zones.append(zst.Zone("P1", 0.9, 1.1, 0.9, 1.1))
         sel = Selection(scenario=case_index, point=(1.0, 1.0))
         story = gather_context(window, sel)["point_story"]
-        assert "P1: 123 degC" in story
+        assert 'inside zone "P1"' in story
         # Cause chain absent until traced near this point -> no cause-trace clause yet.
         assert "Cause trace" not in story
         cp = window.cause_panel
@@ -5210,45 +4992,26 @@ class TestHazardTenabilityMerge:
         window.close()
 
 
-class TestAssistantQueryMerge:
-    """Analysis-improvement roadmap Phase B: Ask (the physics-query grammar)
-    was a separate top-level tab from the Assistant -- both are "ask
-    something, get a computed answer" surfaces, now one "Assistant" tab
-    with a mode toggle. A thin wrapper only, so both panels keep their full
-    existing functionality/wiring unchanged."""
+class TestAskTabDirect:
+    """Analysis final-polish pass: the Assistant template-summary layer
+    (assistant.py/assistant_panel.py/assistant_query_panel.py) was removed
+    outright -- it didn't provide enough value for a research-focused
+    application. QueryPanel (the deterministic physics-query grammar,
+    previously reachable only as a secondary mode inside the removed
+    Assistant wrapper) is restored to its own direct "Ask" tab under
+    Reference & Communication; its own functionality is unchanged and
+    fully covered by TestQueryPanel above."""
 
-    def test_wrapper_holds_both_panels_and_defaults_to_guided_view(self, qapp):
+    def test_query_panel_is_reachable_as_its_own_tab_not_wrapped(self, qapp):
         window = MainWindow(load_simulation_data())
-        wrapper = window.assistant_query_panel
-        if wrapper is None:
+        if window.query_panel is None:
             window.close()
             return
-        assert wrapper.assistant_widget is window.assistant_panel
-        assert wrapper.query_widget is window.query_panel
-        assert wrapper.stack.currentWidget() is window.assistant_panel
-        window.close()
-
-    def test_mode_toggle_switches_between_panels(self, qapp):
-        window = MainWindow(load_simulation_data())
-        wrapper = window.assistant_query_panel
-        if wrapper is None:
-            window.close()
-            return
-        wrapper.mode_combo.setCurrentIndex(1)
-        assert wrapper.stack.currentWidget() is window.query_panel
-        wrapper.mode_combo.setCurrentIndex(0)
-        assert wrapper.stack.currentWidget() is window.assistant_panel
-        window.close()
-
-    def test_showing_wrapper_loads_the_query_panel_not_just_visible_one(self, qapp):
-        window = MainWindow(load_simulation_data())
-        wrapper = window.assistant_query_panel
-        if wrapper is None:
-            window.close()
-            return
+        assert not hasattr(window, "assistant_panel")
+        assert not hasattr(window, "assistant_query_panel")
         window.show()
         window._navigate_to("analysis")
-        window.pages["analysis"].show_tab(wrapper)
+        window.pages["analysis"].show_tab(window.query_panel)
         QtWidgets.QApplication.processEvents()
         assert window.query_panel._loaded
         window.close()

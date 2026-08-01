@@ -1,0 +1,112 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{microtype}
+\usepackage{titlesec}
+\usepackage{parskip}
+\usepackage[hidelinks]{hyperref}
+
+\titleformat{\section}{\large\bfseries}{\thesection.}{0.6em}{}
+\titlespacing*{\section}{0pt}{1.1em}{0.3em}
+
+\title{\textbf{A Scientific Visualization Platform for Fire Dynamics Simulator Ensembles}}
+\author{Internship Progress Report}
+\date{}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+
+\section{Project Overview}
+
+The Fire Dynamics Simulator (FDS) is a software used to simulate how fire, heat, and smoke
+move inside buildings. In real studies, researchers usually run many simulations with
+different conditions, such as changing the fire size, ventilation, or door openings. The
+main challenge is not only running these simulations, but also comparing and understanding
+the results.
+
+This project focuses on developing an application that helps researchers visualize and
+analyze FDS simulations. It allows them to follow the evolution of physical quantities,
+compare different scenarios, and extract useful information from the simulation data.
+
+\section{Initial State of the Project}
+
+At the beginning of the internship, the application already existed but had limited
+capabilities. It could display the temperature evolution of a single simulation using a
+basic animated heat map. However, it supported only one quantity and one scenario at a time,
+with no measurement tools, comparison features, or advanced analysis capabilities.
+
+The objective was to transform it into a modern scientific visualization tool while keeping
+the existing structure and improving it step by step instead of rebuilding the whole
+application.
+
+\section{Work Performed}
+
+\textbf{Data loading.} Improved the way simulation data is loaded by introducing optimized
+reading methods and caching. This made switching between scenarios faster and provided a
+better foundation for interactive visualization and analysis.
+
+\textbf{Playback.} Improved the animation system to make it more useful for studying fire
+evolution. Users can now move freely through time using a timeline, go frame by frame,
+change playback speed, and compare several simulations at the same moment.
+
+\textbf{Scientific visualization.} Added support for multiple physical quantities and new
+visual analysis tools. The application now includes side-by-side scenario comparison,
+difference views, ensemble views, interactive probes, isotherm and contour visualization,
+and extraction of information from volumetric smoke data.
+
+\textbf{Analysis.} Added several tools to study groups of simulations instead of only
+individual cases. These include a dataset explorer, statistical summaries, time-series
+plots at selected locations, principal component analysis for identifying similar fire
+behaviors, forecasting models, and fire-related indicators such as energy release,
+smoke-layer height, and safety conditions. The application can also generate reports and
+support automated execution through a command-line interface.
+
+\textbf{User interface.} Redesigned the interface to make it easier to use during a
+research workflow. The application is now organized around the main tasks: viewing a
+simulation, comparing cases, exploring datasets, performing analysis, and exporting
+results. Improvements include clearer controls, better visualization of the physical
+setup, improved typography, and support for both light and dark modes.
+
+\textbf{Software architecture.} Improved the internal organization of the application by
+separating data processing, application logic, and visualization components. A common
+system was created for handling different quantities and views, making it easier to add
+future features while keeping the software maintainable.
+
+\section{Final Application}
+
+The final result is no longer only a visualization tool. It has become a complete platform
+for exploring and analyzing FDS simulation studies.
+
+Researchers can load simulation cases, observe how fire conditions change over time,
+compare multiple scenarios, identify important differences, explore datasets, analyze
+patterns, and generate reports. The application is also designed to support future FDS
+outputs and can be used without always relying on the graphical interface.
+
+\section{Future Work}
+
+The platform provides a strong foundation for future improvements, especially in the area
+of artificial intelligence. Some data-driven methods are already included, such as
+forecasting and grouping simulations based on their behavior.
+
+Future developments could include more AI-based assistance, such as automatically
+identifying fire behaviors, helping researchers interpret simulation results, or exploring
+large numbers of simulation parameters more efficiently. These directions will be studied
+and developed in future work.
+
+\section{Conclusion}
+
+This internship transformed a simple FDS visualization application into a more complete
+scientific analysis platform. The project introduced new visualization, comparison,
+measurement, and analysis capabilities while keeping the original system and improving it
+progressively.
+
+The final application provides researchers with a more efficient way to study fire
+simulations and creates a solid foundation for future developments, including the
+integration of more advanced artificial intelligence techniques.
+
+\end{document}

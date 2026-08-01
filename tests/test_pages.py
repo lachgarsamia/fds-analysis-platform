@@ -67,7 +67,7 @@ class TestAnalysisPageGrouping:
         page = AnalysisPage(
             spatiotemporal_content=QtWidgets.QLabel("Spatiotemporal"),
             study_content=QtWidgets.QLabel("Study"),
-            compare_discover_content=QtWidgets.QLabel("Cross-Scenario Comparison"),
+            pairwise_content=QtWidgets.QLabel("Pairwise Comparison"),
             graph_content=QtWidgets.QLabel("Graph"),
             fire_mri_content=QtWidgets.QLabel("Fire MRI"),
             attention_content=QtWidgets.QLabel("Attention"))

@@ -1,24 +1,15 @@
 """Analysis page (FireLab roadmap Phase 4; extended into the app's
 combined "analysis workspace" by the scientific-visualization completion
-pass, item 7): the "Cross-Scenario Comparison" tab hosts
-compare_discover_panel.py's CompareDiscoverPanel, which re-hosts the
-analytics panel's existing content (analytics_panel.py's
-AnalyticsPanelDock, unchanged) as one of its own modes -- see that
-module's docstring for how it and the other three "how do scenarios
-compare?" tools got there. The new static/playback-independent
-ForecastingPanel (forecasting_panel.py) is its own tab, Experimental
-group.
+pass, item 7).
 
 The one-shot background feature-index load used to be triggered by the
-dock's own visibilityChanged signal (tab raised) -- a plain page has no
-such signal, so on_enter() calls the supplied `on_shown` callback instead
-(main_window.py wires this to the same guarded, one-shot handler,
+analytics dock's own visibilityChanged signal (tab raised) -- a plain page
+has no such signal, so on_enter() calls the supplied `on_shown` callback
+instead (main_window.py wires this to the same guarded, one-shot handler,
 unchanged in every other way, still triggered by the Analysis *page*
-being shown -- unaffected by which tab/mode is active, so nesting the
-dock's widget one level deeper inside CompareDiscoverPanel doesn't change
-when this fires).
+being shown -- unaffected by which tab is active).
 
-Phase 6 similarly folded Height/Time series/Time Window into
+Phase 6 folded Height/Time series/Time Window into
 spatiotemporal_panel.py's SpatiotemporalPanel (three modes of one
 "Field & Time Explorer" tab) -- see that module's docstring for why
 Space-time stays a separate top-level tab instead.
@@ -28,6 +19,21 @@ Reference & Communication entirely (not hidden -- their backends,
 field_calculator.py and session_store.py respectively, are called
 directly by main_window.py/quantity_provider.py independent of either
 panel, and stay).
+
+Analysis final-polish pass (pre-supervisor-meeting review): every
+remaining tab was re-checked against "what scientific question does this
+help answer?" and several didn't clear that bar relative to their
+complexity/upkeep -- State space, Ensemble spread, Parallel coordinates,
+the disposable "Quick probe" measurement tool, and the Assistant
+template-summary layer were removed outright rather than kept because
+they already existed. Compare & Discover's former 4-mode
+CompareDiscoverPanel wrapper is unwrapped into two direct tabs (Pairwise
+Comparison, PCA/Clustering) now that only two of its four modes remain --
+a 2-child wrapper wasn't earning its own indirection layer. Reference &
+Communication's former Assistant tab is replaced by "Ask"
+(query_panel.py's QueryPanel, a distinct deterministic physics-query
+grammar previously reachable only as a secondary mode inside the removed
+Assistant wrapper) restored to its own tab.
 """
 
 from __future__ import annotations
@@ -39,28 +45,20 @@ from PyQt5 import QtCore, QtWidgets
 from pages.base import Page
 
 # Analysis section consolidation (docs: the "Analysis Section
-# Consolidation" audit + phased plan). Phase 1 re-grouped tabs by research
-# question instead of investigation stage (several tools answering the
-# same question were scattered across different Phase-D groups). Phase 3
-# went further for the "how are scenarios similar or different?" question:
-# Compare axes/Ensemble/Ensemble analytics/Study's former parallel-
-# coordinates tab are now one "Cross-Scenario Comparison" tab (four modes
-# of compare_discover_panel.py's CompareDiscoverPanel) instead of four
-# separate tabs; Phase 4 did the same for Devices/Zones/Velocity/Measure,
-# now one "Spatial Probes" tab (probe_measure_panel.py's
+# Consolidation" audit + phased plan, later re-checked by the Analysis
+# final-polish pass -- see module docstring). Phase 4 folded Devices/
+# Zones/Velocity into one "Spatial Probes" tab (probe_measure_panel.py's
 # ProbeMeasurePanel). Phase 5 folded Sensitivity into Study itself as a
 # sub-tab (study_panel.py), the same "thin slot, not a rewrite" pattern
 # already used there for Factor effects -- so "Factors & Sensitivity" now
-# has a single "Study" tab rather than two separate ones. Phase 6 did the
-# same for Height/Time series/Time Window, now one "Field & Time Explorer"
-# tab (spatiotemporal_panel.py's SpatiotemporalPanel); Space-time stays a
-# separate top-level tab in the same group (deferred, see that module's
-# docstring). Membership:
+# has a single "Study" tab rather than two separate ones (that tab's own
+# sub-tabs include Correlation & outliers -- already there, not moved).
+# Phase 6 did the same for Height/Time series/Time Window, now one "Field
+# & Time Explorer" tab (spatiotemporal_panel.py's SpatiotemporalPanel);
+# Space-time stays a separate top-level tab in the same group (deferred,
+# see that module's docstring). Membership:
 # - Overview & Interpretation: "what is happening in this simulation?"
-# - Compare & Discover: "how are scenarios similar or different?" (State
-#   space's genome is ensemble-normalized, i.e. inherently a
-#   this-scenario-vs-the-study comparison, so it lives here too, as its
-#   own standalone tab alongside Cross-Scenario Comparison)
+# - Compare & Discover: "how are scenarios similar or different?"
 # - Probe & Measure: "what happens at this location/region?"
 # - Factors & Sensitivity: "what drives the observed response?"
 # - Spatiotemporal Analysis: "how does a quantity evolve across time
@@ -71,11 +69,11 @@ from pages.base import Page
 # default) are unchanged from Phase D.
 _GROUPS = [
     ("Overview & Interpretation", ["Dashboard", "Hazard & Tenability", "Narrative"]),
-    ("Compare & Discover", ["Cross-Scenario Comparison", "State space"]),
+    ("Compare & Discover", ["Pairwise Comparison", "PCA / Clustering"]),
     ("Probe & Measure", ["Spatial Probes"]),
     ("Factors & Sensitivity", ["Study"]),
     ("Spatiotemporal Analysis", ["Field & Time Explorer", "Space-time"]),
-    ("Reference & Communication", ["Quantities", "Graph", "Assistant"]),
+    ("Reference & Communication", ["Quantities", "Graph", "Ask"]),
 ]
 # Fire MRI, Attention, Why is it hot?, and Forecasting are each individually
 # gated/heuristic/exploratory (per-panel disclaimers already say so) --
@@ -126,12 +124,12 @@ class AnalysisPage(Page):
                  playback_bar: QtWidgets.QWidget = None,
                  forecasting_content: QtWidgets.QWidget = None,
                  fire_mri_content: QtWidgets.QWidget = None,
-                 state_space_content: QtWidgets.QWidget = None,
                  attention_content: QtWidgets.QWidget = None,
                  cause_content: QtWidgets.QWidget = None,
                  spatiotemporal_content: QtWidgets.QWidget = None,
                  probe_measure_content: QtWidgets.QWidget = None,
-                 compare_discover_content: QtWidgets.QWidget = None,
+                 pairwise_content: QtWidgets.QWidget = None,
+                 clustering_content: QtWidgets.QWidget = None,
                  study_content: QtWidgets.QWidget = None,
                  hazard_tenability_content: QtWidgets.QWidget = None,
                  dashboard_content: QtWidgets.QWidget = None,
@@ -139,7 +137,7 @@ class AnalysisPage(Page):
                  narrative_content: QtWidgets.QWidget = None,
                  graph_content: QtWidgets.QWidget = None,
                  quantities_content: QtWidgets.QWidget = None,
-                 assistant_content: QtWidgets.QWidget = None, parent=None):
+                 ask_content: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self._on_shown = on_shown
         layout = QtWidgets.QVBoxLayout(self)
@@ -169,12 +167,12 @@ class AnalysisPage(Page):
             ("Spatial Probes", probe_measure_content),
             ("Graph", graph_content),
             ("Quantities", quantities_content),
-            ("Assistant", assistant_content),
+            ("Ask", ask_content),
             ("Fire MRI", fire_mri_content),
             ("Attention", attention_content),
             ("Why is it hot?", cause_content),
-            ("State space", state_space_content),
-            ("Cross-Scenario Comparison", compare_discover_content),
+            ("Pairwise Comparison", pairwise_content),
+            ("PCA / Clustering", clustering_content),
             ("Study", study_content),
             ("Forecasting", forecasting_content),
         ]

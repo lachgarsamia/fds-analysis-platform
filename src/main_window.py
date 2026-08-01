@@ -61,34 +61,26 @@ from report_builder import (build_scenario_report, build_comparison_report,
                             build_session_report, write_report)
 from semantic_diff import compare as compare_scenarios, difference_statements
 from query_panel import QueryPanel
-from state_space_panel import StateSpacePanel
 from attention_panel import AttentionPanel
 from cause_panel import CausePanel
 from height_panel import HeightPanel
 from zone_panel import ZonePanel
 from time_window_panel import TimeWindowPanel
-from measurement_panel import MeasurementPanel
 from advanced_compare_panel import AdvancedComparePanel
 from probe_measure_panel import ProbeMeasurePanel
 from spatiotemporal_panel import SpatiotemporalPanel
 import manifest as manifest_mod
 from quantities_panel import QuantitiesPanel
-from assistant_panel import AssistantPanel
-from assistant_query_panel import AssistantQueryPanel
-import assistant as assistant_mod
 from selection import Selection, SelectionBus
 from quantity_provider import QuantityProvider
 from analysis_panel_base import bind_to_bus
 from study_panel import StudyPanel
-from parallel_coordinates_panel import ParallelCoordinatesPanel
-from compare_discover_panel import CompareDiscoverPanel
 from sensitivity_panel import SensitivityPanel
 from hazard_panel import HazardPanel
 from hazard_tenability_panel import HazardTenabilityPanel
 from dashboard_panel import DashboardPanel
 from spacetime_panel import SpaceTimePanel
 from narrative_panel import NarrativePanel
-from ensemble_panel import EnsemblePanel
 from graph_panel import GraphPanel
 from history import InvestigationHistory
 import field_calculator as field_calculator_mod
@@ -96,7 +88,6 @@ from device_panel import DevicePanel
 from velocity_panel import VelocityPanel
 from figure_export import save_figure
 from report_builder import build_publication_manifest
-import study_analytics as study_analytics_mod
 import smoke_density
 import derived_quantities
 import session_store
@@ -554,7 +545,6 @@ class MainWindow(QtWidgets.QMainWindow):
         ("hazard_panel", "timeline_canvas", "hazard_timeline", "Hazard-class fractions over time (temperature-only partial screen)."),
         ("study_panel", "parallel_canvas", "study_parallel", "Parameter-vs-response parallel coordinates across the factorial."),
         ("sensitivity_panel", "surface_canvas", "sensitivity_surface", "Estimated response surface (interpolated from existing scenarios)."),
-        ("ensemble_panel", "canvas", "ensemble_spread", "Parametric ensemble spread across the existing scenarios."),
     ]
 
     def _prepare_publication_bundle(self) -> None:
@@ -833,11 +823,6 @@ class MainWindow(QtWidgets.QMainWindow):
             # Physics query engine (V3-M4).
             self.query_panel = QueryPanel(
                 self.controller.store, self.sim_data.manifest, self.sim_data.timesteps_per_second)
-            # State space + Fire Genome (V3-M5). Summaries (already computed
-            # for the browser) supply the genome's energy trait.
-            self.state_space_panel = StateSpacePanel(
-                self.controller.store, self.sim_data.manifest, self.sim_data.timesteps_per_second,
-                summaries=getattr(self, "_scenario_summaries", None))
             # Physics attention map (V3-M6): heuristic saliency, per frame.
             self.attention_panel = AttentionPanel(
                 self.controller.store, self.sim_data.manifest, self.sim_data.timesteps_per_second)
@@ -871,21 +856,17 @@ class MainWindow(QtWidgets.QMainWindow):
             self.spatiotemporal_panel = SpatiotemporalPanel(
                 height=self.height_panel, timeseries=self.timeseries_panel,
                 time_window=self.time_window_panel)
-            # Measurement tools (V4-M7; UX consolidation pass reduced the
-            # tool set to rectangle/probe): disposable, un-named area/point
-            # reads on the field; measurements persist with the session.
-            self.measurement_panel = MeasurementPanel(
-                self.controller.store, self.sim_data.manifest,
-                self._quantity_options(), self.sim_data.timesteps_per_second)
             # Probe & Measure (Analysis section consolidation Phase 4): a
-            # thin QTabWidget wrapper over four pre-existing "what happens
-            # at this location/region?" tools -- devices, zones, velocity,
-            # and quick (disposable) measurement. Every child's own
-            # construction/store access/lazy-load/bus wiring is unchanged;
-            # only the tab-level presentation is consolidated.
+            # thin QTabWidget wrapper over three pre-existing "what happens
+            # at this location/region?" tools -- devices, zones, velocity.
+            # Every child's own construction/store access/lazy-load/bus
+            # wiring is unchanged; only the tab-level presentation is
+            # consolidated. (The disposable rectangle/point "Quick probe"
+            # tool was removed in the Analysis final-polish pass -- Devices/
+            # Zones/Velocity already cover deliberate measurement.)
             self.probe_measure_panel = ProbeMeasurePanel(
                 devices=self.device_panel, zones=self.zone_panel,
-                velocity=self.velocity_panel, measure=self.measurement_panel)
+                velocity=self.velocity_panel)
             # Advanced comparison (V4-M8): temporal / spatial / physics axes.
             # Needs two scenarios to compare (like the semantic diff).
             self.advanced_compare_panel = (
@@ -897,14 +878,6 @@ class MainWindow(QtWidgets.QMainWindow):
             # Quantity reference/breadth (V4-M11): available / derived / gated.
             self.quantities_panel = QuantitiesPanel(
                 self.controller.store, self.sim_data.manifest)
-            # Safe Assistant (V4-M12): bounded, deterministic organization of
-            # computed evidence; main_window supplies context and runs it.
-            self.assistant_panel = AssistantPanel()
-            # Ask (Analysis-improvement roadmap Phase B): merged into the
-            # Assistant tab as a second mode -- both panels unchanged, only
-            # the tab-level presentation is consolidated (same pattern as
-            # Hazard & Tenability).
-            self.assistant_query_panel = AssistantQueryPanel(self.assistant_panel, self.query_panel)
             # Research workspace (V5-M4): hazard spaces + mission-control
             # dashboard. Per-scenario, so any study (not just the factorial).
             # V6-M6: takes the provider (not the raw store) so a CO read
@@ -929,10 +902,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.quantity_provider, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
             self.narrative_panel = NarrativePanel(
-                self.controller.store, self.sim_data.manifest,
-                self.sim_data.timesteps_per_second)
-            # Ensemble spread (V5-M5): min/mean/max envelopes across scenarios.
-            self.ensemble_panel = EnsemblePanel(
                 self.controller.store, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
             # Research Knowledge Graph (V5 Phase 6): laboratory memory over
@@ -965,29 +934,15 @@ class MainWindow(QtWidgets.QMainWindow):
                            factor_effects_content=self.factor_effects_panel,
                            sensitivity_content=self.sensitivity_panel)
                 if self.is_factorial else None)
-            # Parallel coordinates (Analysis section consolidation Phase 3):
-            # extracted from StudyPanel -- it conceptually belongs with the
-            # other cross-scenario discovery tools (Compare & Discover), not
-            # Study's factor/response tabs. Needs the same factor axes +
-            # computed summaries StudyPanel does.
-            self.parallel_coordinates_panel = (
-                ParallelCoordinatesPanel(getattr(self, "_scenario_summaries", None) or [],
-                                         self.sim_data.manifest)
-                if self.is_factorial else None)
-            # Compare & Discover (Analysis section consolidation Phase 3): a
-            # thin QTabWidget wrapper over four pre-existing "how do
-            # scenarios compare?" tools -- pairwise, parallel coordinates,
-            # ensemble envelope, and PCA/clustering. Every child's own
-            # construction/store access/lazy-load/bus wiring is unchanged;
-            # only the tab-level presentation is consolidated (same pattern
-            # as HazardTenabilityPanel/AssistantQueryPanel). Any child may be
-            # absent (e.g. fewer than 2 scenarios means no pairwise panel);
-            # the wrapper only adds a tab for what's supplied.
-            self.compare_discover_panel = CompareDiscoverPanel(
-                pairwise=self.advanced_compare_panel,
-                parallel=self.parallel_coordinates_panel,
-                ensemble=self.ensemble_panel,
-                clustering=(self.analytics_panel.widget() if self.analytics_panel is not None else None))
+            # Compare & Discover (Analysis section consolidation Phase 3,
+            # unwrapped in the Analysis final-polish pass): Pairwise
+            # Comparison and PCA/Clustering are direct tabs -- Parallel
+            # coordinates and Ensemble spread were removed (not enough
+            # standalone research value for their complexity/upkeep), which
+            # left the former 4-mode CompareDiscoverPanel wrapper hosting
+            # only 2 children, no longer earning its own indirection layer.
+            self.clustering_content = (
+                self.analytics_panel.widget() if self.analytics_panel is not None else None)
         else:
             self.quantity_provider = None
             self.device_panel = None
@@ -996,31 +951,25 @@ class MainWindow(QtWidgets.QMainWindow):
             self.energy_panel = None
             self.factor_effects_panel = None
             self.study_panel = None
-            self.parallel_coordinates_panel = None
-            self.compare_discover_panel = None
             self.sensitivity_panel = None
             self.tenability_panel = None
             self.fire_mri_panel = None
             self.query_panel = None
-            self.state_space_panel = None
             self.attention_panel = None
             self.cause_panel = None
             self.height_panel = None
             self.zone_panel = None
             self.time_window_panel = None
-            self.measurement_panel = None
             self.probe_measure_panel = None
             self.spatiotemporal_panel = None
             self.advanced_compare_panel = None
+            self.clustering_content = None
             self.quantities_panel = None
-            self.assistant_panel = None
-            self.assistant_query_panel = None
             self.hazard_panel = None
             self.hazard_tenability_panel = None
             self.dashboard_panel = None
             self.spacetime_panel = None
             self.narrative_panel = None
-            self.ensemble_panel = None
             self.graph_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
@@ -1044,12 +993,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 forecasting_content=ForecastingPanel(
                     self.prediction_store, self.controller.store, self.sim_data.manifest),
                 fire_mri_content=self.fire_mri_panel,
-                state_space_content=self.state_space_panel,
                 attention_content=self.attention_panel,
                 cause_content=self.cause_panel,
                 spatiotemporal_content=self.spatiotemporal_panel,
                 probe_measure_content=self.probe_measure_panel,
-                compare_discover_content=self.compare_discover_panel,
+                pairwise_content=self.advanced_compare_panel,
+                clustering_content=self.clustering_content,
                 study_content=self.study_panel,
                 hazard_tenability_content=self.hazard_tenability_panel,
                 dashboard_content=self.dashboard_panel,
@@ -1057,7 +1006,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 narrative_content=self.narrative_panel,
                 graph_content=self.graph_panel,
                 quantities_content=self.quantities_panel,
-                assistant_content=self.assistant_query_panel),
+                ask_content=self.query_panel),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
             "about": AboutPage(),
@@ -1116,12 +1065,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._seek_from_bus = False
         fps = self.time_controller.timesteps_per_second
         for attr in ("height_panel", "zone_panel", "time_window_panel",
-                     "measurement_panel", "fire_mri_panel",
-                     "query_panel", "state_space_panel", "attention_panel", "cause_panel",
+                     "fire_mri_panel",
+                     "query_panel", "attention_panel", "cause_panel",
                      "factor_effects_panel", "tenability_panel", "timeseries_panel",
                      "energy_panel", "forecasting_panel", "quantities_panel",
-                     "advanced_compare_panel", "study_panel", "parallel_coordinates_panel",
-                     "hazard_panel", "spacetime_panel", "narrative_panel", "ensemble_panel",
+                     "advanced_compare_panel", "study_panel",
+                     "hazard_panel", "spacetime_panel", "narrative_panel",
                      "device_panel", "velocity_panel", "dashboard_panel"):
             panel = getattr(self, attr, None)
             if panel is not None:
@@ -1277,88 +1226,6 @@ class MainWindow(QtWidgets.QMainWindow):
         as reusable session-management logic, just not wired to a visible
         tab today."""
         self._sessions_dir = session_store.default_sessions_dir()
-        # V4-M12: the Safe Assistant runs on computed context supplied here.
-        if self.assistant_panel is not None:
-            self.assistant_panel.action_requested.connect(self._on_assistant_action)
-            self.assistant_panel.query_submitted.connect(self._on_assistant_query)
-            self.assistant_panel.save_requested.connect(self._on_assistant_save)
-
-    def _run_assistant(self, action: str) -> str:
-        """Gather computed context and run one deterministic assistant
-        action. No physics is inferred -- every result is a template filled
-        from already-computed values."""
-        if action == "summarize_session":
-            return assistant_mod.summarize_session(self._collect_session_dict())
-        if action == "list_key_findings":
-            return assistant_mod.list_key_findings(self.evidence_dock.notebook.to_list())
-        if action == "report_outline":
-            return assistant_mod.report_outline(self.evidence_dock.notebook.to_list())
-        if action == "compare_intervals":
-            return self._assistant_compare_intervals()
-        if action == "figure_caption":
-            return self._assistant_figure_caption()
-        return assistant_mod.REFUSAL
-
-    def _assistant_compare_intervals(self) -> str:
-        import time_window as tw
-        p = self.time_window_panel
-        if p is None or getattr(p, "_series", None) is None:
-            return "Open the Intervals tab and select a window first."
-        s = p._series
-        if p._mode == "split" and p._split is not None:
-            a, b = tw.before_after_split(s["mean"], s["max"], s["times"], p._split)
-            la, lb = f"before {p._split:.0f} s", f"after {p._split:.0f} s"
-        else:
-            a = tw.interval_stats(s["mean"], s["max"], s["times"], p._t0, p._t1)
-            b = tw.interval_stats(s["mean"], s["max"], s["times"],
-                                  float(s["times"][0]), float(s["times"][-1]))
-            la, lb = "selected window", "whole run"
-        return assistant_mod.compare_intervals(a, b, la, lb, s["unit"])
-
-    def _assistant_figure_caption(self) -> str:
-        import numpy as np
-        from registry import get_quantity
-        cell = self.view_grid.active_cell()
-        if cell is None or cell.cell_type != "slice":
-            return "Select a single-scenario cell in the Live viewer for a caption."
-        data = np.asarray(self.controller.store.get(cell.case_index, cell.quantity_key))
-        idx = min(self.time_controller.index, data.shape[0] - 1)
-        peak = float(data[idx].max())
-        scenario = next((e.folder for e in self.sim_data.manifest
-                         if e.case_index == cell.case_index), str(cell.case_index))
-        q = get_quantity(cell.quantity_key.quantity)
-        fps = self.time_controller.timesteps_per_second
-        return assistant_mod.figure_caption(scenario, q.label, q.unit, idx / fps, peak)
-
-    def _on_assistant_action(self, action: str) -> None:
-        self.assistant_panel.show_result(self._run_assistant(action))
-
-    def _on_assistant_query(self, text: str) -> None:
-        action = assistant_mod.interpret_request(text)
-        if action == "refuse":
-            self.assistant_panel.show_result(assistant_mod.REFUSAL, savable=False)
-        elif action == "search_scenarios":
-            # Assistant++ (V5-M5): experiment search over the study table.
-            summaries = getattr(self, "_scenario_summaries", None)
-            if not summaries:
-                self.assistant_panel.show_result(
-                    "Scenario search needs the factorial's computed summaries.",
-                    savable=False)
-                return
-            table = study_analytics_mod.build_table(summaries)
-            self.assistant_panel.show_result(assistant_mod.search_scenarios(table, text))
-        else:
-            self.assistant_panel.show_result(self._run_assistant(action))
-
-    def _on_assistant_save(self, text: str) -> None:
-        if not text:
-            return
-        from insight import Insight
-        first_line = text.strip().splitlines()[0] if text.strip() else "Assistant note"
-        self.evidence_dock.add_insight(Insight(
-            first_line[:200], category="query",
-            basis="assistant: organized from computed evidence (no cause inferred)"))
-        self.statusBar().showMessage("Saved assistant output to the Evidence Notebook", 4000)
 
     def _build_evidence_notebook(self) -> None:
         """Evidence Notebook (V4-M2): a dockable, session-backed collection
@@ -3960,8 +3827,6 @@ class MainWindow(QtWidgets.QMainWindow):
                          if self.time_window_panel is not None else {}),
             filters=(self.experiment_browser.get_filter_state()
                      if self.experiment_browser is not None else {}),
-            measurements=(self.measurement_panel.get_measurements()
-                          if self.measurement_panel is not None else []),
             selection=(self.selection_bus.current.to_dict()
                        if getattr(self, "selection_bus", None) is not None else {}),
             calculated_fields=[f.to_dict() for f in field_calculator_mod.all_fields()],
@@ -4041,8 +3906,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.time_window_panel.set_state(session.get("time_window", {}))
         if self.experiment_browser is not None:
             self.experiment_browser.set_filter_state(session.get("filters", {}))
-        if self.measurement_panel is not None:
-            self.measurement_panel.set_measurements(session.get("measurements", []))
         # V6-M1: restore the Field Calculator definitions (absent -> none). Clear
         # first so a load replaces rather than accumulates.
         field_calculator_mod.clear()

@@ -46,6 +46,7 @@ class GraphPanel(QtWidgets.QWidget):
         self._selected = None
         self._event_cache = {}
         self._hazard_cache = {}
+        self._quantity_cache = {}
         self._current_scenario = None
         self._focus_selected = False
 
@@ -84,6 +85,18 @@ class GraphPanel(QtWidgets.QWidget):
         self.caption.setWordWrap(True)
         self.caption.setProperty("role", "caption")
         layout.addWidget(self.caption)
+
+        # Compact type legend (Analysis final-polish pass): node color was
+        # previously only decodable via the x-axis column headers and the
+        # tree browser's own grouping -- a small always-visible swatch row
+        # makes "what does this color mean" immediate.
+        self.legend = QtWidgets.QLabel(" &middot; ".join(
+            f'<span style="color:{gm.TYPE_COLOR[t]}">&#9679;</span> {t.capitalize()}'
+            for t in gm.NODE_TYPES))
+        self.legend.setTextFormat(QtCore.Qt.RichText)
+        self.legend.setWordWrap(True)
+        self.legend.setProperty("role", "caption")
+        layout.addWidget(self.legend)
 
         body = QtWidgets.QSplitter()
         self.tree = QtWidgets.QTreeWidget()
@@ -125,6 +138,16 @@ class GraphPanel(QtWidgets.QWidget):
         if not self._loaded:
             self._loaded = True
             self._rebuild()
+            # Analysis final-polish pass: start focused on the current
+            # scenario (if any) instead of dumping every node/edge on
+            # first open -- avoids the "hairball by default" problem while
+            # the "Focus on selected" checkbox stays available to widen
+            # the view back out.
+            sid = (f"scenario:{self._current_scenario}"
+                   if self._current_scenario is not None else None)
+            if sid is not None and sid in self._graph.nodes:
+                self.focus_checkbox.setChecked(True)
+                self._select_node(sid)
 
     def _events_for(self, case_index):
         if case_index is None:
@@ -138,6 +161,30 @@ class GraphPanel(QtWidgets.QWidget):
             except Exception:
                 self._event_cache[case_index] = []
         return self._event_cache[case_index]
+
+    def _quantities_for(self, case_index):
+        """A small, fixed set of summary_stats.py's already-computed
+        per-scenario metrics for `case_index` -- deliberately just 3 (peak
+        temperature, peak HRR, minimum smoke-layer height), not every
+        ScenarioSummary field, so the graph answers "what did this
+        scenario measure?" without growing into another dense, hairball
+        view. Cached and scoped to the same "currently selected scenario
+        only" bound as _hazard_class_for/_events_for."""
+        if case_index is None:
+            return []
+        if case_index not in self._quantity_cache:
+            readings = []
+            summaries = getattr(self._app, "_scenario_summaries", None) or []
+            summary = next((s for s in summaries if s.case_index == case_index), None)
+            if summary is not None:
+                if summary.max_temp_c is not None:
+                    readings.append(("Peak temperature", f"{summary.max_temp_c:.0f} °C"))
+                if summary.peak_hrr_kw is not None:
+                    readings.append(("Peak HRR", f"{summary.peak_hrr_kw:.0f} kW"))
+                if summary.layer_min_height_m is not None:
+                    readings.append(("Min. smoke-layer height", f"{summary.layer_min_height_m:.2f} m"))
+            self._quantity_cache[case_index] = readings
+        return self._quantity_cache[case_index]
 
     def _hazard_class_for(self, case_index):
         """Worst hazard_spaces.py tenability class reached in `case_index`
@@ -169,7 +216,6 @@ class GraphPanel(QtWidgets.QWidget):
         notebook = getattr(getattr(app, "evidence_dock", None), "notebook", None)
         entries = list(notebook.entries) if notebook is not None else []
         zones = live("zone_panel", "_zones") or []
-        measures = live("measurement_panel", "_measurements") or []
         # V6-M4: placed devices/vector probes become graph nodes too, the
         # same way zones/measurements already do.
         devices = live("device_panel", "_devices") or []
@@ -192,22 +238,27 @@ class GraphPanel(QtWidgets.QWidget):
             sessions = []
         ev = {}
         hazard = {}
+        quantities = {}
         if self._current_scenario is not None:
             ev[self._current_scenario] = self._events_for(self._current_scenario)
             cls = self._hazard_class_for(self._current_scenario)
             if cls is not None:
                 hazard[self._current_scenario] = cls
-        return (entries, zones, measures, experiments, sessions, ev, devices,
-               vector_probes, hypotheses, hazard)
+            q = self._quantities_for(self._current_scenario)
+            if q:
+                quantities[self._current_scenario] = q
+        return (entries, zones, experiments, sessions, ev, devices,
+               vector_probes, hypotheses, hazard, quantities)
 
     def _rebuild(self) -> None:
-        (entries, zones, measures, experiments, sessions, ev, devices,
-         vector_probes, hypotheses, hazard) = self._gather()
+        (entries, zones, experiments, sessions, ev, devices,
+         vector_probes, hypotheses, hazard, quantities) = self._gather()
         self._graph = gm.build_graph(self._manifest, notebook=entries, zones=zones,
-                                     measurements=measures, experiments=experiments,
+                                     experiments=experiments,
                                      sessions=sessions, events_by_scenario=ev,
                                      devices=devices, vector_probes=vector_probes,
-                                     hypotheses=hypotheses, hazard_by_scenario=hazard)
+                                     hypotheses=hypotheses, hazard_by_scenario=hazard,
+                                     quantities_by_scenario=quantities)
         # tag filter options
         self.tag_combo.blockSignals(True)
         self.tag_combo.clear()
