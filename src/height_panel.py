@@ -36,6 +36,26 @@ logger = logging.getLogger(__name__)
 #: field at all, and there is no honest way to compute a "smoke layer
 #: height" from Pascals -- that series is skipped for it (see _reload),
 #: not computed with a number that would look plausible but mean nothing.
+#:
+#: SOOT DENSITY (continuous soot-density visualization pass, Step 5) is
+#: deliberately excluded too, for a different reason: a soot-based version
+#: of the same domain-mean/half-integral method WAS implemented and tested
+#: against this dataset's real SOOT DENSITY (all scenarios, y=0 plane), not
+#: just reasoned about -- and rejected. Investigation (see git history for
+#: the exact figures): SOOT DENSITY here is >85-99.8% exact zero even in
+#: the highest-candle scenarios, with what nonzero signal exists
+#: concentrated tightly around the floor-level source (the domain-mean
+#: profile's ceiling-row value was ~0 at every sampled frame across
+#: scenarios, vs. a strong floor-row value right next to the source) --
+#: i.e. a small, localized near-source plume, not the horizontally-
+#: stratified, ceiling-descending layer the "layer height" concept assumes.
+#: The resulting series was ~2x more volatile frame-to-frame than the
+#: temperature-based one and correlated with it at only r~0.15-0.18 (should
+#: track together if both measured the same physical interface) -- evidence
+#: it was tracking near-source blob drift, not a smoke layer. Shipping it
+#: anyway would be a number that looks plausible but measures the wrong
+#: thing. Not implemented; see _SOOT_DENSITY_CAPTION for what the panel
+#: tells the user instead.
 _THERMAL_QUANTITIES = ("TEMPERATURE", "TEMPERATURE RISE")
 
 #: Live-polish follow-up ("better ways to visualize dynamic pressure"):
@@ -59,6 +79,20 @@ _DYNAMIC_PRESSURE_CAPTION = (
     "this curve cannot show a flow-reversal zero-crossing -- only where flow "
     "forcing concentrates vertically. Finding an actual neutral plane needs "
     "signed velocity data this dataset doesn't have (see docs/msim-preparation.md).")
+
+#: Continuous soot-density visualization pass, Step 5: explains the missing
+#: layer/plume/ceiling curves rather than leaving their absence unexplained
+#: -- see _THERMAL_QUANTITIES' docstring for the investigation this
+#: rejection is based on.
+_SOOT_DENSITY_CAPTION = (
+    "Vertical soot profile, not a smoke-layer height. This dataset's SOOT "
+    "DENSITY is concentrated tightly around the floor-level fire source "
+    "rather than spread into a horizontally-stratified layer that "
+    "descends from the ceiling, so the same layer-height method used for "
+    "TEMPERATURE would measure near-source drift, not a real interface -- "
+    "it was tested against this data and rejected rather than shown. The "
+    "Temperature quantity's own smoke-layer curve remains the "
+    "temperature-derived estimate.")
 
 
 class HeightPanel(QtWidgets.QWidget):
@@ -348,12 +382,14 @@ class HeightPanel(QtWidgets.QWidget):
         self._update_caption()
 
     def _update_caption(self) -> None:
-        """Swaps in the dynamic-pressure-specific caveat while that
-        quantity is selected, same "explain the limitation plainly" pattern
-        velocity_panel.py's own caption already uses -- reverts to the
-        default caption for every other quantity."""
+        """Swaps in the dynamic-pressure- or soot-density-specific caveat
+        while that quantity is selected, same "explain the limitation
+        plainly" pattern velocity_panel.py's own caption already uses --
+        reverts to the default caption for every other quantity."""
         if self._key is not None and self._key.quantity == DYNAMIC_PRESSURE_QUANTITY:
             self.caption.setText(_DYNAMIC_PRESSURE_CAPTION)
+        elif self._key is not None and self._key.quantity == "SOOT DENSITY":
+            self.caption.setText(_SOOT_DENSITY_CAPTION)
         else:
             self.caption.setText(_DEFAULT_CAPTION)
 

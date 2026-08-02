@@ -13,6 +13,17 @@ Static/lazy; the current-scenario bundle is cheap; cross-scenario
 comparison is on demand (a button), streaming one scenario at a time.
 Reuses the store, timeseries region mapping, tenability's threshold idea,
 and the registry.
+
+Continuous soot-density visualization pass, Step 6: the stats line and
+comparison table also carry smoke accumulation (zone_stats.
+smoke_accumulation -- mg·s/m³, the time integral of the zone's mean real
+SOOT DENSITY, same "dose" pattern as thermal_dose but for soot instead of
+excess temperature). Read from the same verified y=0 plane every other
+soot feature uses; shown as "n/a", never 0, if that scenario's soot data
+can't be fetched -- 0 would claim "measured, no soot," which is a
+different statement from "not measured." No new tab/selector: this rides
+the existing TEMPERATURE-driven zone/scenario/scrub selection already in
+this panel.
 """
 
 from __future__ import annotations
@@ -20,12 +31,22 @@ from __future__ import annotations
 import numpy as np
 from PyQt5 import QtCore, QtWidgets
 
+import logging
+
 from widgets import MplCanvas
 from registry import get_quantity, AMBIENT_C
 from insight import InsightList, Insight
-from slice_key import SliceKey
+from slice_key import SliceKey, SOOT_QUANTITY, AXIS_TO_DIRECTION
 from analysis_panel_base import populate_scenario_combo
 import zone_stats as zs
+
+logger = logging.getLogger(__name__)
+
+#: Continuous soot-density visualization pass, Step 6: the same verified
+#: y=0 plane every other soot feature in this app uses (main_window.py's
+#: _soot_supported_for_cell) -- smoke_accumulation is only ever computed
+#: against this plane, never the unverified x=0.25 doorway plane.
+_SOOT_KEY = SliceKey(SOOT_QUANTITY, AXIS_TO_DIRECTION['y'], 0, 0.0)
 
 
 class ZonePanel(QtWidgets.QWidget):
@@ -38,6 +59,7 @@ class ZonePanel(QtWidgets.QWidget):
         self._zones = []          # list[zs.Zone] -- persistent, session-backed
         self._data = None
         self._extent = None
+        self._soot_data = None    # continuous soot-density visualization pass, Step 6
         self._press = None        # first drag corner (x, z)
         self._q = get_quantity("TEMPERATURE")
         self._threshold = (self._q.hazard_levels or (AMBIENT_C * 3,))[0]
@@ -153,6 +175,11 @@ class ZonePanel(QtWidgets.QWidget):
             return
         self._data = np.asarray(self._store.get(case_index, SliceKey("TEMPERATURE")))
         self._extent = self._store.get_extent(case_index, SliceKey("TEMPERATURE"))
+        try:
+            self._soot_data = np.asarray(self._store.get(case_index, _SOOT_KEY))
+        except Exception as e:  # noqa: BLE001 - smoke accumulation is a nice-to-have extra stat
+            logger.warning("zone panel: failed to fetch SOOT DENSITY for case %s: %s", case_index, e)
+            self._soot_data = None
         self._draw_locator()
         self._recompute()
 
@@ -250,15 +277,34 @@ class ZonePanel(QtWidgets.QWidget):
             return
         b = zs.zone_bundle(self._data, self._extent, zone, self._fps,
                            self._threshold, AMBIENT_C)
-        self._render_stats(zone, b)
+        smoke_accum = self._smoke_accumulation_for(zone)
+        self._render_stats(zone, b, smoke_accum)
         self._render_plot(zone, b)
         self._build_insights(zone, b)
+
+    def _smoke_accumulation_for(self, zone):
+        """Continuous soot-density visualization pass, Step 6: mg·s/m³ of
+        soot exposure this zone has accumulated so far, in the current
+        scenario -- the same 'time integral of a zone-mean quantity'
+        pattern as thermal_dose above, applied to real SOOT DENSITY
+        instead of excess temperature (see zone_stats.smoke_accumulation's
+        docstring). None if this scenario/plane's soot data isn't
+        available; the caller must render "n/a" rather than 0, since 0 and
+        "unavailable" are not the same claim."""
+        if self._soot_data is None:
+            return None
+        try:
+            return zs.smoke_accumulation(self._soot_data, self._extent, zone, self._fps)
+        except Exception as e:  # noqa: BLE001 - a nice-to-have extra stat, must not blank the panel
+            logger.warning("zone panel: smoke_accumulation failed: %s", e)
+            return None
 
     @staticmethod
     def _fmt_ttt(v):
         return f"{v:.1f} s" if v is not None else "never"
 
-    def _render_stats(self, zone, b) -> None:
+    def _render_stats(self, zone, b, smoke_accum=None) -> None:
+        smoke_html = ("n/a" if smoke_accum is None else f"{smoke_accum:.0f} mg·s/m³")
         self.stats_label.setText(
             f"<b>{zone.name}</b> ({b['n_cells']} cells, {zone.area():.3f} m²) &nbsp; "
             f"mean {b['mean_temperature']:.0f} °C &nbsp; peak {b['max_temperature']:.0f} °C "
@@ -266,7 +312,8 @@ class ZonePanel(QtWidgets.QWidget):
             f"&nbsp; hazard duration {b['hazard_duration']:.1f} s &nbsp; "
             f"thermal dose {b['thermal_dose']:.0f} °C·s &nbsp; "
             f"peak affected {b['peak_affected_fraction'] * 100:.0f}% &nbsp; "
-            f"energy proxy {b['energy_proxy']:.1f} °C·s·m²")
+            f"energy proxy {b['energy_proxy']:.1f} °C·s·m² &nbsp; "
+            f"smoke accumulation {smoke_html}")
 
     def _render_plot(self, zone, b) -> None:
         fig = self.plot_canvas.fig
@@ -295,7 +342,8 @@ class ZonePanel(QtWidgets.QWidget):
                 ("mean °C", "mean_temperature"),
                 (f"t→{self._threshold:.0f}°C", "time_to_threshold"),
                 ("hazard s", "hazard_duration"), ("dose °C·s", "thermal_dose"),
-                ("peak aff %", "peak_affected_fraction")]
+                ("peak aff %", "peak_affected_fraction"),
+                ("smoke accum mg·s/m³", "smoke_accum")]
         self.compare_table.clear()
         self.compare_table.setColumnCount(len(cols))
         self.compare_table.setRowCount(len(self._manifest))
@@ -306,9 +354,18 @@ class ZonePanel(QtWidgets.QWidget):
                 data = np.asarray(self._store.get(entry.case_index, SliceKey("TEMPERATURE")))
                 extent = self._store.get_extent(entry.case_index, SliceKey("TEMPERATURE"))
                 b = zs.zone_bundle(data, extent, zone, self._fps, self._threshold, AMBIENT_C)
+                try:
+                    soot = np.asarray(self._store.get(entry.case_index, _SOOT_KEY))
+                    smoke_accum = zs.smoke_accumulation(soot, extent, zone, self._fps)
+                except Exception as e:  # noqa: BLE001 - one scenario's missing soot must not blank the row
+                    logger.warning("zone panel: smoke_accumulation failed for case %s: %s",
+                                    entry.case_index, e)
+                    smoke_accum = None
                 for c, (_label, key) in enumerate(cols):
                     if key is None:
                         text = entry.folder
+                    elif key == "smoke_accum":
+                        text = "n/a" if smoke_accum is None else f"{smoke_accum:.0f}"
                     elif key == "time_to_threshold":
                         text = self._fmt_ttt(b[key])
                     elif key == "peak_affected_fraction":

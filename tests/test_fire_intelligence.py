@@ -808,6 +808,59 @@ class TestZoneStats:
                                      zst.Zone("all", 0.0, 1.0, 0.0, 1.0), fps=2)
         assert acc == pytest.approx(4.0)  # mean 2 per frame * 4 frames / fps
 
+    def test_smoke_accumulation_is_deterministic(self):
+        """Continuous soot-density visualization pass, Step 9: a pure
+        reduction over the same array/zone/fps must return the identical
+        value every call -- no hidden RNG/global state."""
+        rng = np.random.default_rng(0)
+        soot = rng.uniform(0.0, 5000.0, size=(6, 4, 5)).astype(np.float32)
+        zone = zst.Zone("z", 0.1, 0.6, 0.2, 0.7)
+        results = [zst.smoke_accumulation(soot, (0.0, 1.0, 0.0, 1.0), zone, fps=4)
+                   for _ in range(5)]
+        assert len(set(results)) == 1
+
+    def test_smoke_accumulation_units_are_concentration_times_seconds(self):
+        """mg/m3 (soot) * s (fps division) = mg.s/m3 -- doubling either the
+        concentration or the frame count must double the result linearly,
+        which is the defining property of a dose-like concentration-time
+        integral."""
+        base = np.full((4, 2, 2), 1000.0, dtype=np.float32)
+        zone = zst.Zone("all", 0.0, 1.0, 0.0, 1.0)
+        acc_base = zst.smoke_accumulation(base, (0.0, 1.0, 0.0, 1.0), zone, fps=4)
+        acc_double_conc = zst.smoke_accumulation(base * 2, (0.0, 1.0, 0.0, 1.0), zone, fps=4)
+        acc_double_frames = zst.smoke_accumulation(np.concatenate([base, base]),
+                                                    (0.0, 1.0, 0.0, 1.0), zone, fps=4)
+        assert acc_double_conc == pytest.approx(acc_base * 2)
+        assert acc_double_frames == pytest.approx(acc_base * 2)
+
+    def test_smoke_accumulation_never_negative_for_nonnegative_soot(self):
+        """SOOT DENSITY is a physical mass concentration -- always >= 0 --
+        so its time integral over any zone/duration must be too."""
+        rng = np.random.default_rng(1)
+        soot = rng.uniform(0.0, 20000.0, size=(20, 6, 6)).astype(np.float32)
+        zone = zst.Zone("z", 0.0, 1.0, 0.0, 1.0)
+        acc = zst.smoke_accumulation(soot, (0.0, 1.0, 0.0, 1.0), zone, fps=8)
+        assert acc >= 0.0
+
+    def test_smoke_accumulation_zero_for_zero_soot(self):
+        soot = np.zeros((10, 3, 3), dtype=np.float32)
+        zone = zst.Zone("z", 0.0, 1.0, 0.0, 1.0)
+        acc = zst.smoke_accumulation(soot, (0.0, 1.0, 0.0, 1.0), zone, fps=4)
+        assert acc == 0.0
+
+    def test_smoke_accumulation_respects_zone_bounds(self):
+        """A zone covering only the (always-zero) left half of the domain
+        must read 0 even when the right half is smoke-filled -- confirms
+        the same zone_indices() cropping zone_bundle already relies on is
+        actually applied here, not a whole-frame mean."""
+        soot = np.zeros((5, 4, 4), dtype=np.float32)
+        soot[:, :, 2:] = 9000.0  # right half only
+        left_zone = zst.Zone("left", 0.0, 0.4, 0.0, 1.0)
+        right_zone = zst.Zone("right", 0.6, 1.0, 0.0, 1.0)
+        extent = (0.0, 1.0, 0.0, 1.0)
+        assert zst.smoke_accumulation(soot, extent, left_zone, fps=4) == 0.0
+        assert zst.smoke_accumulation(soot, extent, right_zone, fps=4) > 0.0
+
 
 import time_window as twm  # noqa: E402
 

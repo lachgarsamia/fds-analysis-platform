@@ -141,6 +141,41 @@ class TestHeightPanelQuantitySwitching:
         panel.quantity_combo.setCurrentIndex(temp_idx)
         assert "click the map" in panel.caption.text().lower()
 
+    def test_soot_density_gets_rejected_layer_height_caption(self, panel):
+        """Continuous soot-density visualization pass, Step 5: a soot-based
+        layer-height metric was investigated against real data and
+        rejected (near-source concentration, not a stratified layer -- see
+        height_panel.py's _THERMAL_QUANTITIES docstring for the figures).
+        The panel must say so, not silently show nothing."""
+        idx = next(i for i, (_l, k) in enumerate(QUANTITY_OPTIONS)
+                    if k.quantity == "SOOT DENSITY")
+        panel.quantity_combo.setCurrentIndex(idx)
+        text = panel.caption.text().lower()
+        assert "not a smoke-layer height" in text
+        assert "rejected" in text
+
+    def test_soot_density_has_no_layer_plume_ceiling_series(self, panel):
+        """The actual behavior the rejection caption explains: SOOT
+        DENSITY must never get a layer/plume/ceiling-jet number computed
+        for it -- a value that would look plausible but measure near-source
+        drift, not a real interface."""
+        idx = next(i for i, (_l, k) in enumerate(QUANTITY_OPTIONS)
+                    if k.quantity == "SOOT DENSITY")
+        panel.quantity_combo.setCurrentIndex(idx)
+        assert panel._series["layer"] is None
+        assert panel._series["plume"] is None
+        assert panel._series["ceiling"] is None
+
+    def test_temperature_still_has_layer_plume_ceiling_series(self, panel):
+        """Regression: SOOT DENSITY's rejection must not have disturbed
+        TEMPERATURE's own (accepted, unrelated) series."""
+        idx = next(i for i, (_l, k) in enumerate(QUANTITY_OPTIONS)
+                    if k.quantity == "TEMPERATURE")
+        panel.quantity_combo.setCurrentIndex(idx)
+        assert panel._series["layer"] is not None
+        assert panel._series["plume"] is not None
+        assert panel._series["ceiling"] is not None
+
 
 class TestHeightPanelSafetyNet:
     """The Live-polish crash-fix follow-up: PyQt5 aborts the whole process

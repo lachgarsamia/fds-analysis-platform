@@ -2807,6 +2807,68 @@ class TestZonePanel:
         assert len(window.evidence_dock.notebook) == 1
         window.close()
 
+    def test_zone_stats_include_smoke_accumulation(self, qapp):
+        """Continuous soot-density visualization pass, Step 6:
+        smoke_accumulation() was validated (a real, physically meaningful
+        time-integral of zone-mean SOOT DENSITY -- see zone_stats.py's
+        docstring) and exposed through this existing Zones workflow, not a
+        new panel or new selection state."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        import zone_stats as zst
+        panel = window.zone_panel
+        panel.ensure_loaded()
+        assert panel._soot_data is not None
+        panel._zones.append(zst.Zone("doorway", 0.8, 1.0, 0.0, 0.3))
+        panel._select_zone(0)
+        text = panel.stats_label.text()
+        assert "smoke accumulation" in text
+        assert "n/a" not in text  # real soot data available for this scenario/plane
+        window.close()
+
+    def test_zone_compare_table_has_smoke_accum_column(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        import zone_stats as zst
+        panel = window.zone_panel
+        panel.ensure_loaded()
+        panel._zones.append(zst.Zone("doorway", 0.8, 1.0, 0.0, 0.3))
+        panel._select_zone(0)
+        panel._compare_across_scenarios()
+        headers = [panel.compare_table.horizontalHeaderItem(c).text()
+                   for c in range(panel.compare_table.columnCount())]
+        assert any("smoke accum" in h.lower() for h in headers)
+        # every row got a real (non-"n/a") reading, not just the active scenario
+        col = next(c for c, h in enumerate(headers) if "smoke accum" in h.lower())
+        values = [panel.compare_table.item(r, col).text()
+                  for r in range(panel.compare_table.rowCount())]
+        assert all(v != "n/a" for v in values)
+        window.close()
+
+    def test_zone_smoke_accumulation_degrades_to_na_on_fetch_failure(self, qapp):
+        """Regression: a soot-fetch failure must not blank the whole panel
+        (PyQt5 aborts the process on an unhandled exception in a connected
+        slot -- _recompute is one) and must show "n/a", not a fabricated 0."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        import zone_stats as zst
+        panel = window.zone_panel
+        panel.ensure_loaded()
+        panel._soot_data = None  # simulate an unavailable/failed fetch
+        panel._zones.append(zst.Zone("doorway", 0.8, 1.0, 0.0, 0.3))
+        panel._select_zone(0)  # must not raise
+        assert "n/a" in panel.stats_label.text()
+        window.close()
+
     def test_zones_survive_session_roundtrip(self, qapp, tmp_path):
         import zone_stats as zst
         from session import build_session_dict, write_session, read_session
