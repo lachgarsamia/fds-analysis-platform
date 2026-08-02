@@ -40,7 +40,7 @@ def interval_stats(mean_series, max_series, times, t0: float, t1: float) -> dict
     t = np.asarray(times, dtype=float)
     i0, i1 = window_indices(times, t0, t1)
     ms, xs, ts = m[i0:i1 + 1], x[i0:i1 + 1], t[i0:i1 + 1]
-    integral = float(np.trapezoid(ms, ts)) if ts.size > 1 else 0.0
+    integral = float(np.trapz(ms, ts)) if ts.size > 1 else 0.0
     slope = float(np.polyfit(ts, ms, 1)[0]) if ts.size >= 2 else 0.0
     return {
         "t0": float(t[i0]), "t1": float(t[i1]), "n_frames": i1 - i0 + 1,

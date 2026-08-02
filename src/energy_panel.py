@@ -37,7 +37,7 @@ def energy_metrics(table: dict) -> dict:
     if times is None or hrr is None or times.size < 2:
         return {"total_energy_kj": None, "radiative_fraction": None,
                 "budget_gap_fraction": None, "growth_alpha_kw_s2": None}
-    total = float(np.trapezoid(hrr, times))
+    total = float(np.trapz(hrr, times))
     metrics = {
         "total_energy_kj": total,
         "radiative_fraction": None,
@@ -47,11 +47,11 @@ def energy_metrics(table: dict) -> dict:
     if total > 0.0:
         q_radi = table.get("Q_RADI")
         if q_radi is not None:
-            metrics["radiative_fraction"] = float(np.trapezoid(np.abs(q_radi), times)) / total
+            metrics["radiative_fraction"] = float(np.trapz(np.abs(q_radi), times)) / total
         q_total = table.get("Q_TOTAL")
         if q_total is not None:
             metrics["budget_gap_fraction"] = abs(
-                total - float(np.trapezoid(np.abs(q_total), times))) / total
+                total - float(np.trapz(np.abs(q_total), times))) / total
     return metrics
 
 
