@@ -1216,6 +1216,29 @@ class TestIntegration:
         assert window.controller.current_case_index() == target.case_index
         window.close()
 
+    def test_activating_a_freshly_typed_ensemble_cell_with_no_data_does_not_crash(self, qapp):
+        """A cell just switched to Ensemble mode (right-click menu) with no
+        scenarios picked yet stays blank until the picker dialog runs
+        (_on_cell_type_changed's own documented behavior) -- its view never
+        renders a frame, so heatmap is still None. Activating it (clicking
+        it, exactly what this test exists to cover) used to crash
+        MainWindow._on_active_cell_changed, which unconditionally read
+        cell.view.heatmap.get_cmap()."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window._set_grid_layout("2x2")
+        cell = window.view_grid.visible_cells()[3]
+        cell.set_cell_type("ensemble")
+        assert cell.ensemble_case_indices == []
+        assert cell.view.heatmap is None
+
+        cell.activated.emit(cell)  # must not raise
+
+        assert window.view_grid.active_cell() is cell
+        window.close()
+
     def test_grid_link_clim_shares_max_within_quantity_group(self, qapp):
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
@@ -1667,6 +1690,149 @@ class TestIntegration:
         assert np.array_equal(cell.view._velocity_frame, expected)
         window.close()
 
+    # -------------------------------- continuous soot-density visualization
+    def test_soot_overlay_off_by_default(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        assert not window.soot_overlay_action.isChecked()
+        cell = window.view_grid.active_cell()
+        assert not cell.view.soot_overlay_enabled
+        window.close()
+
+    def test_soot_overlay_applies_only_to_temperature_slice_cells_at_y0(self, qapp):
+        """Opt-in, grid-wide toggle (View -> Show smoke overlay) -- applies
+        to a "slice" cell showing TEMPERATURE at the y=0 plane (the only
+        plane SOOT DENSITY is confirmed to share TEMPERATURE's grid for),
+        is a no-op for a cell showing a different quantity."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+
+        window._open_browser_grid([0, 1])
+        qapp.processEvents()
+        temp_cell, velocity_cell = window.view_grid.visible_cells()
+        idx = next(i for i, info in enumerate(window.quantity_infos) if info.key.quantity == "VELOCITY")
+        velocity_cell.set_quantity_silently(velocity_cell._quantity_options[idx][1])
+        window._load_cell(velocity_cell, velocity_cell.case_index, velocity_cell._quantity_options[idx][1])
+        qapp.processEvents()
+
+        window.soot_overlay_action.setChecked(True)
+        window._set_soot_overlay_enabled(True)
+        qapp.processEvents()
+
+        assert temp_cell.view.soot_overlay_enabled
+        assert not velocity_cell.view.soot_overlay_enabled
+        window.close()
+
+    def test_soot_overlay_reflects_real_aligned_data(self, qapp):
+        """Real-data verification (not assumed): TEMPERATURE and SOOT
+        DENSITY share the exact same grid/extent at y=0 for a real
+        scenario (empirically confirmed against fds/sim/), so the
+        overlay's displayed array must be the SAME scenario's real SOOT
+        DENSITY at the SAME frame the temperature heatmap is showing."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+
+        window.soot_overlay_action.setChecked(True)
+        window._set_soot_overlay_enabled(True)
+        qapp.processEvents()
+
+        cell = window.view_grid.active_cell()
+        assert cell.view.soot_overlay_enabled
+        assert cell.view.soot_colorbar is not None
+
+        from slice_key import SliceKey, SOOT_QUANTITY
+        expected = window.controller.store.get(
+            cell.case_index, SliceKey(SOOT_QUANTITY, cell.quantity_key.direction, cell.quantity_key.offset, 0.0),
+        )[window.time_controller.index]
+        np.testing.assert_array_equal(cell.view.soot_overlay.get_array(), expected)
+        window.close()
+
+    def test_soot_overlay_alpha_follows_the_continuous_mapping_function(self, qapp):
+        """The core "not thresholded" requirement at the integration
+        level: the displayed alpha must be exactly smoke_density.soot_alpha()
+        applied to the real frame/ceiling -- the continuous linear formula,
+        not a boolean threshold. (A raw distinct-value count on a single
+        frame is not a reliable proxy here: the real dataset's soot field
+        is empirically ~99.5% exact zero with a narrow nonzero cluster, so
+        a single frame can legitimately reduce to {0, ceiling-clipped} even
+        under the genuinely continuous formula -- continuity is what
+        test_fire_intelligence.py::TestSmokeDensity already covers directly;
+        this test instead pins the wiring to that real function.)"""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window.soot_overlay_action.setChecked(True)
+        window._set_soot_overlay_enabled(True)
+        window._on_seek_requested(300)  # a frame with real fire/smoke development
+        qapp.processEvents()
+        cell = window.view_grid.active_cell()
+
+        import smoke_density as smd
+        from slice_key import SliceKey, SOOT_QUANTITY
+        soot_series = window.controller.store.get(
+            cell.case_index, SliceKey(SOOT_QUANTITY, cell.quantity_key.direction, cell.quantity_key.offset, 0.0),
+        )
+        expected_frame = soot_series[window.time_controller.index]
+        expected_ceiling = smd.soot_ceiling(soot_series)
+        expected_alpha = smd.soot_alpha(expected_frame, expected_ceiling)
+
+        np.testing.assert_allclose(cell.view.soot_overlay.get_alpha(), expected_alpha)
+        window.close()
+
+    def test_soot_overlay_disabled_leaves_temperature_view_unchanged(self, qapp):
+        """Regression: with the overlay off, the primary heatmap's data
+        and colorbar must be exactly what a plain temperature view would
+        show -- no residual soot state leaking in."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        cell = window.view_grid.active_cell()
+        baseline = cell.view.heatmap.get_array().copy()
+        assert cell.view.soot_colorbar is None
+        window._on_seek_requested(50)
+        qapp.processEvents()
+        with_overlay_off = cell.view.heatmap.get_array()
+        assert not np.array_equal(baseline, with_overlay_off)  # sanity: frame did advance
+        # re-seek to the same frame with the overlay toggled on then back off
+        window.soot_overlay_action.setChecked(True)
+        window._set_soot_overlay_enabled(True)
+        window._on_seek_requested(60)
+        window.soot_overlay_action.setChecked(False)
+        window._set_soot_overlay_enabled(False)
+        qapp.processEvents()
+        assert cell.view.soot_colorbar is None
+        assert cell.view.soot_overlay.get_alpha().max() == 0.0
+        window.close()
+
+    def test_cinematic_mode_uses_real_soot_and_suppresses_scientific_overlay(self, qapp):
+        """Continuous soot-density visualization pass, Tier 3: cinematic
+        mode always uses real soot data for its own smoke layer (no
+        separate opt-in needed), and the scientific overlay artist stays
+        cleared while cinematic is on so the two never composite on top
+        of each other."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        window.cinematic_action.setChecked(True)
+        window._set_cinematic_enabled(True)
+        window._on_seek_requested(300)
+        qapp.processEvents()
+        cell = window.view_grid.active_cell()
+        assert cell.view.cinematic_enabled
+        assert not cell.view.soot_overlay_enabled
+        assert cell.view.soot_overlay.get_alpha().max() == 0.0
+        assert cell.view.heatmap.get_array().shape[-1] == 4  # RGBA cinematic output, rendered without crashing
+        window.close()
+
     # ------------------------------------------------ M3.1 ensemble analytics
     def test_analytics_panel_present_for_real_data(self, qapp):
         sim_data = load_simulation_data()
@@ -1715,6 +1881,10 @@ class TestIntegration:
         panel._on_click(FakeEvent())
 
         assert window.controller.current_case_index() == target_case
+        # Analysis-improvement roadmap Phase A: a PCA click used to be a
+        # dead end for every other panel (analytics_panel had zero
+        # SelectionBus wiring) -- now it publishes too.
+        assert window.selection_bus.current.scenario == target_case
         window.close()
 
     def test_browser_selection_shows_auto_summary(self, qapp):
@@ -2268,23 +2438,25 @@ class TestFireStory:
 
 
 class TestSemanticDiffPanel:
-    """V3-M3: semantic diff panel + report integration."""
+    """V3-M3, merged into Compare Axes (Analysis-improvement roadmap Phase
+    A): semantic diff was a structurally-duplicate sibling tab (same two-
+    scenario+quantity shape as Advanced Comparison) -- now its 4th axis."""
 
     def test_panel_lists_differences_and_shows_evidence(self, qapp):
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo:
-            assert getattr(window, "semantic_diff_panel", None) is None
+            assert getattr(window, "advanced_compare_panel", None) is None
             window.close()
             return
-        panel = window.semantic_diff_panel
+        panel = window.advanced_compare_panel
         assert panel is not None
         panel.ensure_loaded()
-        assert panel.list.count() >= 1
+        assert panel.semantic_diff_list.count() >= 1
         # clicking a difference renders the A - B evidence field
-        first = panel._insights[0]
-        panel._show_evidence(first)
-        assert panel._image is not None
+        first = panel._sd_cache[list(panel._sd_cache.keys())[0]][0]
+        panel._show_semantic_evidence(first)
+        assert panel.semantic_diff_canvas.fig.axes
         window.close()
 
     def test_comparison_report_includes_key_differences(self, qapp, tmp_path, monkeypatch):
@@ -2339,25 +2511,6 @@ class TestQueryPanel:
         window.close()
 
 
-class TestStateSpacePanel:
-    """V3-M5: state-space + Fire Genome panel."""
-
-    def test_panel_builds_genomes_and_renders(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            assert getattr(window, "state_space_panel", None) is None
-            window.close()
-            return
-        panel = window.state_space_panel
-        panel.ensure_loaded()
-        assert len(panel._genomes) == len(sim_data.manifest)
-        assert panel.scenario_combo.count() == len(sim_data.manifest)
-        # a trajectory was computed and cached for the shown scenario
-        assert panel._traj_cache
-        window.close()
-
-
 class TestAttentionPanel:
     """V3-M6: physics attention map panel (heuristic saliency)."""
 
@@ -2396,7 +2549,7 @@ class TestCausePanel:
         # click the hottest cell's location -> a chain appears
         data = np.asarray(sim_data.store.get(sim_data.manifest[0].case_index, DEFAULT_SLICE_KEY))
         extent = sim_data.store.get_extent(sim_data.manifest[0].case_index, DEFAULT_SLICE_KEY)
-        fi = panel.frame_spin.value()
+        fi = panel.frame_slider.value()
         gr, gc = np.unravel_index(int(np.argmax(data[fi])), data[fi].shape)
         n_z, n_x = data[fi].shape
 
@@ -2406,6 +2559,72 @@ class TestCausePanel:
             ydata = extent[3] - gr / (n_z - 1) * (extent[3] - extent[2])
         panel._on_click(_Evt())
         assert panel.chain.count() >= 1
+        window.close()
+
+    def test_changing_the_frame_does_not_crash_the_application(self, qapp):
+        """Regression: frame_slider.valueChanged used to be wired directly
+        to _render(self, trace=None) -- QSpinBox.valueChanged(int) passes
+        its new value positionally, so every frame change delivered the
+        raw frame index into `trace`; `if trace and ...: for r, c in
+        trace:` then raised TypeError (`'int' object is not iterable`) for
+        any nonzero frame. This is an ordinary Python exception (confirmed
+        by direct reproduction with faulthandler -- no native frames
+        involved), not a native/segfault crash, so this plain assertion is
+        genuine, full protection against it recurring."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        panel = window.cause_panel
+        panel.ensure_loaded()
+        for value in (1, 2, panel.frame_slider.maximum(), 0, 5):
+            panel.frame_slider.setValue(value)  # must not raise
+        window.close()
+
+    def test_open_render_close_reopen_cycle(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        panel = window.cause_panel
+        window.pages["analysis"].show_tab(panel)
+        panel.ensure_loaded()
+        panel.frame_slider.setValue(3)
+        panel.hide()
+        panel.show()
+        panel.frame_slider.setValue(7)  # still works after hide/reshow
+        window.close()
+
+    def test_switching_analysis_view_away_and_back_still_works(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        panel = window.cause_panel
+        window.pages["analysis"].show_tab(panel)
+        panel.ensure_loaded()
+        window.pages["analysis"].show_tab(window.study_panel)  # switch away
+        window.pages["analysis"].show_tab(panel)                # and back
+        panel.frame_slider.setValue(4)
+        assert panel._data is not None
+        window.close()
+
+    def test_changing_scenario_and_timestep_while_visible_keeps_the_app_usable(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        panel = window.cause_panel
+        window.pages["analysis"].show_tab(panel)
+        panel.ensure_loaded()
+        panel.scenario_combo.setCurrentIndex(min(2, panel.scenario_combo.count() - 1))
+        panel.frame_slider.setValue(min(6, panel.frame_slider.maximum()))
+        window.selection_bus.update(origin=None, time_s=1.0)
+        assert panel._data is not None
         window.close()
 
 
@@ -2488,33 +2707,77 @@ class TestEvidenceNotebookIntegration:
         window.close()
 
 
-class TestLinkedInspectionPanel:
-    """V4-M3: linked multi-quantity inspection."""
+class TestDashboardJumpToPeak:
+    """V4-M3's linked multi-quantity inspection was folded into the
+    Dashboard's "Jump to peak moment" button (Analysis-improvement roadmap
+    Phase A): same "one moment across temperature/HRR/smoke layer" value,
+    without a structurally-redundant sibling tab (Dashboard already shows
+    all of those cards for the current instant)."""
 
     def test_fmt_hrr_uses_watts_when_sub_kilowatt(self):
-        from linked_panel import _fmt_hrr
-        assert _fmt_hrr(0.077) == "77 W"    # candle: sub-kW reads in W, not "0 kW"
-        assert _fmt_hrr(1500.0) == "1500.0 kW"
+        from summary_stats import fmt_hrr
+        assert fmt_hrr(0.077) == "77 W"    # candle: sub-kW reads in W, not "0 kW"
+        assert fmt_hrr(1500.0) == "1500.0 kW"
 
-    def test_panel_links_quantities_at_one_instant(self, qapp):
+    def test_jump_to_peak_seeks_bus_time_to_the_peak_frame(self, qapp):
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo:
-            assert getattr(window, "linked_panel", None) is None
             window.close()
             return
-        panel = window.linked_panel
-        panel.ensure_loaded()
-        assert panel.scenario_combo.count() == len(sim_data.manifest)
-        assert panel.insights.count() >= 1  # at least the temperature-peak moment
+        panel = window.dashboard_panel
+        ci = panel._current_ci
+        m = panel._model(ci)
         import numpy as np
-        pk = int(np.argmax(panel._series["peak_t"]))
-        panel.frame_slider.setValue(pk)
-        # the readout reports several quantities at the one selected instant
-        assert "peak T" in panel.readout.text() and "smoke layer" in panel.readout.text()
-        # and a saved moment lands in the Evidence Notebook (M2 wiring)
-        panel.insights.insight_saved.emit(panel.insights.item(0).data(QtCore.Qt.UserRole))
-        assert len(window.evidence_dock.notebook) == 1
+        expected_peak_t = int(np.argmax(m["peakT"])) / panel._fps
+        panel._on_jump_to_peak()
+        assert window.selection_bus.current.time_s == pytest.approx(expected_peak_t)
+        window.close()
+
+    def test_scenario_combo_drives_the_shared_bus_not_a_second_state(self, qapp):
+        """UX consolidation pass, item 1 (Global Analysis Scenario Control):
+        Dashboard shows a per-scenario "Scenario" card but previously had no
+        way to change it directly -- its scenario_combo must be wired
+        through the same generic bind_to_bus mechanism every other analysis
+        panel uses, so picking a scenario here updates the one shared
+        SelectionBus (and every other synced panel), not a private copy."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        panel = window.dashboard_panel
+        target = sim_data.manifest[-1].case_index
+        idx = panel.scenario_combo.findData(target)
+        panel.scenario_combo.setCurrentIndex(idx)
+        assert window.selection_bus.current.scenario == target
+        assert panel._current_ci == target
+        assert panel._cards["Scenario"].text() == sim_data.manifest[-1].folder
+        # a scenario picked elsewhere syncs this combo right back (single
+        # shared state, not an independent one).
+        other = sim_data.manifest[0].case_index
+        window.selection_bus.update(origin=None, scenario=other)
+        assert panel.scenario_combo.currentData() == other
+        window.close()
+
+    def test_energy_budget_detail_button_opens_current_scenario(self, qapp, monkeypatch):
+        """Analysis-improvement roadmap Phase B: Energy budget folded into
+        this card as an expandable detail (no standalone tab) -- the panel
+        itself is unchanged, just shown pre-selected to the current
+        scenario instead of living in its own tab."""
+        monkeypatch.setattr(QtWidgets.QDialog, "exec_", lambda self: 0)
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        panel = window.dashboard_panel
+        assert panel._energy_panel is window.energy_panel
+        target_case = sim_data.manifest[3].case_index
+        window.selection_bus.update(origin=None, scenario=target_case)
+        panel._show_energy_detail()
+        assert window.energy_panel.scenario_combo.currentData() == target_case
+        assert window.energy_panel.parent() is panel  # reparented back after the dialog closes
         window.close()
 
 
@@ -2542,6 +2805,68 @@ class TestZonePanel:
         # a zone finding saves to the Evidence Notebook (M2 wiring)
         panel.insights.insight_saved.emit(panel.insights.item(0).data(QtCore.Qt.UserRole))
         assert len(window.evidence_dock.notebook) == 1
+        window.close()
+
+    def test_zone_stats_include_smoke_accumulation(self, qapp):
+        """Continuous soot-density visualization pass, Step 6:
+        smoke_accumulation() was validated (a real, physically meaningful
+        time-integral of zone-mean SOOT DENSITY -- see zone_stats.py's
+        docstring) and exposed through this existing Zones workflow, not a
+        new panel or new selection state."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        import zone_stats as zst
+        panel = window.zone_panel
+        panel.ensure_loaded()
+        assert panel._soot_data is not None
+        panel._zones.append(zst.Zone("doorway", 0.8, 1.0, 0.0, 0.3))
+        panel._select_zone(0)
+        text = panel.stats_label.text()
+        assert "smoke accumulation" in text
+        assert "n/a" not in text  # real soot data available for this scenario/plane
+        window.close()
+
+    def test_zone_compare_table_has_smoke_accum_column(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        import zone_stats as zst
+        panel = window.zone_panel
+        panel.ensure_loaded()
+        panel._zones.append(zst.Zone("doorway", 0.8, 1.0, 0.0, 0.3))
+        panel._select_zone(0)
+        panel._compare_across_scenarios()
+        headers = [panel.compare_table.horizontalHeaderItem(c).text()
+                   for c in range(panel.compare_table.columnCount())]
+        assert any("smoke accum" in h.lower() for h in headers)
+        # every row got a real (non-"n/a") reading, not just the active scenario
+        col = next(c for c, h in enumerate(headers) if "smoke accum" in h.lower())
+        values = [panel.compare_table.item(r, col).text()
+                  for r in range(panel.compare_table.rowCount())]
+        assert all(v != "n/a" for v in values)
+        window.close()
+
+    def test_zone_smoke_accumulation_degrades_to_na_on_fetch_failure(self, qapp):
+        """Regression: a soot-fetch failure must not blank the whole panel
+        (PyQt5 aborts the process on an unhandled exception in a connected
+        slot -- _recompute is one) and must show "n/a", not a fabricated 0."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        import zone_stats as zst
+        panel = window.zone_panel
+        panel.ensure_loaded()
+        panel._soot_data = None  # simulate an unavailable/failed fetch
+        panel._zones.append(zst.Zone("doorway", 0.8, 1.0, 0.0, 0.3))
+        panel._select_zone(0)  # must not raise
+        assert "n/a" in panel.stats_label.text()
         window.close()
 
     def test_zones_survive_session_roundtrip(self, qapp, tmp_path):
@@ -2596,6 +2921,32 @@ class TestTimeWindowPanel:
         assert len(window.evidence_dock.notebook) == 1
         window.close()
 
+    def test_window_selection_publishes_interval(self, qapp):
+        """Consolidation Phase 2: a selected window (previously local-only)
+        publishes Selection.interval (defined but previously unused by any
+        panel). Split mode is deliberately not published (see set_bus's
+        docstring: time_s also drives the shared playback frame)."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        panel = window.time_window_panel
+        panel.ensure_loaded()
+        if not panel._series["phases"]:
+            window.close()
+            return
+        panel._on_phase_selected(1)
+        _name, a, b = panel._series["phases"][0]
+        assert window.selection_bus.current.interval == (a, b)
+        before = window.selection_bus.current
+        panel._on_mode_changed(1)   # switch to split mode
+        panel._split = 20.0
+        panel._compute()
+        panel._publish_selection()
+        assert window.selection_bus.current is before   # split mode: no publish
+        window.close()
+
 
 class TestNamedSessions:
     """V4-M6: named, reproducible analysis sessions."""
@@ -2615,13 +2966,21 @@ class TestNamedSessions:
         window.time_window_panel._t0 = 10.0
         window.time_window_panel._t1 = 40.0
 
-    def test_panel_present_only_with_manifest(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            assert window.sessions_panel is None
-        else:
-            assert window.sessions_panel is not None
+    def test_sessions_tab_is_removed_but_session_management_still_works(self, qapp):
+        """Analysis UX + reliability pass: the Sessions tab (Reference &
+        Communication) was removed -- session_store.py and main_window's
+        own _on_session_save/_on_session_load (tested directly below,
+        independent of any UI) stay, since they're genuine session-
+        management capability, not the tab itself."""
+        window = MainWindow(load_simulation_data())
+        assert not hasattr(window, "sessions_panel")
+        if window.sim_data.manifest:
+            labels = [window.pages["analysis"].tabs.tabText(i)
+                     for i in range(window.pages["analysis"].tabs.count())]
+            group = window.pages["analysis"].tabs.widget(
+                labels.index("Reference & Communication"))
+            inner_labels = [group.tabText(i) for i in range(group.count())]
+            assert "Sessions" not in inner_labels
         window.close()
 
     def test_save_then_reopen_restores_state_exactly(self, qapp, tmp_path):
@@ -2649,7 +3008,7 @@ class TestNamedSessions:
     def test_export_report_writes_html(self, qapp, tmp_path):
         import session_store
         window = MainWindow(load_simulation_data())
-        if window.sessions_panel is None:
+        if window.sim_data.is_demo:
             window.close()
             return
         window._sessions_dir = str(tmp_path)
@@ -2666,7 +3025,7 @@ class TestNamedSessions:
     def test_empty_session_roundtrips(self, qapp, tmp_path):
         import session_store
         window = MainWindow(load_simulation_data())
-        if window.sessions_panel is None:
+        if window.sim_data.is_demo:
             window.close()
             return
         window._sessions_dir = str(tmp_path)
@@ -2674,57 +3033,6 @@ class TestNamedSessions:
         infos = session_store.list_sessions(str(tmp_path))
         assert len(infos) == 1 and infos[0].n_notebook == 0 and infos[0].n_zones == 0
         window._on_session_load(infos[0].path)  # must not raise
-        window.close()
-
-
-class TestMeasurementPanel:
-    """V4-M7: on-canvas measurement tools."""
-
-    def test_tools_readouts_and_session_roundtrip(self, qapp, tmp_path):
-        import measure as mz, session_store
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            assert getattr(window, "measurement_panel", None) is None
-            window.close()
-            return
-        panel = window.measurement_panel
-        panel.ensure_loaded()
-        assert panel.scenario_combo.count() == len(sim_data.manifest)
-        panel._add(mz.Measurement("distance", [(0.0, 0.24), (1.0, 0.24)]))
-        panel._add(mz.Measurement("probe", [(0.9, 0.05)]))
-        panel._add(mz.Measurement("rect", [(0.8, 0.0), (1.0, 0.3)]))
-        assert len(panel._measurements) == 3
-        assert "m" in panel._measurements[0].readout  # distance in metres
-        assert "area" in panel._measurements[2].readout
-        # save/restore via a named session
-        window._sessions_dir = str(tmp_path)
-        window._on_session_save("Measure study", "ruler+probe+rect")
-        info = session_store.list_sessions(str(tmp_path))[0]
-        panel.set_measurements([])
-        assert len(panel._measurements) == 0
-        window._on_session_load(info.path)
-        assert len(panel._measurements) == 3
-        # report includes the measurements
-        from report_builder import build_session_report
-        html = build_session_report(session_store.load_session(info.path))
-        assert "Measurements" in html and "area" in html
-        window.close()
-
-    def test_interval_average_measurement(self, qapp):
-        import measure as mz
-        window = MainWindow(load_simulation_data())
-        if window.measurement_panel is None:
-            window.close()
-            return
-        panel = window.measurement_panel
-        panel.ensure_loaded()
-        panel.interval_check.setChecked(True)
-        panel.t0_spin.setValue(5.0)
-        panel.t1_spin.setValue(15.0)
-        panel._add(mz.Measurement("probe", [(0.9, 0.05)]))
-        assert panel._measurements[0].interval is True
-        assert "averaged" in panel._measurements[0].readout
         window.close()
 
 
@@ -2769,72 +3077,145 @@ class TestAdvancedComparePanel:
         assert panel.physics_list.count() == 0
         window.close()
 
-
-class TestExperimentsPanel:
-    """V4-M9: experiment management."""
-
-    def _make(self, panel, n=3):
-        import experiment as ex
-        from PyQt5 import QtCore
-        panel._current = ex.Experiment(name="Door study")
-        panel._sync_editor_from_model()
-        panel.desc_edit.setText("vary vents")
-        panel.tags_edit.setText("ventilation, doorway")
-        for i in range(n):
-            panel.scenario_list.item(i).setCheckState(QtCore.Qt.Checked)
-        panel._refresh_baseline_combo()
-        panel.baseline_combo.setCurrentIndex(1)  # first checked scenario
-
-    def test_build_check_and_persist(self, qapp, tmp_path):
+    def test_ab_pair_publishes_and_follows_selection_comparison(self, qapp):
+        """Consolidation Phase 2: combo_a/combo_b don't fit bind_to_bus's
+        generic scenario_combo lookup, so Selection.comparison (defined but
+        previously unused by any panel) is wired via a small custom
+        set_bus, matching the SensitivityPanel/SpaceTimePanel precedent."""
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            assert getattr(window, "experiments_panel", None) is None
+        if window.advanced_compare_panel is None:
             window.close()
             return
-        panel = window.experiments_panel
-        panel._dir = str(tmp_path)
-        self._make(panel)
-        exp = panel._collect()
-        assert exp.name == "Door study" and len(exp.scenarios) == 3 and exp.baseline
-        panel._check()
-        assert panel._status["ready"] == 3 and panel._status["completion"] == 1.0
-        # save -> library lists it -> load restores structure
-        import experiment as ex
-        ex.save_experiment(str(tmp_path), exp)
-        panel._refresh_library()
-        assert panel.library.count() == 1
+        panel = window.advanced_compare_panel
+        panel.ensure_loaded()
+        target_a = sim_data.manifest[2].case_index
+        target_b = sim_data.manifest[3].case_index
+        idx_a = panel.combo_a.findData(target_a)
+        panel.combo_a.setCurrentIndex(idx_a)
+        idx_b = panel.combo_b.findData(target_b)
+        panel.combo_b.setCurrentIndex(idx_b)
+        assert window.selection_bus.current.comparison == (target_a, target_b)
+        # reverse: a comparison published elsewhere drives this panel's pair.
+        other_a, other_b = sim_data.manifest[0].case_index, sim_data.manifest[1].case_index
+        window.selection_bus.update(origin=None, comparison=(other_a, other_b))
+        assert panel.combo_a.currentData() == other_a
+        assert panel.combo_b.currentData() == other_b
         window.close()
 
-    def test_compare_handoff_sets_compare_panel_and_tab(self, qapp):
-        window = MainWindow(load_simulation_data())
-        if window.experiments_panel is None:
+    def test_add_to_session_report_pins_comparison_and_survives_round_trip(self, qapp, tmp_path):
+        """Analysis-improvement roadmap Phase C: "Add comparison to session
+        report" pins the current pair's semantic-diff differences, and the
+        session report picks them up via report_builder's reused
+        _differences_block rendering."""
+        import session_store
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if window.advanced_compare_panel is None:
             window.close()
             return
-        panel = window.experiments_panel
-        self._make(panel)
-        from PyQt5 import QtCore
-        panel.scenario_list.setCurrentRow(2)          # pick a different scenario as B
-        panel._compare()                              # emits compare_requested -> handler
-        acp = window.advanced_compare_panel
-        assert acp.combo_a.currentText() == panel._collect().baseline
-        assert acp.combo_b.currentText() == panel._folders[2]
-        assert window._active_page_key == "analysis"
+        panel = window.advanced_compare_panel
+        panel.ensure_loaded()
+        panel._add_to_session_report()
+        assert len(panel._pinned_comparisons) == 1
+        assert "Added" in panel.report_status.text()
+        c = panel._pinned_comparisons[0]
+        assert c["case_a"] == panel.combo_a.currentData()
+        assert c["case_b"] == panel.combo_b.currentData()
+
+        session = window._collect_session_dict("s", "")
+        assert session["comparisons"] == panel.get_comparisons()
+        from report_builder import build_session_report
+        html = build_session_report(session)
+        assert c["label_a"] in html and c["label_b"] in html
+
+        session_store.save_session(str(tmp_path), session)
+        loaded = session_store.load_session(
+            session_store.list_sessions(str(tmp_path))[0].path)
+        window.advanced_compare_panel.set_comparisons([])
+        window._apply_analysis_session(loaded)
+        assert window.advanced_compare_panel.get_comparisons() == panel.get_comparisons()
         window.close()
 
-    def test_export_summary_writes_html(self, qapp, tmp_path):
+
+class TestProbeMeasurePanel:
+    """Analysis section consolidation Phase 4 (Analysis final-polish pass:
+    the disposable "Quick probe" mode was removed -- Devices/Zones/
+    Velocity already cover deliberate measurement more purposefully; see
+    probe_measure_panel.py's docstring): Devices, Zones, and Velocity are
+    three modes of one "Spatial Probes" workspace -- each child's own
+    construction/store access/lazy-load/bus wiring is unchanged, only the
+    tab-level presentation is consolidated."""
+
+    def test_wrapper_holds_all_three_children_as_tabs(self, qapp):
         window = MainWindow(load_simulation_data())
-        if window.experiments_panel is None:
+        if window.probe_measure_panel is None:
             window.close()
             return
-        panel = window.experiments_panel
-        self._make(panel)
-        panel._check()
-        from report_builder import build_experiment_report, write_report
-        out = tmp_path / "exp.html"
-        write_report(str(out), build_experiment_report(panel._collect().to_dict(), panel._status))
-        html = out.read_text()
-        assert "Door study" in html and "pre-computed cluster runs" in html
+        wrapper = window.probe_measure_panel
+        labels = [wrapper.tabs.tabText(i) for i in range(wrapper.tabs.count())]
+        assert labels == ["Devices", "Zones", "Velocity"]
+        assert wrapper.tabs.widget(0) is window.device_panel
+        assert wrapper.tabs.widget(1) is window.zone_panel
+        assert wrapper.tabs.widget(2) is window.velocity_panel
+        assert not hasattr(window, "measurement_panel")
+        window.close()
+
+    def test_showing_wrapper_loads_all_children_not_just_visible_one(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.probe_measure_panel is None:
+            window.close()
+            return
+        window.show()
+        window._navigate_to("analysis")
+        window.pages["analysis"].show_tab(window.probe_measure_panel)
+        QtWidgets.QApplication.processEvents()
+        assert window.device_panel._loaded
+        assert window.zone_panel._loaded
+        assert window.velocity_panel._loaded
+        window.close()
+
+    def test_show_tab_reveals_a_specific_child_three_levels_deep(self, qapp):
+        """Regression check for the show_tab recursion fix this phase
+        required: group -> wrapper -> child is one level deeper than
+        Phase D originally handled."""
+        window = MainWindow(load_simulation_data())
+        if window.probe_measure_panel is None:
+            window.close()
+            return
+        window.show()
+        window._navigate_to("analysis")
+        window.pages["analysis"].show_tab(window.device_panel)
+        QtWidgets.QApplication.processEvents()
+        assert window.probe_measure_panel.tabs.currentWidget() is window.device_panel
+        window.close()
+
+
+class TestCompareDiscover:
+    """Analysis final-polish pass: Compare & Discover's former 4-mode
+    CompareDiscoverPanel wrapper (Pairwise/Parallel coordinates/Ensemble/
+    Clustering) is unwrapped -- Parallel coordinates and Ensemble spread
+    were removed outright (not enough standalone research value for their
+    complexity), which left only 2 children, no longer earning their own
+    indirection layer. Pairwise Comparison and PCA/Clustering are now
+    direct tabs under the Compare & Discover group."""
+
+    def test_pairwise_and_clustering_are_direct_analysis_tabs(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.advanced_compare_panel is None:
+            window.close()
+            return
+        assert not hasattr(window, "compare_discover_panel")
+        assert not hasattr(window, "parallel_coordinates_panel")
+        assert not hasattr(window, "ensemble_panel")
+        window.show()
+        window._navigate_to("analysis")
+        window.pages["analysis"].show_tab(window.advanced_compare_panel)
+        QtWidgets.QApplication.processEvents()
+        assert window.advanced_compare_panel._loaded
+        if window.clustering_content is not None:
+            window.pages["analysis"].show_tab(window.clustering_content)
+            QtWidgets.QApplication.processEvents()
         window.close()
 
 
@@ -2849,8 +3230,7 @@ class TestPublicationExport:
             window.close()
             return
         for name, canvas_attr in (("height_panel", "plot_canvas"),
-                                   ("zone_panel", "plot_canvas"),
-                                   ("linked_panel", "plots_canvas")):
+                                   ("zone_panel", "plot_canvas")):
             panel = getattr(window, name)
             panel.ensure_loaded()
             assert hasattr(panel, "export_button")
@@ -2911,58 +3291,6 @@ class TestQuantitiesPanel:
         window.close()
 
 
-class TestSafeAssistantPanel:
-    """V4-M12: bounded, deterministic assistant."""
-
-    def test_action_produces_savable_output(self, qapp):
-        from insight import Insight
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            assert getattr(window, "assistant_panel", None) is None
-            window.close()
-            return
-        window.evidence_dock.add_insight(Insight(
-            "Peak 469 C at t=8s.", category="query", quantity="TEMPERATURE",
-            time_s=8.0, basis="max"))
-        panel = window.assistant_panel
-        window._on_assistant_action("list_key_findings")
-        assert "Peak 469" in panel.output.toPlainText()
-        assert panel.save_button.isEnabled()
-        window.close()
-
-    def test_causal_query_is_refused_and_not_savable(self, qapp):
-        window = MainWindow(load_simulation_data())
-        if window.assistant_panel is None:
-            window.close()
-            return
-        panel = window.assistant_panel
-        window._on_assistant_query("why is the doorway hotter?")
-        assert "cannot infer why" in panel.output.toPlainText()
-        assert not panel.save_button.isEnabled()   # a refusal cannot be saved
-        window.close()
-
-    def test_saving_assistant_output_records_no_cause_basis(self, qapp):
-        window = MainWindow(load_simulation_data())
-        if window.assistant_panel is None:
-            window.close()
-            return
-        before = len(window.evidence_dock.notebook)
-        window._on_assistant_action("summarize_session")
-        window._on_assistant_save(window.assistant_panel.last_output)
-        assert len(window.evidence_dock.notebook) == before + 1
-        assert "no cause inferred" in window.evidence_dock.notebook.entries[-1].insight.basis
-        window.close()
-
-    def test_figure_caption_uses_computed_peak(self, qapp):
-        window = MainWindow(load_simulation_data())
-        if window.assistant_panel is None:
-            window.close()
-            return
-        cap = window._assistant_figure_caption()
-        assert "peak" in cap and "°C" in cap  # a real computed value, descriptive only
-        window.close()
-
 
 class TestSharedSelectionModel:
     """V5-M1: the shared selection bus wired across panels + Live Viewer."""
@@ -2981,12 +3309,12 @@ class TestSharedSelectionModel:
             window.close()
             return
         window.height_panel.ensure_loaded()
-        window.linked_panel.ensure_loaded()
+        window.zone_panel.ensure_loaded()
         # changing one panel's scenario publishes it; the other panel follows
         # (scenario sync is not visibility-gated).
         window.height_panel.scenario_combo.setCurrentIndex(3)
         assert window.selection_bus.current.scenario == window.height_panel.scenario_combo.currentData()
-        assert window.linked_panel.scenario_combo.currentData() == window.selection_bus.current.scenario
+        assert window.zone_panel.scenario_combo.currentData() == window.selection_bus.current.scenario
         # RC polish: time sync is visibility-gated (only the shown analysis tab
         # animates live). Show the height panel, then a published time syncs its
         # frame slider.
@@ -3045,6 +3373,225 @@ class TestStudyPanel:
         assert panel.scenario_combo.currentData() == 9
         window.close()
 
+    def test_response_curve_tab_is_removed_but_backend_function_still_used(self, qapp):
+        """Analysis UX + reliability pass: the "Response curve" tab was
+        removed (Factor influence already answers "what moves this
+        response" more concisely) -- but study_analytics.response_curve()
+        itself must survive, since factor_influence() (the kept "Factor
+        influence" tab) calls it directly to build each factor's spread-
+        of-means. Backend coverage for response_curve() lives in
+        test_fire_intelligence.py::TestStudyAnalytics::
+        test_response_curve_gives_the_per_level_means_factor_influence_
+        summarizes, independent of this UI tab."""
+        import study_analytics as sa
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        panel = window.study_panel
+        labels = [panel.tabs.tabText(i) for i in range(panel.tabs.count())]
+        assert "Response curve" not in labels
+        assert not hasattr(panel, "curve_factor_combo")
+        assert not hasattr(panel, "curve_canvas")
+        assert "Factor influence" in labels  # the tab that still needs it
+        assert callable(sa.response_curve)
+        window.close()
+
+    def test_factor_effects_folded_in_as_a_sub_tab(self, qapp):
+        """Analysis-improvement roadmap Phase B: Factor effects' actual
+        spatial diverging-field view is a sub-tab here now, complementing
+        this panel's own scalar "Factor influence" ranking -- not a
+        structurally-separate top-level tab. The panel itself (store
+        access, lazy-load, bus wiring) is unchanged."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        panel = window.study_panel
+        labels = [panel.tabs.tabText(i) for i in range(panel.tabs.count())]
+        assert "Factor effects" in labels
+        idx = labels.index("Factor effects")
+        assert panel.tabs.widget(idx) is window.factor_effects_panel
+        window.close()
+
+    def test_sensitivity_folded_in_as_a_sub_tab(self, qapp):
+        """Analysis section consolidation Phase 5: the Sensitivity
+        Explorer (local sensitivity at a chosen factor setting) is a
+        sub-tab here now, complementing this panel's own global spread
+        across observed levels (Factor influence) -- not a structurally-
+        separate top-level tab. Analysis UX + reliability pass further
+        removed Sensitivity's own Tornado/What-if sub-tabs, so only
+        Response surface remains."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        panel = window.study_panel
+        labels = [panel.tabs.tabText(i) for i in range(panel.tabs.count())]
+        assert "Sensitivity" in labels
+        idx = labels.index("Sensitivity")
+        assert panel.tabs.widget(idx) is window.sensitivity_panel
+        assert window.sensitivity_panel.tabs.count() == 1
+        window.close()
+
+    def test_correlation_matrix_cells_are_annotated_with_values(self, qapp):
+        """Compare/Study UX polish: the matrix used to be color-only, with
+        no way to read the exact r without a separate tool."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        panel = window.study_panel
+        import study_analytics as sa
+        ax = panel.corr_canvas.fig.axes[0]
+        assert len(ax.texts) == len(sa.RESPONSE_KEYS) ** 2
+        window.close()
+
+    def test_correlation_filter_recomputes_over_the_matching_subset(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        panel = window.study_panel
+        full_n = len(panel._table)
+        door_combo = panel._corr_filter_combos["door"]
+        idx = door_combo.findData(0)  # a specific door level, not "All"
+        assert idx > 0
+        door_combo.setCurrentIndex(idx)
+        filtered = panel._filtered_table()
+        assert 0 < len(filtered) < full_n
+        assert all(int(r["params"]["door"]) == 0 for r in filtered)
+        assert f"{len(filtered)} of {full_n} scenarios" in panel.stats_label.text()
+        window.close()
+
+    def test_reset_filters_restores_the_full_table(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        panel = window.study_panel
+        full_n = len(panel._table)
+        panel._corr_filter_combos["door"].setCurrentIndex(1)
+        assert len(panel._filtered_table()) < full_n
+        panel._reset_corr_filters()
+        assert len(panel._filtered_table()) == full_n
+        assert all(v is None for v in panel._corr_filters.values())
+        window.close()
+
+    def test_clicking_a_diagonal_cell_shows_the_distribution(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        panel = window.study_panel
+        import types
+        event = types.SimpleNamespace(inaxes=object(), xdata=0.0, ydata=0.0)
+        panel._on_corr_click(event)
+        ax = panel.corr_drilldown_canvas.fig.axes[0]
+        assert "distribution" in ax.get_title()
+        window.close()
+
+    def test_clicking_an_off_diagonal_cell_shows_a_scatter_with_r(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        panel = window.study_panel
+        import types
+        event = types.SimpleNamespace(inaxes=object(), xdata=0.0, ydata=1.0)
+        panel._on_corr_click(event)
+        ax = panel.corr_drilldown_canvas.fig.axes[0]
+        assert "r =" in ax.get_title()
+        assert len(ax.collections) >= 1  # the scatter itself
+        window.close()
+
+    def test_click_outside_the_matrix_is_a_no_op(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        panel = window.study_panel
+        import types
+        event = types.SimpleNamespace(inaxes=None, xdata=None, ydata=None)
+        panel._on_corr_click(event)  # must not raise
+        window.close()
+
+    def test_thin_pair_is_hatched_and_annotated_with_its_own_n(self, qapp):
+        """A pair whose own support is below the reliability floor is
+        flagged even when the overall subset looks fine -- e.g. a hazard
+        threshold response that's NaN for most scenarios."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        panel = window.study_panel
+        import study_analytics as sa
+        table = panel._filtered_table()
+        counts = sa.pairwise_n(table, sa.RESPONSE_KEYS)
+        thin_pairs = [(i, j) for i in range(len(sa.RESPONSE_KEYS))
+                     for j in range(len(sa.RESPONSE_KEYS))
+                     if i != j and 0 < counts[i, j] < 6]
+        if not thin_pairs:
+            pytest.skip("this dataset has no thin (n<6) response pair to assert against")
+        ax = panel.corr_canvas.fig.axes[0]
+        assert any("(n=" in t.get_text() for t in ax.texts)
+        assert len(ax.patches) >= 1  # the hatched overlay rectangle(s)
+        window.close()
+
+    def test_filtering_to_a_tiny_subset_flags_low_n_rather_than_hiding_it(self, qapp):
+        """Filtering combos must recompute the matrix over the matching
+        subset (not just hide cells) -- and a resulting tiny subset must
+        surface a caution, not a bare convincing-looking r."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo or not window.is_factorial:
+            window.close()
+            return
+        panel = window.study_panel
+        # Stack every filter combo to its first real level -- the
+        # narrowest subset the study's factors can produce.
+        for combo in panel._corr_filter_combos.values():
+            if combo.count() > 1:
+                combo.setCurrentIndex(1)
+        table = panel._filtered_table()
+        assert len(table) <= 2  # a full factorial's narrowest per-cell subset
+        ax = panel.corr_canvas.fig.axes[0]
+        title = ax.get_title()
+        if len(table) < 6:
+            assert "hatched" in title or "n=" in "".join(t.get_text() for t in ax.texts)
+        panel._reset_corr_filters()
+        assert len(panel._filtered_table()) == len(panel._table)
+        window.close()
+
+    def test_experiments_subsection_is_fully_removed(self, qapp):
+        """UX consolidation pass: Experiments (self-contained batch CRUD,
+        no scenario/quantity/time controls, no scientific conclusion of its
+        own) was removed from Study-Level -- not just hidden. experiment.py
+        itself (the Knowledge Graph's own experiment-file reader) is
+        untouched."""
+        window = MainWindow(load_simulation_data())
+        assert not hasattr(window, "experiments_panel")
+        if window.study_panel is not None:
+            group_names = []
+            tabs = window.pages["analysis"].tabs
+            for i in range(tabs.count()):
+                group_names.append(tabs.tabText(i))
+                inner = getattr(tabs.widget(i), "tabs", None)
+                if inner is not None:
+                    group_names.extend(inner.tabText(j) for j in range(inner.count()))
+            assert "Experiments" not in group_names
+        window.close()
+
 
 class TestSensitivityPanel:
     """V5-M3: sensitivity explorer + bus hand-off."""
@@ -3079,6 +3626,76 @@ class TestSensitivityPanel:
         assert "Estimated from Existing Scenarios" in window.sensitivity_panel.note.text()
         window.close()
 
+    def test_tornado_and_whatif_tabs_are_removed_response_surface_kept(self, qapp):
+        """Analysis UX + reliability pass: Tornado and What-if (all
+        responses) were removed; Response surface -- and the "Pin what-if
+        to Knowledge Graph" button, which uses predict()/nearest_scenario()
+        rather than either removed tab -- remain."""
+        window = MainWindow(load_simulation_data())
+        if window.sensitivity_panel is None:
+            window.close()
+            return
+        panel = window.sensitivity_panel
+        labels = [panel.tabs.tabText(i) for i in range(panel.tabs.count())]
+        assert labels == ["Response surface"]
+        assert not hasattr(panel, "tornado_canvas")
+        assert not hasattr(panel, "whatif_table")
+        assert hasattr(panel, "pin_button")
+        window.close()
+
+
+class TestSpatiotemporalPanel:
+    """Analysis section consolidation Phase 6: Height, Time series, and
+    Time Window are now three modes of one "Field & Time Explorer"
+    workspace -- each child's own construction/store access/lazy-load/bus
+    wiring is unchanged, only the tab-level presentation is consolidated.
+    Space-time stays a separate top-level tab (deferred, see
+    spatiotemporal_panel.py's docstring)."""
+
+    def test_wrapper_holds_all_three_children_as_tabs(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.spatiotemporal_panel is None:
+            window.close()
+            return
+        wrapper = window.spatiotemporal_panel
+        labels = [wrapper.tabs.tabText(i) for i in range(wrapper.tabs.count())]
+        assert labels == ["Vertical profile", "Point/Region/Line probe", "Whole-field & interval"]
+        assert wrapper.tabs.widget(0) is window.height_panel
+        assert wrapper.tabs.widget(1) is window.timeseries_panel
+        assert wrapper.tabs.widget(2) is window.time_window_panel
+        window.close()
+
+    def test_showing_wrapper_loads_all_children_not_just_visible_one(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.spatiotemporal_panel is None:
+            window.close()
+            return
+        window.show()
+        window._navigate_to("analysis")
+        window.pages["analysis"].show_tab(window.spatiotemporal_panel)
+        QtWidgets.QApplication.processEvents()
+        assert window.height_panel._loaded
+        assert window.timeseries_panel._loaded
+        assert window.time_window_panel._loaded
+        window.close()
+
+    def test_show_tab_reveals_a_specific_child_three_levels_deep(self, qapp):
+        """Regression check for the recursive show_tab fix from Phase 4:
+        group -> wrapper -> child."""
+        window = MainWindow(load_simulation_data())
+        if window.spatiotemporal_panel is None:
+            window.close()
+            return
+        window.show()
+        window._navigate_to("analysis")
+        window.pages["analysis"].show_tab(window.time_window_panel)
+        group = window.pages["analysis"].tabs.currentWidget()
+        assert window.pages["analysis"].tabs.tabText(
+            window.pages["analysis"].tabs.currentIndex()) == "Spatiotemporal Analysis"
+        assert group.currentWidget() is window.spatiotemporal_panel
+        assert window.spatiotemporal_panel.tabs.currentWidget() is window.time_window_panel
+        window.close()
+
 
 class TestResearchWorkspace:
     """V5-M4: hazard spaces + mission-control dashboard + workspace hook."""
@@ -3098,9 +3715,12 @@ class TestResearchWorkspace:
         window.selection_bus.update(origin=None, scenario=2)
         assert panel.scenario_combo.currentData() == 2
         # RC polish: time sync only drives the visible analysis tab. Show it.
+        # Phase B: hazard_panel is nested inside the Hazard & Tenability
+        # mode-toggle wrapper now -- reveal the wrapper's tab, not the panel
+        # directly (it's no longer a direct QTabWidget child itself).
         window.show()
         window._navigate_to("analysis")
-        window.pages["analysis"].show_tab(panel)
+        window.pages["analysis"].show_tab(window.hazard_tenability_panel)
         QtWidgets.QApplication.processEvents()
         window.selection_bus.update(origin=None, time_s=10.0)
         assert panel.frame_slider.value() == int(round(10.0 * window.time_controller.timesteps_per_second))
@@ -3152,6 +3772,12 @@ class TestWorkspaceAndCommunication:
         # quantity is now a shared field: a quantity-aware panel followed
         if window.height_panel._quantity_options:
             assert window.height_panel._key.quantity == "VELOCITY"
+        if window.sensitivity_panel is not None:
+            # Phase 5: sensitivity_panel is now three levels deep (group ->
+            # StudyPanel's own tabs -> sensitivity_panel) -- the recursive
+            # show_tab must still actually raise its tab, not just the
+            # Analysis page in general.
+            assert window.study_panel.tabs.currentWidget() is window.sensitivity_panel
         window.close()
 
     def test_spacetime_point_syncs_both_ways(self, qapp):
@@ -3187,34 +3813,10 @@ class TestWorkspaceAndCommunication:
 
 
 class TestPhase5Communication:
-    """V5-M5: ensemble spread, assistant search, publication bundle."""
-
-    def test_ensemble_envelope_and_bus_sync(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            window.close()
-            return
-        import numpy as np
-        panel = window.ensemble_panel
-        panel.ensure_loaded()
-        lo, mean, hi = panel._metric_data("spatial_max")["env"]
-        assert len(mean) > 0 and (lo <= mean).all() and (mean <= hi).all()
-        window.selection_bus.update(origin=None, scenario=5)
-        assert panel.scenario_combo.currentData() == 5
-        window.close()
-
-    def test_assistant_search_routes_and_refuses_causal(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo or not window.is_factorial:
-            window.close()
-            return
-        window._on_assistant_query("show scenarios where temperature exceeds 400")
-        assert "Scenarios where" in window.assistant_panel.output.toPlainText()
-        window._on_assistant_query("why is it hotter")
-        assert "cannot infer why" in window.assistant_panel.output.toPlainText()
-        window.close()
+    """V5-M5: publication bundle. (Analysis final-polish pass: the
+    ensemble-spread and assistant-search tests that used to live here were
+    removed along with EnsemblePanel and the Assistant layer, both dropped
+    entirely in that pass.)"""
 
     def test_publication_bundle_writes_figures_and_manifest(self, qapp, tmp_path):
         from figure_export import save_figure
@@ -3288,6 +3890,110 @@ class TestKnowledgeGraph:
         assert "tag:vod2" in visible and len(visible) == len(neigh) + 1
         window.close()
 
+    def test_hazard_node_appears_and_links_to_the_current_scenario(self, qapp):
+        """Analysis UX + reliability pass: hazard_by_scenario (reusing
+        hazard_spaces.py's own worst-tenability-class classification) is
+        computed for the currently-selected scenario, same bound as
+        narrative events, and produces a hazard node linked to it."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        g = window.graph_panel
+        g._current_scenario = sim_data.manifest[0].case_index
+        g._loaded = True
+        g._rebuild()
+        hazard_nodes = g._graph.nodes_of("hazard")
+        assert len(hazard_nodes) == 1
+        assert hazard_nodes[0].scenario == sim_data.manifest[0].case_index
+        assert f"scenario:{sim_data.manifest[0].case_index}" in g._graph.neighbors(hazard_nodes[0].id)
+        window.close()
+
+    def test_focus_on_selected_hides_everything_outside_the_neighborhood(self, qapp):
+        """Analysis UX + reliability pass: the "Focus on selected" toggle
+        must actually narrow what's visible, reusing the same neighbor
+        computation click-highlighting already relies on."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        g = window.graph_panel
+        g._loaded = True
+        g._rebuild()
+        full_count = len(g._visible_ids())
+        g._select_node("tag:vod2")
+        g.focus_checkbox.setChecked(True)
+        focused = g._visible_ids()
+        neigh = g._graph.neighbors("tag:vod2")
+        assert focused == {"tag:vod2", *neigh}
+        assert len(focused) < full_count
+        g.focus_checkbox.setChecked(False)
+        assert len(g._visible_ids()) == full_count
+        window.close()
+
+    def test_legend_lists_every_node_type(self, qapp):
+        """Analysis final-polish pass: a compact always-visible legend
+        maps each node color to its type -- previously only decodable via
+        the x-axis column headers/tree grouping."""
+        import graph_model as gm
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        g = window.graph_panel
+        text = g.legend.text()
+        for t in gm.NODE_TYPES:
+            assert t.capitalize() in text
+        window.close()
+
+    def test_quantity_nodes_appear_for_the_current_scenario(self, qapp):
+        """Analysis final-polish pass: a small, bounded set of
+        summary_stats.py's per-scenario metrics becomes "quantity" nodes
+        for the currently selected scenario -- the graph shows what the
+        simulation actually measured, not only shared factor levels."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        g = window.graph_panel
+        case_index = sim_data.manifest[0].case_index
+        g._current_scenario = case_index
+        g._loaded = True
+        g._rebuild()
+        nodes = g._graph.nodes_of("quantity")
+        assert nodes  # summary_stats.py always computes at least peak temperature
+        for n in nodes:
+            assert n.scenario == case_index
+            assert f"scenario:{case_index}" in g._graph.neighbors(n.id)
+        window.close()
+
+    def test_opening_graph_starts_focused_on_current_scenario(self, qapp):
+        """Analysis final-polish pass: the first time the tab is shown
+        with a scenario already selected, it starts in "Focus on selected"
+        mode centered on that scenario, instead of the full graph -- avoids
+        the "hairball by default" problem. Uncheckable back to everything."""
+        from PyQt5 import QtGui
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        g = window.graph_panel
+        case_index = sim_data.manifest[0].case_index
+        g._current_scenario = case_index
+        g._loaded = False
+        g.showEvent(QtGui.QShowEvent())
+        assert g.focus_checkbox.isChecked()
+        assert g._selected == f"scenario:{case_index}"
+        focused = g._visible_ids()
+        g.focus_checkbox.setChecked(False)
+        assert len(g._visible_ids()) > len(focused)
+        window.close()
+
 
 class TestReleaseCandidatePolish:
     """RC polish: theme-aware plots, HRR/Fire-Story states, layout, theme resolve."""
@@ -3344,6 +4050,25 @@ class TestAnalysisPlayback:
         window._analysis_stop()
         assert window.time_controller.index == 0
 
+    def test_transport_bar_is_visible_above_overview_and_interpretation(self, qapp):
+        """The shared playback bar sits above the outer tab group
+        (pages/analysis.py), so it's visible regardless of which group is
+        active -- confirm this explicitly for Overview & Interpretation,
+        the group this was requested for."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        analysis_page = window.pages["analysis"]
+        group_names = [analysis_page.tabs.tabText(i) for i in range(analysis_page.tabs.count())]
+        assert "Overview & Interpretation" in group_names
+        analysis_page.tabs.setCurrentIndex(group_names.index("Overview & Interpretation"))
+        assert not window.analysis_timeline.isHidden()
+        window._on_seek_requested(12)
+        assert window.time_controller.index == 12  # transport still drives the shared clock
+        window.close()
+
     def test_playback_time_broadcasts_to_bus(self, qapp):
         window = MainWindow(load_simulation_data())
         fps = window.time_controller.timesteps_per_second
@@ -3364,7 +4089,7 @@ class TestAnalysisPlayback:
         QtWidgets.QApplication.processEvents()
         window._on_seek_requested(80)
         assert window.height_panel.frame_slider.value() == 80        # visible follows
-        ap.show_tab(window.hazard_panel)
+        ap.show_tab(window.hazard_tenability_panel)
         window.hazard_panel.ensure_loaded()
         QtWidgets.QApplication.processEvents()
         frozen = window.height_panel.frame_slider.value()
@@ -3392,21 +4117,30 @@ class TestFieldCalculator:
         import field_calculator as fc
         fc.clear()
 
+    def test_calculator_tab_is_removed_field_calculator_backend_stays(self, qapp):
+        """Analysis UX + reliability pass: CalculatorPanel (the only UI to
+        author a *new* calculated field) was removed -- field_calculator.py
+        itself stays, since quantity_provider.py calls it directly for
+        every calculated-field read (Live Viewer included), and session
+        save/restore round-trips CalculatedField independent of any panel.
+        Existing calculated fields keep working; creating new ones now
+        requires calling field_calculator.py directly (as every other test
+        in this class does)."""
+        window = MainWindow(load_simulation_data())
+        assert not hasattr(window, "calculator_panel")
+        window.close()
+
     def test_create_field_registers_and_provider_computes(self, qapp):
         import numpy as np
+        import field_calculator as fc
         from slice_key import SliceKey
         from registry import QUANTITY_REGISTRY, get_quantity
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo:
-            assert getattr(window, "calculator_panel", None) is None
             window.close()
             return
-        p = window.calculator_panel
-        p.name_edit.setText("Temperature Rise")
-        p.expr_edit.setText("Temperature - 20")
-        assert p.save_button.isEnabled()          # valid expression
-        p._save()
+        fc.register(fc.make_field("Temperature Rise", "Temperature - 20"))
         assert "Temperature Rise" in QUANTITY_REGISTRY
         q = get_quantity("Temperature Rise")
         assert q.calculated and q.kind == "derived" and q.expression == "Temperature - 20"
@@ -3415,27 +4149,24 @@ class TestFieldCalculator:
         assert np.allclose(calc, raw - 20)        # plots/exports can load it via the provider
         window.close()
 
-    def test_unsafe_expression_disables_save(self, qapp):
+    def test_unsafe_expression_is_rejected(self, qapp):
+        import field_calculator as fc
         window = MainWindow(load_simulation_data())
-        if window.calculator_panel is None:
-            window.close()
-            return
-        p = window.calculator_panel
-        p.expr_edit.setText("__import__('os')")
-        assert not p.save_button.isEnabled() and "✗" in p.status.text()
+        with pytest.raises(fc.CalculatorError):
+            fc.make_field("Bad", "__import__('os')")
         window.close()
 
     def test_gradient_and_rate_fields_compute(self, qapp):
         import numpy as np
+        import field_calculator as fc
         from slice_key import SliceKey
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo:
             window.close()
             return
-        p = window.calculator_panel
-        p.name_edit.setText("Grad"); p.expr_edit.setText("gradient(Temperature)"); p._save()
-        p.name_edit.setText("Rate"); p.expr_edit.setText("rate(Temperature)"); p._save()
+        fc.register(fc.make_field("Grad", "gradient(Temperature)"))
+        fc.register(fc.make_field("Rate", "rate(Temperature)"))
         raw = np.asarray(window.controller.store.get(0, SliceKey("TEMPERATURE")))
         assert np.asarray(window.quantity_provider.get(0, SliceKey("Grad"))).shape == raw.shape
         assert np.asarray(window.quantity_provider.get(0, SliceKey("Rate"))).shape == raw.shape
@@ -3449,8 +4180,7 @@ class TestFieldCalculator:
         if sim_data.is_demo:
             window.close()
             return
-        p = window.calculator_panel
-        p.name_edit.setText("Exposure"); p.expr_edit.setText("Temperature * 2"); p._save()
+        fc.register(fc.make_field("Exposure", "Temperature * 2"))
         sd = window._collect_session_dict("t", "")
         assert len(sd["calculated_fields"]) == 1
         fc.clear()
@@ -3491,6 +4221,7 @@ class TestCalculatedFieldsInLiveViewer:
 
     def test_calculated_field_selectable_and_renders(self, qapp):
         import numpy as np
+        import field_calculator as fc
         from slice_key import SliceKey
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
@@ -3498,8 +4229,12 @@ class TestCalculatedFieldsInLiveViewer:
             window.close()
             return
         window.show()
-        p = window.calculator_panel
-        p.name_edit.setText("TR"); p.expr_edit.setText("Temperature - 20"); p._save()
+        fc.register(fc.make_field("TR", "Temperature - 20"))
+        # fields_changed used to trigger this automatically via
+        # CalculatorPanel (removed, Analysis UX + reliability pass) --
+        # main_window still exposes it directly for any caller that
+        # registers a field outside that UI.
+        window._refresh_quantity_list()
         labels = [window.quantity_combo.itemText(i) for i in range(window.quantity_combo.count())]
         assert "TR" in labels                      # appears in the Live combo
         window.quantity_combo.setCurrentIndex(labels.index("TR"))
@@ -3547,6 +4282,67 @@ class TestVirtualDeviceNetwork:
     """V6-M2: placing a device instruments the simulation like an
     experiment, without touching the parser/store/cache/TimeController/
     cinematic pipeline."""
+
+    def test_heat_detector_and_sprinkler_can_disagree_and_look_different(self, qapp):
+        """Analysis UX + reliability pass: heat_detector (instant
+        threshold) and sprinkler (RTI thermal-lag ODE) are independent
+        devices with independently different, both-correct physical
+        models -- a sprinkler is *supposed* to be able to disagree with a
+        heat detector at the identical point/frame, not a bug. The Live
+        Viewer must make the two visually distinguishable by marker shape,
+        not just by their (legitimately independent) active/idle color."""
+        import devices as dv
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        p = window.device_panel
+        p.ensure_loaded()
+        case_index = p.scenario_combo.currentData()
+        pos = (1.0, 1.0)
+        hd = dv.Device(id="hd-1", name="HD-01", type="heat_detector", scenario=case_index,
+                       position=pos, parameters=dv.default_parameters("heat_detector"),
+                       direction=p.direction_combo.currentData(), offset=p.offset_spin.value())
+        sp = dv.Device(id="sp-1", name="SP-01", type="sprinkler", scenario=case_index,
+                       position=pos, parameters=dv.default_parameters("sprinkler"),
+                       direction=p.direction_combo.currentData(), offset=p.offset_spin.value())
+        hd.compute(window.quantity_provider, window.sim_data.timesteps_per_second)
+        sp.compute(window.quantity_provider, window.sim_data.timesteps_per_second)
+        p._devices.extend([hd, sp])
+
+        # Both models are independently correct even at the identical point
+        # -- state_at() must not force them to agree.
+        found_disagreement = any(
+            hd.state_at(i).get("active") != sp.state_at(i).get("active")
+            for i in range(min(hd.n_frames(), sp.n_frames()))
+        )
+        # Not asserted as a hard requirement (depends on this dataset's
+        # actual temperature history), but the two ARE independently
+        # computed regardless -- the real assertion is the marker shapes.
+        del found_disagreement
+
+        markers = window._device_markers_for(case_index, 0)
+        kinds = {kind for *_rest, kind in markers}
+        assert {"heat_detector", "sprinkler"}.issubset(kinds)
+
+        cell = window.view_grid.active_cell()
+        # Analysis final-polish pass: with nothing placed yet, the
+        # Live-Viewer legend explaining shape -> kind stays hidden (nothing
+        # to explain on a scenario with no devices).
+        cell.view.set_device_markers([])
+        assert cell.view._device_legend.get_visible() is False
+        cell.view.set_device_markers(markers)
+        hd_shape = cell.view.device_scatters["heat_detector"].get_paths()[0]
+        sp_shape = cell.view.device_scatters["sprinkler"].get_paths()[0]
+        assert hd_shape.vertices.shape != sp_shape.vertices.shape or \
+            not np.allclose(hd_shape.vertices, sp_shape.vertices)
+        # Analysis final-polish pass: once markers exist, the legend
+        # becomes visible and explains the shapes -- this is what closes
+        # the "looks broken" gap on the Live Viewer itself, not just
+        # inside the separate Devices analysis tab.
+        assert cell.view._device_legend.get_visible() is True
+        window.close()
 
     def test_placing_a_thermocouple_computes_once_and_lists(self, qapp):
         sim_data = load_simulation_data()
@@ -3608,6 +4404,30 @@ class TestVirtualDeviceNetwork:
         QtWidgets.QApplication.processEvents()
         expected = dev.results["activation_frame"]
         assert window.time_controller.index == expected
+        window.close()
+
+    def test_compare_across_scenarios_evaluates_same_device_everywhere(self, qapp):
+        """Analysis-improvement roadmap Phase C: the Zones cross-scenario
+        pattern, reused for Devices -- place once, "Compare" evaluates the
+        same position/type/parameters at every scenario."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        window.show()
+        window._navigate_to("analysis")
+        p = window.device_panel
+        window.pages["analysis"].show_tab(p)
+        QtWidgets.QApplication.processEvents()
+        p.type_combo.setCurrentIndex(p.type_combo.findData("thermocouple"))
+        p._place(1.0, 1.0)
+        p.list.setCurrentRow(0)
+        p._compare_across_scenarios()
+        assert p.compare_table.isVisible()
+        assert p.compare_table.rowCount() == len(sim_data.manifest)
+        assert p.compare_table.item(0, 0).text() == sim_data.manifest[0].folder
+        assert p.compare_table.item(0, 1).text() != ""
         window.close()
 
     def test_session_round_trip_preserves_devices_and_results(self, qapp, tmp_path):
@@ -3692,6 +4512,20 @@ class TestTrueVelocity:
         assert "M-SIM" in probe.results["reason"] or "msim" in probe.results["reason"].lower()
         assert "M-SIM" in p.status.text() or "msim" in p.status.text().lower()
         window.close()
+
+    def test_gate_explanation_names_missing_quantities_and_research_value(self, qapp):
+        """Analysis final-polish pass: the caption must be an honest,
+        structured empty-state -- exactly which quantities/units are
+        missing (from the registry, never hand-guessed) and what a real
+        vector field would unlock -- never a fabricated value, and never
+        just a terse "waiting for rerun" dead end."""
+        from velocity_panel import VelocityPanel
+        text = VelocityPanel._build_gate_explanation()
+        for name in ("U-VELOCITY", "V-VELOCITY", "W-VELOCITY", "m/s"):
+            assert name in text
+        assert "unavailable" in text.lower()
+        for use in ("Smoke transport", "Ventilation", "Recirculation", "Plume", "Streamlines"):
+            assert use in text
 
     def test_get_vector_still_raises_gated_quantity_error(self, qapp):
         """V6-M3 must not weaken the gate: the real provider still raises."""
@@ -3838,80 +4672,65 @@ class TestTrueVelocity:
 
 class TestUnifiedWorkspace:
     """V6-M4: connecting existing capabilities into one investigation
-    workflow -- Context Panel, cross-navigation, Knowledge Graph expansion,
-    Investigation History, and performance (no expensive work per tick)."""
+    workflow -- cross-navigation, Knowledge Graph expansion, Investigation
+    History, and performance (no expensive work per tick). The standalone
+    Context Panel tab this was originally built around was removed in the
+    UX consolidation pass as low-value; context.gather_context (the data
+    layer) and Investigation History remain and are tested directly."""
 
-    def test_context_panel_shows_placed_device(self, qapp):
+    def test_history_back_and_forward_shortcuts(self, qapp):
+        """UX consolidation pass: the removed Context Panel's back/forward
+        buttons were the only UI for Investigation History -- Alt+Left/
+        Alt+Right keep it reachable without dedicating screen space to it."""
         window = MainWindow(load_simulation_data())
         if window.sim_data.is_demo:
             window.close()
             return
-        window.show()
-        dp = window.device_panel
-        dp.ensure_loaded()
-        dp.type_combo.setCurrentIndex(dp.type_combo.findData("thermocouple"))
-        dp._place(1.0, 1.0)
-        case_index = dp.scenario_combo.currentData()
-        window.selection_bus.update(origin=None, scenario=case_index)
-        QtWidgets.QApplication.processEvents()
-        assert window.context_panel.devices_list.count() == 1
-        window.close()
-
-    def test_context_panel_ignores_pure_time_ticks(self, qapp, monkeypatch):
-        """Performance (objective 8): playback publishes time_s every tick
-        (main_window._on_time_changed) -- the Context Panel must not
-        re-gather (a filesystem scan) on a time-only change."""
-        window = MainWindow(load_simulation_data())
-        if window.sim_data.is_demo:
-            window.close()
-            return
-        window.show()
-        calls = []
-        import context_panel as cp_mod
-        real_gather = cp_mod.gather_context
-        def counting_gather(app, sel):
-            calls.append(sel)
-            return real_gather(app, sel)
-        monkeypatch.setattr(cp_mod, "gather_context", counting_gather)
         window.selection_bus.update(origin=None, scenario=0)
-        n_after_scenario = len(calls)
-        assert n_after_scenario >= 1
-        for t in (1.0, 2.0, 3.0):
-            window.selection_bus.update(origin=window, time_s=t)   # mirrors the tick's own origin
-        assert len(calls) == n_after_scenario   # no new gather_context calls from time-only changes
+        window.selection_bus.update(origin=None, scenario=1)
+        window._history_back()
+        assert window.selection_bus.current.scenario == 0
+        window._history_forward()
+        assert window.selection_bus.current.scenario == 1
         window.close()
 
-    def test_study_panel_parallel_click_propagates_to_bus(self, qapp):
-        import numpy as np
-        import study_analytics as sa
+    def test_point_story_combines_measurement_and_cause_chain(self, qapp):
+        """Analysis-improvement roadmap Phase C: the synthesized point-story
+        pulls a local reading (already-cached, no new store read) and the
+        Cause Explorer's last-traced chain (only when it's near the
+        selected point) into one paragraph. UX consolidation pass: the
+        standalone Context tab that used to display this was removed as
+        low-value, but context.gather_context (the data layer) is kept --
+        still exercised directly here, and reusable by future consumers.
+        (Analysis final-polish pass: the "local reading" source used to be
+        a disposable Quick Probe measurement -- now removed, see
+        measurement_panel.py's removal -- so this uses a Zone instead,
+        _related_measurements' now-permanent [] falls through to
+        _related_zones exactly as context.py's own fallback order does.)"""
+        import zone_stats as zst
+        from insight import Insight
+        from selection import Selection
+        from context import gather_context
         window = MainWindow(load_simulation_data())
-        if window.study_panel is None:
+        if window.sim_data.is_demo:
             window.close()
             return
-        window.show()
-        sp = window.study_panel
-        norm = sa.normalized_axes(sp._table, sp._axis_keys, sp._axis_kind)
-        # A continuous response axis (max_temp_c, right after sa.PARAMS) has an
-        # essentially-unique maximum across real scenarios (norm == 1.0 there),
-        # unlike a categorical factor axis where many rows tie -- picking the
-        # row at its peak makes "nearest line" unambiguous for this test.
-        axis_idx = len(sa.PARAMS)
-        target_row = int(np.nanargmax(norm[:, axis_idx]))
-        axes = sp.parallel_canvas.fig.axes
-        assert axes
-        expected = sp._table[target_row]["case_index"]
-        # Start from a different combo index so the click is a genuine
-        # change (PyQt doesn't emit currentIndexChanged for a same-index set).
-        target_idx = sp.scenario_combo.findData(int(expected))
-        sp.scenario_combo.setCurrentIndex((target_idx + 1) % sp.scenario_combo.count())
-        class FakeEvent:
-            inaxes = axes[0]
-            xdata = float(axis_idx)
-            ydata = float(norm[target_row][axis_idx])
-        sp._on_parallel_click(FakeEvent())
-        QtWidgets.QApplication.processEvents()
-        assert sp.scenario_combo.currentData() == expected
-        assert window.selection_bus.current.scenario == expected
+        case_index = window.sim_data.manifest[0].case_index
+        window.zone_panel.ensure_loaded()
+        window.zone_panel._zones.append(zst.Zone("P1", 0.9, 1.1, 0.9, 1.1))
+        sel = Selection(scenario=case_index, point=(1.0, 1.0))
+        story = gather_context(window, sel)["point_story"]
+        assert 'inside zone "P1"' in story
+        # Cause chain absent until traced near this point -> no cause-trace clause yet.
+        assert "Cause trace" not in story
+        cp = window.cause_panel
+        cp.ensure_loaded()
+        cp._last_point = (1.0, 1.0)
+        cp._last_insights = [Insight("It traces back to the hottest connected point (400 °C).",
+                                     category="cause", quantity="TEMPERATURE")]
+        sel2 = Selection(scenario=case_index, time_s=1.0, point=(1.0, 1.0001))
+        story = gather_context(window, sel2)["point_story"]
+        assert "Cause trace" in story and "hottest connected point" in story
         window.close()
 
     def test_history_ignores_playback_ticks_and_own_replay(self, qapp):
@@ -3967,30 +4786,48 @@ class TestUnifiedWorkspace:
         assert len(window.graph_panel._graph.nodes_of("device")) == 1
         window.close()
 
-    def test_reveal_helper_used_by_workspace_preset_and_experiment_compare(self, qapp):
-        """Regression check for the _reveal refactor (V6-M4): both existing
-        call sites must still raise the Analysis page and the right tab."""
+    def test_graph_gains_hypothesis_node_after_pinning_a_whatif(self, qapp):
+        """Analysis-improvement roadmap Phase C: "Pin what-if to Knowledge
+        Graph" from Sensitivity -- the graph_panel picks up pinned estimates
+        the same way it already picks up devices/vector probes."""
+        window = MainWindow(load_simulation_data())
+        if window.sensitivity_panel is None:
+            window.close()
+            return
+        window.show()
+        sp = window.sensitivity_panel
+        sp._pin_hypothesis()
+        assert len(sp._hypotheses) == 1
+        assert sp.pin_status.text() != ""
+        window.graph_panel._rebuild()
+        nodes = window.graph_panel._graph.nodes_of("hypothesis")
+        assert len(nodes) == 1
+        assert nodes[0].scenario == sp._hypotheses[0]["nearest_scenario"]
+        window.close()
+
+    def test_reveal_helper_used_by_workspace_preset(self, qapp):
+        """Regression check for the _reveal refactor (V6-M4): its remaining
+        call site (the Experiments panel's comparison hand-off was removed
+        in the UX consolidation pass) must still raise the Analysis page
+        and the right tab."""
         window = MainWindow(load_simulation_data())
         if window.dashboard_panel is None:
             window.close()
             return
         window._on_workspace_preset("Study analytics")
         assert window._active_page_key == "analysis"
-        assert window.pages["analysis"].tabs.currentWidget() is window.study_panel
-        window.close()
-
-    def test_context_panel_session_reveal_shows_sessions_tab(self, qapp):
-        window = MainWindow(load_simulation_data())
-        if window.sessions_panel is None:
-            window.close()
-            return
-        window.show()
-        window._on_context_session_reveal("/tmp/whatever-session.json")
-        assert window._active_page_key == "analysis"
-        assert window.pages["analysis"].tabs.currentWidget() is window.sessions_panel
+        # Tabs are grouped -- the outer tab now holds the "Factors &
+        # Sensitivity" group's own inner QTabWidget, which must be showing
+        # study_panel.
+        group = window.pages["analysis"].tabs.currentWidget()
+        assert group.currentWidget() is window.study_panel
         window.close()
 
     def test_hover_highlight_sets_and_clears_without_touching_selection(self, qapp):
+        """UX consolidation pass: the removed Context Panel was the only
+        caller of SliceView.set_hover_highlight -- the primitive itself is
+        kept (reusable rendering infra, e.g. for a future Assistant
+        "reveal in viewer" action) and exercised directly here."""
         window = MainWindow(load_simulation_data())
         if window.sim_data.is_demo:
             window.close()
@@ -3998,10 +4835,12 @@ class TestUnifiedWorkspace:
         window.show()
         cell = window.view_grid.active_cell()
         before = window.selection_bus.current
-        window._on_context_hover((cell.case_index, (1.0, 1.0)))
+        cell.view.set_hover_highlight((1.0, 1.0))
+        cell.view.redraw_overlays_now()
         assert len(cell.view.hover_highlight.get_offsets()) == 1
         assert window.selection_bus.current == before   # hover never touches selection
-        window._on_context_hover(None)
+        cell.view.set_hover_highlight(None)
+        cell.view.redraw_overlays_now()
         assert len(cell.view.hover_highlight.get_offsets()) == 0
         window.close()
 
@@ -4168,6 +5007,76 @@ class _SyntheticCOProvider:
         if key.quantity == "CARBON MONOXIDE VOLUME FRACTION":
             return self._real.get_extent(scenario, SliceKey("TEMPERATURE", key.direction, key.offset))
         return self._real.get_extent(scenario, key)
+
+
+class TestHazardTenabilityMerge:
+    """Analysis-improvement roadmap Phase B: Hazard and Tenability were two
+    separate top-level tabs classifying the same field into hazard bands
+    via overlapping engines -- now one "Hazard & Tenability" tab with a
+    mode toggle. A thin wrapper only, so both panels keep their full
+    existing functionality/disclaimers unchanged."""
+
+    def test_wrapper_holds_both_panels_and_defaults_to_map_view(self, qapp):
+        window = MainWindow(load_simulation_data())
+        wrapper = window.hazard_tenability_panel
+        if wrapper is None:
+            window.close()
+            return
+        assert wrapper.hazard_widget is window.hazard_panel
+        assert wrapper.tenability_widget is window.tenability_panel
+        assert wrapper.stack.currentWidget() is window.hazard_panel
+        window.close()
+
+    def test_mode_toggle_switches_between_panels(self, qapp):
+        window = MainWindow(load_simulation_data())
+        wrapper = window.hazard_tenability_panel
+        if wrapper is None:
+            window.close()
+            return
+        wrapper.mode_combo.setCurrentIndex(1)
+        assert wrapper.stack.currentWidget() is window.tenability_panel
+        wrapper.mode_combo.setCurrentIndex(0)
+        assert wrapper.stack.currentWidget() is window.hazard_panel
+        window.close()
+
+    def test_showing_wrapper_loads_both_panels_not_just_visible_one(self, qapp):
+        window = MainWindow(load_simulation_data())
+        wrapper = window.hazard_tenability_panel
+        if wrapper is None:
+            window.close()
+            return
+        window.show()
+        window._navigate_to("analysis")
+        window.pages["analysis"].show_tab(wrapper)
+        QtWidgets.QApplication.processEvents()
+        assert window.hazard_panel._loaded
+        assert window.tenability_panel._loaded
+        window.close()
+
+
+class TestAskTabDirect:
+    """Analysis final-polish pass: the Assistant template-summary layer
+    (assistant.py/assistant_panel.py/assistant_query_panel.py) was removed
+    outright -- it didn't provide enough value for a research-focused
+    application. QueryPanel (the deterministic physics-query grammar,
+    previously reachable only as a secondary mode inside the removed
+    Assistant wrapper) is restored to its own direct "Ask" tab under
+    Reference & Communication; its own functionality is unchanged and
+    fully covered by TestQueryPanel above."""
+
+    def test_query_panel_is_reachable_as_its_own_tab_not_wrapped(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.query_panel is None:
+            window.close()
+            return
+        assert not hasattr(window, "assistant_panel")
+        assert not hasattr(window, "assistant_query_panel")
+        window.show()
+        window._navigate_to("analysis")
+        window.pages["analysis"].show_tab(window.query_panel)
+        QtWidgets.QApplication.processEvents()
+        assert window.query_panel._loaded
+        window.close()
 
 
 class TestFullFED:

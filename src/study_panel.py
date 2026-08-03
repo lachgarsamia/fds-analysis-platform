@@ -1,35 +1,82 @@
-"""Study-Level Analytics panel (V5-M2), an Analysis-page tab.
+"""Study-Level Analytics panel (V5-M2), an Analysis-page tab -- the
+"Factors & Sensitivity" workspace's anchor panel.
 
-Treats the current experiment as a full factorial. Three views over the
-parameter × response table (study_analytics): parallel coordinates
-(parameters vs responses, one line per scenario), factor influence (which
-factor moves a chosen response most), and correlation + outliers + study
-statistics. Selecting a scenario publishes it to the SelectionBus (M1), so the
-Live Viewer and every linked panel follow.
+Views over the parameter × response table (study_analytics): factor
+influence (which factor moves a chosen response most), correlation +
+outliers + study statistics, and (as folded-in sub-tabs) factor effects'
+spatial field and the Sensitivity Explorer's response-surface
+interpolation. Selecting a scenario publishes it to the SelectionBus
+(M1), so the Live Viewer and every linked panel follow.
+
+Response curve (one factor x one response, level-by-level) was removed
+as its own tab (Analysis UX + reliability pass) -- Factor influence
+already answers "what moves this response" more concisely, and the two
+views were redundant for most research questions. study_analytics.
+response_curve() itself stays: factor_influence() (this panel's own
+"Factor influence" tab) calls it directly to build each factor's spread-
+of-means.
+
+Sensitivity answers a related but distinct question -- local sensitivity
+at an interpolated, possibly-unobserved factor setting (Response
+surface), vs. this panel's own global spread across *observed* factor
+levels (Factor influence) -- so it's folded in as one whole sub-tab (its
+own sliders/tab layout/SelectionBus wiring completely unchanged), the
+same "thin slot, not a rewrite" pattern already used for Factor effects,
+not split apart into this panel's own tabs. Sensitivity's own Tornado and
+What-if sub-tabs were removed in the same pass (Analysis UX +
+reliability pass) -- see sensitivity_panel.py's docstring.
+
+Parallel coordinates used to be a tab here too; it was extracted into
+parallel_coordinates_panel.py (Analysis section consolidation Phase 3)
+since it conceptually belongs with the other cross-scenario discovery
+tools (Compare & Discover), not this panel's factor/response tabs.
+scenario_combo stays here regardless -- every remaining tab of this
+panel's own (i.e. not counting the folded-in Sensitivity/Factor-effects
+sub-tabs) is a whole-study view with no per-scenario dependency of its
+own, but keeping it preserves the existing "every relevant Analysis panel
+exposes scenario selection" convention and its cross-panel sync
+(unchanged, still bus-bound).
 
 Reads the already-computed scenario summaries; no store reads, no new
 simulations. Reuses study_analytics and, for the factor axis order,
 factor_effects' convention.
+
+Correlation & outliers is interactive (Compare/Study UX polish): factor-
+level filter combos recompute the matrix/outliers/study-statistics over
+just the matching scenario subset (so a correlation's strength can be
+checked against whether it holds everywhere or only under certain
+conditions), each cell is annotated with its actual r value, and clicking
+a cell renders the underlying scatter plot (or, on the diagonal, that
+response's distribution) in a second canvas -- a correlation number alone
+can hide the real relationship (or a single outlier driving it), so the
+plot behind it is one click away rather than requiring a separate tool.
 """
 
 from __future__ import annotations
 
 import numpy as np
 from PyQt5 import QtCore, QtWidgets
+from matplotlib.patches import Rectangle
 
 from widgets import MplCanvas
 import study_analytics as sa
+from analysis_panel_base import populate_scenario_combo
+from manifest import LEVEL_LABELS
+
+# Rule-of-thumb floor, not a formal significance test (this module reports
+# r and n plainly rather than a p-value): below this many scenarios, a
+# single point can swing r substantially, so a pair this thin is flagged
+# rather than shown at face value.
+_MIN_RELIABLE_N = 6
 
 
 class StudyPanel(QtWidgets.QWidget):
-    def __init__(self, summaries: list, manifest: list, parent=None):
+    def __init__(self, summaries: list, manifest: list,
+                 factor_effects_content: QtWidgets.QWidget = None,
+                 sensitivity_content: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self._summaries = sorted(summaries or [], key=lambda s: s.case_index)
         self._table = sa.build_table(self._summaries)
-        self._axis_keys = list(sa.PARAMS) + ["max_temp_c", "peak_hrr_kw",
-                                             "total_energy_kj", "layer_min_height_m"]
-        self._axis_kind = {k: ("param" if k in sa.PARAMS else "response")
-                           for k in self._axis_keys}
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -43,8 +90,7 @@ class StudyPanel(QtWidgets.QWidget):
         header.addWidget(QtWidgets.QLabel("Scenario:"))
         self.scenario_combo = QtWidgets.QComboBox()   # bound to the bus by main_window (M1)
         self.scenario_combo.setAccessibleName("Study scenario")
-        for s in self._summaries:
-            self.scenario_combo.addItem(s.folder, s.case_index)
+        populate_scenario_combo(self.scenario_combo, self._summaries)
         header.addWidget(self.scenario_combo)
         layout.addLayout(header)
 
@@ -56,10 +102,6 @@ class StudyPanel(QtWidgets.QWidget):
         layout.addWidget(self.caption)
 
         self.tabs = QtWidgets.QTabWidget()
-        # --- parallel coordinates ---
-        self.parallel_canvas = MplCanvas(self)
-        self.parallel_canvas.setAccessibleName("Parallel coordinates")
-        self.tabs.addTab(self.parallel_canvas, "Parallel coordinates")
         # --- factor influence ---
         infl = QtWidgets.QWidget()
         iv = QtWidgets.QVBoxLayout(infl)
@@ -78,81 +120,95 @@ class StudyPanel(QtWidgets.QWidget):
         self.influence_canvas.setAccessibleName("Factor influence")
         iv.addWidget(self.influence_canvas, 1)
         self.tabs.addTab(infl, "Factor influence")
-        # --- correlation + outliers ---
+        # --- correlation + outliers (interactive: filterable + drill-down) ---
         corr = QtWidgets.QWidget()
         cv = QtWidgets.QVBoxLayout(corr)
         cv.setContentsMargins(0, 0, 0, 0)
+        cv.setSpacing(8)
+
+        # Scenario-subset filter: recomputes the matrix/outliers/stats over
+        # only the scenarios matching the selected factor level(s) -- lets a
+        # researcher see whether a correlation holds everywhere or only
+        # under certain conditions (e.g. only when the door is open), not
+        # just its strength over the whole study.
+        filter_row = QtWidgets.QHBoxLayout()
+        filter_row.addWidget(QtWidgets.QLabel("Filter to:"))
+        self._corr_filters = {p: None for p in sa.PARAMS}
+        self._corr_filter_combos = {}
+        for p in sa.PARAMS:
+            combo = QtWidgets.QComboBox()
+            combo.setAccessibleName(f"Correlation filter: {sa.PARAM_LABELS[p]}")
+            combo.addItem(f"All ({sa.PARAM_LABELS[p]})", None)
+            levels = sorted({int(row["params"][p]) for row in self._table
+                             if not np.isnan(row["params"][p])})
+            for lvl in levels:
+                combo.addItem(LEVEL_LABELS.get(p, {}).get(lvl, f"{sa.PARAM_LABELS[p]}={lvl}"), lvl)
+            self._corr_filter_combos[p] = combo
+            filter_row.addWidget(combo)
+        filter_row.addStretch(1)
+        self.corr_reset_button = QtWidgets.QPushButton("Reset filters")
+        self.corr_reset_button.clicked.connect(self._reset_corr_filters)
+        filter_row.addWidget(self.corr_reset_button)
+        cv.addLayout(filter_row)
+
+        corr_caption = QtWidgets.QLabel(
+            "Click a cell to see the underlying scatter plot for that response "
+            "pair (or its distribution, on the diagonal) -- never trust a "
+            "correlation number without looking at the plot behind it.")
+        corr_caption.setWordWrap(True)
+        corr_caption.setProperty("role", "caption")
+        cv.addWidget(corr_caption)
+
+        corr_split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self.corr_canvas = MplCanvas(self)
         self.corr_canvas.setAccessibleName("Correlation matrix")
-        cv.addWidget(self.corr_canvas, 1)
+        self.corr_canvas.mpl_connect("button_press_event", self._on_corr_click)
+        corr_split.addWidget(self.corr_canvas)
+        self.corr_drilldown_canvas = MplCanvas(self)
+        self.corr_drilldown_canvas.setAccessibleName("Correlation drill-down")
+        corr_split.addWidget(self.corr_drilldown_canvas)
+        corr_split.setStretchFactor(0, 3)
+        corr_split.setStretchFactor(1, 2)
+        cv.addWidget(corr_split, 1)
+
         self.stats_label = QtWidgets.QLabel("")
         self.stats_label.setWordWrap(True)
         self.stats_label.setProperty("role", "caption")
         self.stats_label.setTextFormat(QtCore.Qt.RichText)
         cv.addWidget(self.stats_label)
         self.tabs.addTab(corr, "Correlation & outliers")
+        # Connected after every combo is populated, so building the filter
+        # row itself doesn't trigger a (redundant, and at this point
+        # premature -- self._corr_keys doesn't exist yet) re-render.
+        for p, combo in self._corr_filter_combos.items():
+            combo.currentIndexChanged.connect(
+                lambda _i, f=p, c=combo: self._on_corr_filter_changed(f, c.currentData()))
+        # Factor effects (Analysis-improvement roadmap Phase B): the actual
+        # spatial diverging-field view, complementing this tab's own
+        # scalar "Factor influence" ranking above -- folded in as a sub-
+        # tab rather than a structurally-separate top-level one, since
+        # this panel already reuses factor_effects' axis-order convention.
+        # A thin slot, not a rewrite: the panel keeps its own store access,
+        # lazy-load (showEvent), and SelectionBus wiring unchanged.
+        if factor_effects_content is not None:
+            self.tabs.addTab(factor_effects_content, "Factor effects")
+        # Sensitivity Explorer (Analysis section consolidation Phase 5):
+        # local sensitivity (what-if interpolation, response surface,
+        # tornado) at a chosen factor setting, complementing this panel's
+        # global spread across observed levels above -- folded in whole
+        # (its own sliders/tabs/SelectionBus wiring unchanged) rather than
+        # split apart, since its three views share one set of sliders and
+        # aren't independently meaningful.
+        if sensitivity_content is not None:
+            self.tabs.addTab(sensitivity_content, "Sensitivity")
         layout.addWidget(self.tabs, 1)
 
-        self.scenario_combo.currentIndexChanged.connect(self._render_parallel)
-        # V6-M4: click a line in the parallel-coordinates plot to select
-        # that scenario -- the combo above is already bus-bound generically
-        # (bind_to_bus, main_window._build_selection), so moving its index
-        # is enough to publish the selection; no direct bus reference needed
-        # here.
-        self.parallel_canvas.mpl_connect("button_press_event", self._on_parallel_click)
         self._render_all()
 
     # ------------------------------------------------------------- rendering
     def _render_all(self) -> None:
-        self._render_parallel()
         self._render_influence()
         self._render_correlation()
-
-    def _render_parallel(self) -> None:
-        fig = self.parallel_canvas.fig
-        fig.clear()
-        ax = fig.add_subplot(111)
-        if not self._table:
-            self.parallel_canvas.draw_idle()
-            return
-        norm = sa.normalized_axes(self._table, self._axis_keys, self._axis_kind)
-        n_axes = len(self._axis_keys)
-        xs = np.arange(n_axes)
-        sel = self.scenario_combo.currentData()
-        for i, row in enumerate(self._table):
-            y = norm[i]
-            is_sel = row["case_index"] == sel
-            ax.plot(xs, y, color=("#00E5FF" if is_sel else "#B0B0B0"),
-                    linewidth=(2.2 if is_sel else 0.8),
-                    alpha=(1.0 if is_sel else 0.5), zorder=(3 if is_sel else 1))
-        labels = [sa.PARAM_LABELS.get(k, sa.RESPONSE_LABEL.get(k, k)) for k in self._axis_keys]
-        ax.set_xticks(xs)
-        ax.set_xticklabels(labels, fontsize=7, rotation=30, ha="right")
-        ax.set_yticks([])
-        ax.set_ylabel("normalized (min→max)", fontsize=8)
-        for x in xs:
-            ax.axvline(x, color="#ddd", linewidth=0.6, zorder=0)
-        fig.subplots_adjust(top=0.97, bottom=0.22, left=0.08, right=0.98)
-        self.parallel_canvas.draw_idle()
-
-    def _on_parallel_click(self, event) -> None:
-        """Study point -> jump to scenario (V6-M4): find the plotted line
-        nearest the click and select its scenario in `scenario_combo`,
-        which is already wired to the SelectionBus."""
-        if event.inaxes is None or event.xdata is None or not self._table:
-            return
-        norm = sa.normalized_axes(self._table, self._axis_keys, self._axis_kind)
-        axis_idx = min(max(int(round(event.xdata)), 0), len(self._axis_keys) - 1)
-        best_i, best_d = None, None
-        for i in range(len(self._table)):
-            d = abs(norm[i][axis_idx] - event.ydata)
-            if best_d is None or d < best_d:
-                best_d, best_i = d, i
-        if best_i is None:
-            return
-        idx = self.scenario_combo.findData(int(self._table[best_i]["case_index"]))
-        if idx >= 0:
-            self.scenario_combo.setCurrentIndex(idx)
 
     def _render_influence(self) -> None:
         fig = self.influence_canvas.fig
@@ -171,28 +227,85 @@ class StudyPanel(QtWidgets.QWidget):
         fig.subplots_adjust(top=0.9, bottom=0.16, left=0.28, right=0.96)
         self.influence_canvas.draw_idle()
 
+    # ------------------------------------------------ correlation filtering
+    def _filtered_table(self) -> list:
+        """self._table restricted to the currently selected factor level(s)
+        -- None (the "All ..." combo item) means that factor isn't
+        filtered."""
+        table = self._table
+        for factor, value in self._corr_filters.items():
+            if value is None:
+                continue
+            table = [r for r in table if not np.isnan(r["params"][factor])
+                     and int(r["params"][factor]) == value]
+        return table
+
+    def _on_corr_filter_changed(self, factor: str, value) -> None:
+        self._corr_filters[factor] = value
+        self._render_correlation()
+
+    def _reset_corr_filters(self) -> None:
+        for combo in self._corr_filter_combos.values():
+            combo.blockSignals(True)
+            combo.setCurrentIndex(0)
+            combo.blockSignals(False)
+        self._corr_filters = {p: None for p in sa.PARAMS}
+        self._render_correlation()
+
+    # ------------------------------------------------------------- rendering
     def _render_correlation(self) -> None:
+        table = self._filtered_table()
         fig = self.corr_canvas.fig
         fig.clear()
         ax = fig.add_subplot(111)
         keys = sa.RESPONSE_KEYS
-        c = sa.correlation_matrix(self._table, keys)
+        self._corr_keys = keys
+        c = sa.correlation_matrix(table, keys)
+        counts = sa.pairwise_n(table, keys)
         im = ax.imshow(c, cmap="coolwarm", vmin=-1, vmax=1, aspect="auto")
         labels = [sa.RESPONSE_LABEL[k] for k in keys]
         ax.set_xticks(range(len(keys))); ax.set_xticklabels(labels, fontsize=6, rotation=40, ha="right")
         ax.set_yticks(range(len(keys))); ax.set_yticklabels(labels, fontsize=6)
+        # Exact values on the grid itself -- previously just color, with no
+        # way to read the actual r without a separate hover/inspection step.
+        # A pair's own n can be thinner than the subset's overall scenario
+        # count (a response that's NaN for some scenarios shrinks just the
+        # pairs involving it) -- hatched + the n shown flags exactly which
+        # cells that applies to, rather than a uniform "n of total" caption
+        # implying every cell shares the same support.
+        any_thin = False
+        for i in range(len(keys)):
+            for j in range(len(keys)):
+                v = c[i, j]
+                thin = not np.isnan(v) and counts[i, j] < _MIN_RELIABLE_N
+                text = "–" if np.isnan(v) else f"{v:.2f}"
+                if thin:
+                    text += f"\n(n={counts[i, j]})"
+                    any_thin = True
+                    ax.add_patch(Rectangle((j - 0.5, i - 0.5), 1, 1, fill=False,
+                                           hatch="////", edgecolor="#00000066", linewidth=0))
+                color = "white" if (not np.isnan(v) and abs(v) > 0.6) else "#222"
+                ax.text(j, i, text, ha="center", va="center", fontsize=4.5, color=color)
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        ax.set_title("Response correlations (Pearson r)", fontsize=9)
+        n, n_total = len(table), len(self._table)
+        subset = f"  ·  {n} of {n_total} scenarios" if n != n_total else ""
+        thin_note = f"  ·  hatched = fewer than {_MIN_RELIABLE_N} scenarios support that pair" if any_thin else ""
+        ax.set_title(f"Response correlations (Pearson r){subset}{thin_note}", fontsize=8)
         fig.subplots_adjust(top=0.9, bottom=0.24, left=0.2, right=0.98)
         self.corr_canvas.draw_idle()
         self._render_stats()
+        self._reset_drilldown()
 
     def _render_stats(self) -> None:
-        scores = sa.outlier_scores(self._table)
+        table = self._filtered_table()
+        scores = sa.outlier_scores(table)
         order = np.argsort(scores)[::-1]
-        top = [f"{self._table[i]['folder']} ({scores[i]:.2f}σ)" for i in order[:3]]
-        stats = sa.study_statistics(self._table)
-        lines = ["<b>Most unusual scenarios</b> (standardized distance): " + ", ".join(top),
+        top = [f"{table[i]['folder']} ({scores[i]:.2f}σ)" for i in order[:3]] if len(table) else []
+        stats = sa.study_statistics(table)
+        n, n_total = len(table), len(self._table)
+        subset = f" (filtered: {n} of {n_total} scenarios)" if n != n_total else ""
+        lines = [f"<b>Most unusual scenarios</b>{subset} (standardized distance): "
+                 + (", ".join(top) if top else "not enough data"),
                  "<b>Study statistics</b>:"]
         for key in sa.RESPONSE_KEYS:
             st = stats[key]
@@ -201,3 +314,61 @@ class StudyPanel(QtWidgets.QWidget):
                     f"&nbsp;&nbsp;{sa.RESPONSE_LABEL[key]}: mean {st['mean']:.1f}, "
                     f"range {st['min']:.1f}–{st['max']:.1f} {sa.RESPONSE_UNIT[key]} (n={st['n']})")
         self.stats_label.setText("<br>".join(lines))
+
+    # ------------------------------------------------------ drill-down (click)
+    def _on_corr_click(self, event) -> None:
+        if event.inaxes is None or event.xdata is None or event.ydata is None or not self._corr_keys:
+            return
+        n = len(self._corr_keys)
+        col = int(round(event.xdata))
+        row = int(round(event.ydata))
+        if not (0 <= col < n and 0 <= row < n):
+            return
+        self._render_drilldown(self._corr_keys[row], self._corr_keys[col])
+
+    def _reset_drilldown(self) -> None:
+        fig = self.corr_drilldown_canvas.fig
+        fig.clear()
+        ax = fig.add_subplot(111)
+        ax.text(0.5, 0.5, "Click a cell in the matrix\nto see the scatter plot\n"
+                          "(diagonal = distribution)",
+                ha="center", va="center", fontsize=8, transform=ax.transAxes)
+        ax.set_xticks([]); ax.set_yticks([])
+        self.corr_drilldown_canvas.draw_idle()
+
+    def _render_drilldown(self, key_y: str, key_x: str) -> None:
+        table = self._filtered_table()
+        x = sa.column(table, key_x)
+        y = sa.column(table, key_y)
+        fig = self.corr_drilldown_canvas.fig
+        fig.clear()
+        ax = fig.add_subplot(111)
+        x_label = sa.RESPONSE_LABEL[key_x] + (f" ({sa.RESPONSE_UNIT[key_x]})" if sa.RESPONSE_UNIT[key_x] else "")
+        if key_x == key_y:
+            vals = x[~np.isnan(x)]
+            if vals.size:
+                ax.hist(vals, bins=min(10, max(3, vals.size // 2)), color="#E8622C", edgecolor="white")
+            ax.set_xlabel(x_label, fontsize=8)
+            ax.set_ylabel("scenarios", fontsize=8)
+            ax.set_title(f"{sa.RESPONSE_LABEL[key_x]} distribution (n={vals.size})", fontsize=9)
+        else:
+            mask = ~(np.isnan(x) | np.isnan(y))
+            xs, ys = x[mask], y[mask]
+            ax.scatter(xs, ys, color="#2563EB", s=20, alpha=0.85)
+            r = float("nan")
+            if xs.size >= 3 and xs.std() > 0:
+                slope, intercept = np.polyfit(xs, ys, 1)
+                xr = np.array([xs.min(), xs.max()])
+                ax.plot(xr, slope * xr + intercept, color="#B91C1C", linewidth=1.2, linestyle="--")
+            if xs.size >= 2 and xs.std() > 0 and ys.std() > 0:
+                r = float(np.corrcoef(xs, ys)[0, 1])
+            r_text = f"r = {r:.2f}" if not np.isnan(r) else "r = n/a"
+            caveat = "  -- too few points to trust" if 0 < xs.size < _MIN_RELIABLE_N else ""
+            y_label = sa.RESPONSE_LABEL[key_y] + (f" ({sa.RESPONSE_UNIT[key_y]})" if sa.RESPONSE_UNIT[key_y] else "")
+            ax.set_xlabel(x_label, fontsize=8)
+            ax.set_ylabel(y_label, fontsize=8)
+            ax.set_title(f"{sa.RESPONSE_LABEL[key_y]} vs {sa.RESPONSE_LABEL[key_x]}  "
+                        f"({r_text}, n={xs.size}){caveat}", fontsize=9)
+        ax.tick_params(labelsize=7)
+        fig.subplots_adjust(top=0.88, bottom=0.18, left=0.18, right=0.96)
+        self.corr_drilldown_canvas.draw_idle()

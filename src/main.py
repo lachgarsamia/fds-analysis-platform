@@ -17,6 +17,21 @@ from config import DEFAULT_CANDLES, DEFAULT_DOOR, DEFAULT_VOD, DEFAULT_VOC
 logger = logging.getLogger(__name__)
 logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
 
+
+def _log_uncaught_exception(exc_type, exc_value, exc_tb) -> None:
+    """PyQt5 slots don't propagate Python exceptions to the caller -- an
+    unhandled one inside a Qt slot hits qFatal()/abort() instead, killing
+    the process with no Python traceback in the crash report. Most slots
+    guard themselves now (see height_panel.py/timeseries.py), but this is
+    the last-resort net for anything that doesn't: log it here instead of
+    losing it, without exiting -- the goal is visibility, not a fresh
+    failure mode of its own."""
+    logger.error("unhandled exception reached the top level",
+                 exc_info=(exc_type, exc_value, exc_tb))
+
+
+sys.excepthook = _log_uncaught_exception
+
 LOGO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo")
 
 

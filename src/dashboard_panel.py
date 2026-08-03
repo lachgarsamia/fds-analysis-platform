@@ -24,7 +24,8 @@ from events import detect_events
 from layer_height import smoke_layer_height_series
 from summary_stats import read_hrr_table
 from linked_inspection import value_at_time
-from linked_panel import _fmt_hrr
+from summary_stats import fmt_hrr as _fmt_hrr
+from analysis_panel_base import populate_scenario_combo
 import hazard_spaces as hz
 
 # Preset names only; main_window owns the tab+quantity focus (it holds the
@@ -36,7 +37,8 @@ WORKSPACE_PRESETS = ("Overview", "Temperature study", "Ventilation study",
 class DashboardPanel(QtWidgets.QWidget):
     workspace_requested = QtCore.pyqtSignal(str)   # preset name (MainWindow resolves)
 
-    def __init__(self, store, manifest: list, fps: int, parent=None):
+    def __init__(self, store, manifest: list, fps: int,
+                 energy_content: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self._store = store
         self._manifest = sorted(manifest, key=lambda e: e.case_index)
@@ -44,6 +46,8 @@ class DashboardPanel(QtWidgets.QWidget):
         self._fps = max(1, fps)
         self._models = {}
         self._bus = None
+        self._current_ci = None
+        self._energy_panel = energy_content
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -53,6 +57,19 @@ class DashboardPanel(QtWidgets.QWidget):
         title = QtWidgets.QLabel("Mission control")
         title.setProperty("role", "section-title")
         header.addWidget(title)
+        header.addSpacing(16)
+        # Global Analysis scenario control: Dashboard is the one panel that
+        # displays a per-scenario "Scenario" card yet had no way to change
+        # it directly -- this combo is wired the same way every other
+        # analysis panel's own scenario_combo is (main_window's generic
+        # bind_to_bus loop), so it is never a second, independent scenario
+        # state; it just gives the shared SelectionBus scenario a visible,
+        # editable home on this tab too.
+        header.addWidget(QtWidgets.QLabel("Scenario:"))
+        self.scenario_combo = QtWidgets.QComboBox()
+        self.scenario_combo.setAccessibleName("Dashboard scenario")
+        populate_scenario_combo(self.scenario_combo, self._manifest)
+        header.addWidget(self.scenario_combo)
         header.addStretch(1)
         header.addWidget(QtWidgets.QLabel("Workspace:"))
         self.preset_combo = QtWidgets.QComboBox()
@@ -62,6 +79,16 @@ class DashboardPanel(QtWidgets.QWidget):
         self.preset_combo.activated.connect(self._on_preset)
         header.addWidget(self.preset_combo)
         layout.addLayout(header)
+
+        # Jump to peak moment (Analysis-improvement roadmap Phase A, folded
+        # in from the removed Inspect Moment tab): that panel's whole value
+        # was "click a temperature peak, see everything at that instant" --
+        # this dashboard already reads the current instant's HRR/layer/
+        # hazard, so the only missing piece was a way to jump *to* the peak.
+        self.jump_to_peak_button = QtWidgets.QPushButton("Jump to peak moment")
+        self.jump_to_peak_button.setAccessibleName("Jump to this scenario's peak-temperature moment")
+        self.jump_to_peak_button.clicked.connect(self._on_jump_to_peak)
+        layout.addWidget(self.jump_to_peak_button)
 
         self.caption = QtWidgets.QLabel(
             "Synchronized to the current selection. Hazard is a temperature-only "
@@ -88,6 +115,16 @@ class DashboardPanel(QtWidgets.QWidget):
             val.setWordWrap(True)
             fl.addWidget(cap)
             fl.addWidget(val)
+            if name == "Heat release rate" and self._energy_panel is not None:
+                # Energy budget (Analysis-improvement roadmap Phase B):
+                # the full Q_* HRR budget breakdown, folded in as an
+                # expandable detail on this card instead of a standalone
+                # tab -- the panel itself (CSV read, scenario_combo) is
+                # unchanged, just shown in a dialog instead of a tab.
+                detail_button = QtWidgets.QPushButton("Full energy budget…")
+                detail_button.setAccessibleName("Show full energy budget detail")
+                detail_button.clicked.connect(self._show_energy_detail)
+                fl.addWidget(detail_button)
             grid.addWidget(frame, i // 3, i % 3)
             self._cards[name] = val
         layout.addLayout(grid)
@@ -104,6 +141,39 @@ class DashboardPanel(QtWidgets.QWidget):
 
     def _on_preset(self, _i) -> None:
         self.workspace_requested.emit(self.preset_combo.currentText())
+
+    def _show_energy_detail(self) -> None:
+        """Opens the (unchanged) EnergyBudgetPanel in a dialog, pre-selected
+        to the currently-selected scenario -- Phase B fold-in keeps the
+        panel itself intact, just not a permanently-visible standalone tab."""
+        if self._energy_panel is None:
+            return
+        self._energy_panel.ensure_loaded()
+        if self._current_ci is not None:
+            idx = self._energy_panel.scenario_combo.findData(self._current_ci)
+            if idx >= 0:
+                self._energy_panel.scenario_combo.setCurrentIndex(idx)
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Full energy budget")
+        dialog.resize(700, 500)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._energy_panel)
+        dialog.exec_()
+        # Reparent back so main_window still owns it (a QDialog taking a
+        # widget reparents it; nothing else references self._energy_panel
+        # while the dialog is closed).
+        layout.removeWidget(self._energy_panel)
+        self._energy_panel.setParent(self)
+
+    def _on_jump_to_peak(self) -> None:
+        if self._bus is None or self._current_ci is None:
+            return
+        m = self._models.get(self._current_ci)
+        if m is None:
+            return
+        peak_frame = int(np.argmax(m["peakT"]))
+        self._bus.update(origin=self, time_s=peak_frame / self._fps)
 
     # --------------------------------------------------------------- model
     def _model(self, case_index):
@@ -143,6 +213,7 @@ class DashboardPanel(QtWidgets.QWidget):
         m = self._model(ci) if ci is not None else None
         if m is None:
             return
+        self._current_ci = ci
         t = selection.time_s if selection.time_s is not None else 0.0
         frame = min(max(int(round(t * self._fps)), 0), m["n"] - 1)
 

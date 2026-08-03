@@ -60,43 +60,36 @@ from figure_export import (PublicationExportDialog, export_publication_figure,
 from report_builder import (build_scenario_report, build_comparison_report,
                             build_session_report, write_report)
 from semantic_diff import compare as compare_scenarios, difference_statements
-from semantic_diff_panel import SemanticDiffPanel
 from query_panel import QueryPanel
-from state_space_panel import StateSpacePanel
 from attention_panel import AttentionPanel
 from cause_panel import CausePanel
 from height_panel import HeightPanel
-from linked_panel import LinkedInspectionPanel
 from zone_panel import ZonePanel
 from time_window_panel import TimeWindowPanel
-from measurement_panel import MeasurementPanel
 from advanced_compare_panel import AdvancedComparePanel
-from experiments_panel import ExperimentsPanel
+from probe_measure_panel import ProbeMeasurePanel
+from spatiotemporal_panel import SpatiotemporalPanel
+import manifest as manifest_mod
 from quantities_panel import QuantitiesPanel
-from assistant_panel import AssistantPanel
-import assistant as assistant_mod
-import experiment as experiment_mod
 from selection import Selection, SelectionBus
 from quantity_provider import QuantityProvider
 from analysis_panel_base import bind_to_bus
 from study_panel import StudyPanel
 from sensitivity_panel import SensitivityPanel
 from hazard_panel import HazardPanel
+from hazard_tenability_panel import HazardTenabilityPanel
 from dashboard_panel import DashboardPanel
 from spacetime_panel import SpaceTimePanel
 from narrative_panel import NarrativePanel
-from ensemble_panel import EnsemblePanel
 from graph_panel import GraphPanel
-from context_panel import ContextPanel
 from history import InvestigationHistory
-from calculator_panel import CalculatorPanel
 import field_calculator as field_calculator_mod
 from device_panel import DevicePanel
 from velocity_panel import VelocityPanel
 from figure_export import save_figure
 from report_builder import build_publication_manifest
-import study_analytics as study_analytics_mod
-from sessions_panel import SessionsPanel
+import smoke_density
+import derived_quantities
 import session_store
 from evidence_notebook_panel import EvidenceNotebookDock
 from evidence_notebook import EvidenceNotebook
@@ -116,6 +109,11 @@ logger = logging.getLogger(__name__)
 
 ORG_NAME = "FZJuelich"
 APP_NAME = "FDSSLCFVisualizer"
+
+# Live-polish follow-up ("only see a blue heatmap"): DYNAMIC PRESSURE needs
+# the same data-driven display ceiling as SOOT_QUANTITY -- see
+# _dynamic_pressure_ceiling_for/derived_quantities.display_ceiling.
+DYNAMIC_PRESSURE_QUANTITY = "DYNAMIC PRESSURE"
 
 # Compare page story presets (FireLab roadmap Phase 4, pages/compare.py):
 # each key resolves to two scenarios differing in exactly one factor
@@ -479,6 +477,18 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.velocity_overlay_action.triggered.connect(self._set_velocity_overlay_enabled)
         view_menu.addAction(self.velocity_overlay_action)
+
+        self.soot_overlay_action = QtWidgets.QAction("Show smoke (soot density) overlay", self, checkable=True)
+        self.soot_overlay_action.setToolTip(
+            "Draw the real SOOT DENSITY field as a semi-transparent overlay on top of "
+            "any cell currently showing Temperature at the y=0 plane (the only plane "
+            "SOOT DENSITY is currently registered for) -- continuous opacity, not a "
+            "threshold: exactly-zero soot is fully transparent, higher concentration "
+            "reads as denser smoke. Off by default; a plain temperature view stays "
+            "available."
+        )
+        self.soot_overlay_action.triggered.connect(self._set_soot_overlay_enabled)
+        view_menu.addAction(self.soot_overlay_action)
         view_menu.addSeparator()
 
         self.cinematic_action = QtWidgets.QAction("Cinematic fire view", self, checkable=True)
@@ -532,11 +542,9 @@ class MainWindow(QtWidgets.QMainWindow):
     _BUNDLE_FIGURES = [
         ("height_panel", "plot_canvas", "height_profile", "Vertical temperature profile and layer/plume/ceiling over time."),
         ("zone_panel", "plot_canvas", "zone_stats", "Named-zone temperature and thermal-dose over time."),
-        ("linked_panel", "plots_canvas", "linked_inspection", "Linked temperature, HRR, smoke layer, and speed at one moment."),
         ("hazard_panel", "timeline_canvas", "hazard_timeline", "Hazard-class fractions over time (temperature-only partial screen)."),
         ("study_panel", "parallel_canvas", "study_parallel", "Parameter-vs-response parallel coordinates across the factorial."),
         ("sensitivity_panel", "surface_canvas", "sensitivity_surface", "Estimated response surface (interpolated from existing scenarios)."),
-        ("ensemble_panel", "canvas", "ensemble_spread", "Parametric ensemble spread across the existing scenarios."),
     ]
 
     def _prepare_publication_bundle(self) -> None:
@@ -779,10 +787,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.quantity_provider = QuantityProvider(
                 self.controller.store, fps=self.sim_data.timesteps_per_second)
             # V6-M1: restore any calculated fields before the panels read the
-            # registry (a fresh window starts with none).
+            # registry (a fresh window starts with none). CalculatorPanel
+            # (the only UI to author a *new* calculated field) was removed
+            # (Analysis UX + reliability pass) -- field_calculator.py itself
+            # stays: quantity_provider.py calls it directly for every
+            # calculated-field read, and session save/restore round-trips
+            # CalculatedField here independent of any panel.
             field_calculator_mod.clear()
-            self.calculator_panel = CalculatorPanel(
-                self.quantity_provider, self.sim_data.manifest)
             # Virtual Device Network (V6-M2): thermocouples/detectors/
             # sprinklers placed at a point, computed once and cached.
             self.device_panel = DevicePanel(
@@ -796,7 +807,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.sim_data.timesteps_per_second)
             self.timeseries_panel = TimeSeriesPanel(
                 self.controller.store, self.sim_data.manifest,
-                self._quantity_options(), self.sim_data.timesteps_per_second)
+                self._analysis_quantity_options_with_computed(), self.sim_data.timesteps_per_second,
+                field_fn=self._field_fn_for_analysis_panels(), extent_fn=self._extent_for)
             self.energy_panel = EnergyBudgetPanel(self.sim_data.manifest)
             # Tenability screening (M3.2; full FED V6-M6): works for any
             # study with a manifest, factorial or not (it's per-scenario, no
@@ -808,20 +820,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.fire_mri_panel = FireMRIPanel(
                 self.controller.store, self.sim_data.manifest,
                 self._quantity_options(), self.sim_data.timesteps_per_second)
-            # Semantic diff (V3-M3): physics-difference report between two
-            # scenarios. Needs at least two scenarios to compare.
-            self.semantic_diff_panel = (
-                SemanticDiffPanel(self.controller.store, self.sim_data.manifest,
-                                  self._quantity_options(), self.sim_data.timesteps_per_second)
-                if len(self.sim_data.manifest) >= 2 else None)
             # Physics query engine (V3-M4).
             self.query_panel = QueryPanel(
                 self.controller.store, self.sim_data.manifest, self.sim_data.timesteps_per_second)
-            # State space + Fire Genome (V3-M5). Summaries (already computed
-            # for the browser) supply the genome's energy trait.
-            self.state_space_panel = StateSpacePanel(
-                self.controller.store, self.sim_data.manifest, self.sim_data.timesteps_per_second,
-                summaries=getattr(self, "_scenario_summaries", None))
             # Physics attention map (V3-M6): heuristic saliency, per frame.
             self.attention_panel = AttentionPanel(
                 self.controller.store, self.sim_data.manifest, self.sim_data.timesteps_per_second)
@@ -832,12 +833,8 @@ class MainWindow(QtWidgets.QMainWindow):
             # smoke layer, plume, ceiling jet.
             self.height_panel = HeightPanel(
                 self.controller.store, self.sim_data.manifest,
-                self._quantity_options(), self.sim_data.timesteps_per_second)
-            # Linked multi-quantity inspection (V4-M3): one moment across
-            # temperature / HRR / smoke layer / velocity, shared time cursor.
-            self.linked_panel = LinkedInspectionPanel(
-                self.controller.store, self.sim_data.manifest,
-                self.sim_data.timesteps_per_second)
+                self._analysis_quantity_options_with_computed(), self.sim_data.timesteps_per_second,
+                field_fn=self._field_fn_for_analysis_panels(), extent_fn=self._extent_for)
             # Named region / zone statistics (V4-M4): persistent zones with
             # a full stats bundle, compared across scenarios, session-saved.
             self.zone_panel = ZonePanel(
@@ -848,11 +845,28 @@ class MainWindow(QtWidgets.QMainWindow):
             self.time_window_panel = TimeWindowPanel(
                 self.controller.store, self.sim_data.manifest,
                 self._quantity_options(), self.sim_data.timesteps_per_second)
-            # Measurement tools (V4-M7): distance / path / rectangle / probe
-            # on the field; measurements persist with the session.
-            self.measurement_panel = MeasurementPanel(
-                self.controller.store, self.sim_data.manifest,
-                self._quantity_options(), self.sim_data.timesteps_per_second)
+            # Spatiotemporal Analysis (Analysis section consolidation Phase
+            # 6): a thin QTabWidget wrapper over three pre-existing "how does
+            # a quantity evolve across time and/or space?" tools -- vertical
+            # profile, point/region/line probe, and whole-field/interval.
+            # Every child's own construction/store access/lazy-load/bus
+            # wiring is unchanged; only the tab-level presentation is
+            # consolidated. Space-time is deliberately excluded (structurally
+            # different mechanism, see spatiotemporal_panel.py's docstring).
+            self.spatiotemporal_panel = SpatiotemporalPanel(
+                height=self.height_panel, timeseries=self.timeseries_panel,
+                time_window=self.time_window_panel)
+            # Probe & Measure (Analysis section consolidation Phase 4): a
+            # thin QTabWidget wrapper over three pre-existing "what happens
+            # at this location/region?" tools -- devices, zones, velocity.
+            # Every child's own construction/store access/lazy-load/bus
+            # wiring is unchanged; only the tab-level presentation is
+            # consolidated. (The disposable rectangle/point "Quick probe"
+            # tool was removed in the Analysis final-polish pass -- Devices/
+            # Zones/Velocity already cover deliberate measurement.)
+            self.probe_measure_panel = ProbeMeasurePanel(
+                devices=self.device_panel, zones=self.zone_panel,
+                velocity=self.velocity_panel)
             # Advanced comparison (V4-M8): temporal / spatial / physics axes.
             # Needs two scenarios to compare (like the semantic diff).
             self.advanced_compare_panel = (
@@ -861,18 +875,9 @@ class MainWindow(QtWidgets.QMainWindow):
                     self._quantity_options(), self.sim_data.timesteps_per_second,
                     summaries=getattr(self, "_scenario_summaries", None))
                 if len(self.sim_data.manifest) >= 2 else None)
-            # Experiment management (V4-M9): named, tagged batches of
-            # scenarios with a baseline; self-contained CRUD, only the
-            # comparison hand-off comes back to main_window.
-            self.experiments_panel = ExperimentsPanel(
-                self.controller.store, self.sim_data.manifest,
-                experiment_mod.default_experiments_dir())
             # Quantity reference/breadth (V4-M11): available / derived / gated.
             self.quantities_panel = QuantitiesPanel(
                 self.controller.store, self.sim_data.manifest)
-            # Safe Assistant (V4-M12): bounded, deterministic organization of
-            # computed evidence; main_window supplies context and runs it.
-            self.assistant_panel = AssistantPanel()
             # Research workspace (V5-M4): hazard spaces + mission-control
             # dashboard. Per-scenario, so any study (not just the factorial).
             # V6-M6: takes the provider (not the raw store) so a CO read
@@ -880,9 +885,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self.hazard_panel = HazardPanel(
                 self.quantity_provider, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
+            # Hazard & Tenability (Analysis-improvement roadmap Phase B): a
+            # mode-toggle wrapper, not a rewrite -- both panels keep their
+            # own full functionality/bus wiring/disclaimers unchanged, this
+            # only merges two overlapping top-level tabs into one.
+            self.hazard_tenability_panel = HazardTenabilityPanel(
+                self.hazard_panel, self.tenability_panel)
             self.dashboard_panel = DashboardPanel(
                 self.controller.store, self.sim_data.manifest,
-                self.sim_data.timesteps_per_second)
+                self.sim_data.timesteps_per_second, energy_content=self.energy_panel)
             # Space-time cube (V5-M4/P4) + Fire Narrative++ (V5-M5); V6-M5
             # multi-plane cross-sections -- takes the provider (not the raw
             # store) so an unavailable X/Z-normal plane raises
@@ -893,45 +904,47 @@ class MainWindow(QtWidgets.QMainWindow):
             self.narrative_panel = NarrativePanel(
                 self.controller.store, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
-            # Ensemble spread (V5-M5): min/mean/max envelopes across scenarios.
-            self.ensemble_panel = EnsemblePanel(
-                self.controller.store, self.sim_data.manifest,
-                self.sim_data.timesteps_per_second)
             # Research Knowledge Graph (V5 Phase 6): laboratory memory over
             # every existing artifact. `app=self` lets it gather live artifacts.
             self.graph_panel = GraphPanel(
                 self.controller.store, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second, app=self)
-            # Context Panel (V6-M4): the unified "what's related to this
-            # selection" hub -- constructed after every panel it duck-types
-            # against (device_panel/velocity_panel/evidence_dock/zone_panel/
-            # measurement_panel/graph_panel), same placement rule graph_panel
-            # itself already follows.
-            self.context_panel = ContextPanel(app=self)
-            # Named analysis sessions (V4-M6): save/browse/reload/export the
-            # whole investigation. Pure UI; main_window collects/applies state.
-            self.sessions_panel = SessionsPanel()
             # Factor-effect maps (M3.1) need the candle factorial's factor
             # axes; a generic guest study has none, so it's factorial-only.
             self.factor_effects_panel = (
                 FactorEffectsPanel(self.controller.store, self.sim_data.manifest,
                                    self._quantity_options(), self.sim_data.timesteps_per_second)
                 if self.is_factorial else None)
-            # Study-level analytics (V5-M2): the factorial as a designed
-            # experiment. Needs the factor axes + computed summaries.
-            self.study_panel = (
-                StudyPanel(getattr(self, "_scenario_summaries", None) or [],
-                           self.sim_data.manifest)
-                if self.is_factorial else None)
             # Sensitivity explorer (V5-M3): interpolate responses across the
             # existing factorial ("what-if"); estimates only, never a new run.
+            # Constructed before StudyPanel (Analysis section consolidation
+            # Phase 5) since it's now folded in as one of its sub-tabs, the
+            # same "thin slot, not a rewrite" pattern already used for
+            # Factor effects -- this panel's own sliders/tabs/bus wiring are
+            # completely unchanged.
             self.sensitivity_panel = (
                 SensitivityPanel(getattr(self, "_scenario_summaries", None) or [],
                                  self.sim_data.manifest)
                 if self.is_factorial else None)
+            # Study-level analytics (V5-M2): the factorial as a designed
+            # experiment. Needs the factor axes + computed summaries.
+            self.study_panel = (
+                StudyPanel(getattr(self, "_scenario_summaries", None) or [],
+                           self.sim_data.manifest,
+                           factor_effects_content=self.factor_effects_panel,
+                           sensitivity_content=self.sensitivity_panel)
+                if self.is_factorial else None)
+            # Compare & Discover (Analysis section consolidation Phase 3,
+            # unwrapped in the Analysis final-polish pass): Pairwise
+            # Comparison and PCA/Clustering are direct tabs -- Parallel
+            # coordinates and Ensemble spread were removed (not enough
+            # standalone research value for their complexity/upkeep), which
+            # left the former 4-mode CompareDiscoverPanel wrapper hosting
+            # only 2 children, no longer earning its own indirection layer.
+            self.clustering_content = (
+                self.analytics_panel.widget() if self.analytics_panel is not None else None)
         else:
             self.quantity_provider = None
-            self.calculator_panel = None
             self.device_panel = None
             self.velocity_panel = None
             self.timeseries_panel = None
@@ -941,31 +954,25 @@ class MainWindow(QtWidgets.QMainWindow):
             self.sensitivity_panel = None
             self.tenability_panel = None
             self.fire_mri_panel = None
-            self.semantic_diff_panel = None
             self.query_panel = None
-            self.state_space_panel = None
             self.attention_panel = None
             self.cause_panel = None
             self.height_panel = None
-            self.linked_panel = None
             self.zone_panel = None
             self.time_window_panel = None
-            self.measurement_panel = None
+            self.probe_measure_panel = None
+            self.spatiotemporal_panel = None
             self.advanced_compare_panel = None
-            self.experiments_panel = None
+            self.clustering_content = None
             self.quantities_panel = None
-            self.assistant_panel = None
             self.hazard_panel = None
+            self.hazard_tenability_panel = None
             self.dashboard_panel = None
             self.spacetime_panel = None
             self.narrative_panel = None
-            self.ensemble_panel = None
             self.graph_panel = None
-            self.context_panel = None
-            self.sessions_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
-        analysis_content = self.analytics_panel.widget() if self.analytics_panel is not None else None
         # The dock objects themselves are now empty shells (their content
         # was just reparented onto a page) -- never added to a dock area,
         # but still MainWindow-parented QWidgets, so hide them explicitly
@@ -981,42 +988,25 @@ class MainWindow(QtWidgets.QMainWindow):
             "compare": ComparePage(on_preset=self._apply_compare_preset),
             "dataset": DatasetPage(dataset_content),
             "analysis": AnalysisPage(
-                analysis_content, on_shown=self._on_analysis_page_shown,
+                on_shown=self._on_analysis_page_shown,
                 playback_bar=self._build_analysis_playback_bar(),
                 forecasting_content=ForecastingPanel(
                     self.prediction_store, self.controller.store, self.sim_data.manifest),
-                timeseries_content=self.timeseries_panel,
-                energy_content=self.energy_panel,
-                factor_effects_content=self.factor_effects_panel,
-                tenability_content=self.tenability_panel,
                 fire_mri_content=self.fire_mri_panel,
-                semantic_diff_content=self.semantic_diff_panel,
-                query_content=self.query_panel,
-                state_space_content=self.state_space_panel,
                 attention_content=self.attention_panel,
                 cause_content=self.cause_panel,
-                height_content=self.height_panel,
-                linked_content=self.linked_panel,
-                zone_content=self.zone_panel,
-                interval_content=self.time_window_panel,
-                measurement_content=self.measurement_panel,
-                advanced_compare_content=self.advanced_compare_panel,
+                spatiotemporal_content=self.spatiotemporal_panel,
+                probe_measure_content=self.probe_measure_panel,
+                pairwise_content=self.advanced_compare_panel,
+                clustering_content=self.clustering_content,
                 study_content=self.study_panel,
-                sensitivity_content=self.sensitivity_panel,
-                hazard_content=self.hazard_panel,
+                hazard_tenability_content=self.hazard_tenability_panel,
                 dashboard_content=self.dashboard_panel,
                 spacetime_content=self.spacetime_panel,
                 narrative_content=self.narrative_panel,
-                ensemble_content=self.ensemble_panel,
                 graph_content=self.graph_panel,
-                context_content=self.context_panel,
-                calculator_content=self.calculator_panel,
-                devices_content=self.device_panel,
-                velocity_content=self.velocity_panel,
-                experiments_content=self.experiments_panel,
                 quantities_content=self.quantities_panel,
-                assistant_content=self.assistant_panel,
-                sessions_content=self.sessions_panel),
+                ask_content=self.query_panel),
             "export": ExportPage(
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
             "about": AboutPage(),
@@ -1074,14 +1064,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.controller.store, fps=self.time_controller.timesteps_per_second)
         self._seek_from_bus = False
         fps = self.time_controller.timesteps_per_second
-        for attr in ("height_panel", "zone_panel", "linked_panel", "time_window_panel",
-                     "measurement_panel", "fire_mri_panel", "semantic_diff_panel",
-                     "query_panel", "state_space_panel", "attention_panel", "cause_panel",
+        for attr in ("height_panel", "zone_panel", "time_window_panel",
+                     "fire_mri_panel",
+                     "query_panel", "attention_panel", "cause_panel",
                      "factor_effects_panel", "tenability_panel", "timeseries_panel",
                      "energy_panel", "forecasting_panel", "quantities_panel",
-                     "advanced_compare_panel", "study_panel", "hazard_panel",
-                     "spacetime_panel", "narrative_panel", "ensemble_panel", "device_panel",
-                     "velocity_panel"):
+                     "advanced_compare_panel", "study_panel",
+                     "hazard_panel", "spacetime_panel", "narrative_panel",
+                     "device_panel", "velocity_panel", "dashboard_panel"):
             panel = getattr(self, attr, None)
             if panel is not None:
                 bind_to_bus(panel, self.selection_bus, fps)
@@ -1098,6 +1088,17 @@ class MainWindow(QtWidgets.QMainWindow):
         # V5-M4: the space-time panel publishes/reacts to the selected point.
         if self.spacetime_panel is not None:
             self.spacetime_panel.set_bus(self.selection_bus)
+        # Consolidation Phase 2: the A/B pair publishes/reacts to
+        # Selection.comparison (previously defined but unused by any panel).
+        if self.advanced_compare_panel is not None:
+            self.advanced_compare_panel.set_bus(self.selection_bus)
+        # Consolidation Phase 2: the point/region probe publishes to the bus
+        # (previously local-only) so other panels (e.g. SpaceTimePanel) can follow it.
+        if self.timeseries_panel is not None:
+            self.timeseries_panel.set_bus(self.selection_bus)
+        # Consolidation Phase 2: the selected window publishes Selection.interval.
+        if self.time_window_panel is not None:
+            self.time_window_panel.set_bus(self.selection_bus)
         # V5-M5: a narrative step publishes its Insight's selection (seek + sync).
         if self.narrative_panel is not None:
             self.narrative_panel.event_activated.connect(self._on_insight_activated)
@@ -1105,11 +1106,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # rebuilds its selected-scenario events when the selection changes.
         if self.graph_panel is not None:
             self.graph_panel.set_bus(self.selection_bus)
-        # V6-M1.5: when a calculated field is created/deleted, refresh the Live
-        # Viewer quantity combo so it appears/disappears as a visual quantity,
-        # and invalidate the provider's computed-field memo.
-        if self.calculator_panel is not None:
-            self.calculator_panel.fields_changed.connect(self._refresh_quantity_list)
         # V6-M2: a placed/edited/deleted device refreshes the Live Viewer's
         # markers; clicking a device's result (an Insight) seeks/highlights
         # through the same shared navigation every other V3 feature uses.
@@ -1122,15 +1118,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.velocity_panel is not None:
             self.velocity_panel.probes_changed.connect(self._refresh_vector_field)
             self.velocity_panel.probe_activated.connect(self._on_insight_activated)
-        # V6-M4: the Context Panel reacts to the shared selection like the
-        # graph panel; its Insight-shaped rows (devices/probes/notebook/
-        # zones/measurements) reuse the same _on_insight_activated every
-        # other feature already converges on -- no new dispatch code.
-        if self.context_panel is not None:
-            self.context_panel.set_bus(self.selection_bus)
-            self.context_panel.insight_activated.connect(self._on_insight_activated)
-            self.context_panel.session_reveal_requested.connect(self._on_context_session_reveal)
-            self.context_panel.hover_changed.connect(self._on_context_hover)
         # V6-M4 Investigation History: records every *meaningful* selection
         # (skips its own back/forward replay via the `self.history` sentinel
         # origin, and MainWindow's own playback-tick echo via `self` -- time_s
@@ -1139,17 +1126,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self.selection_bus.changed.connect(self._on_history_changed)
         self.selection_bus.changed.connect(self._on_bus_changed)
         # RC polish: switching analysis tabs re-syncs the newly-shown panel to
-        # the current selection/time.
-        analysis_tabs = getattr(self.pages.get("analysis"), "tabs", None)
-        if analysis_tabs is not None:
-            analysis_tabs.currentChanged.connect(lambda _i: self.selection_bus.resend())
+        # the current selection/time. Phase D: AnalysisPage.tab_shown covers
+        # every level a panel can go from hidden to visible at (the outer
+        # group tabs, a group's own inner tabs, or expanding Experimental).
+        analysis_page = self.pages.get("analysis")
+        if analysis_page is not None and hasattr(analysis_page, "tab_shown"):
+            analysis_page.tab_shown.connect(self.selection_bus.resend)
 
     # Adaptive Workspace presets (V5-M4/P4): each focuses the app on a task by
     # raising its primary analysis tab and publishing the quantity that task
     # cares about, so every quantity-aware panel follows (via the M1 binder).
     _WORKSPACE = {
         "Overview": ("dashboard_panel", None),
-        "Temperature study": ("hazard_panel", "TEMPERATURE"),
+        "Temperature study": ("hazard_tenability_panel", "TEMPERATURE"),
         "Ventilation study": ("sensitivity_panel", "VELOCITY"),
         "Smoke study": ("height_panel", "TEMPERATURE"),
         "Study analytics": ("study_panel", None),
@@ -1167,27 +1156,10 @@ class MainWindow(QtWidgets.QMainWindow):
         """Raise the Analysis page and show `panel`'s tab (V6-M4): the one
         cross-navigation primitive every "reveal in Analysis" interaction
         should share, instead of each feature re-deriving the same two
-        lines (previously duplicated in _on_workspace_preset and
-        _on_experiment_compare)."""
+        lines (previously duplicated in _on_workspace_preset and the
+        now-removed Experiments panel's comparison hand-off)."""
         self._navigate_to("analysis")
         self.pages["analysis"].show_tab(panel)
-
-    def _on_context_hover(self, payload) -> None:
-        """Linked hover (V6-M4 objective 4): highlight a Context Panel graph
-        node's location on the matching Live Viewer cell, without touching
-        selection_bus -- a temporary visual, not a navigation."""
-        scenario, point = payload if payload is not None else (None, None)
-        for cell in self.view_grid.visible_cells():
-            if cell.cell_type == "slice":
-                cell.view.set_hover_highlight(point if cell.case_index == scenario else None)
-                cell.view.redraw_overlays_now()
-
-    def _on_context_session_reveal(self, path: str) -> None:
-        """V6-M4: the Context Panel's "reveal a related session" action --
-        a session isn't Insight-shaped, so it can't ride the shared
-        insight_activated path; it reuses _reveal instead."""
-        if self.sessions_panel is not None:
-            self._reveal(self.sessions_panel)
 
     def _on_history_changed(self, selection, origin) -> None:
         """V6-M4 Investigation History: record every selection except a
@@ -1197,6 +1169,22 @@ class MainWindow(QtWidgets.QMainWindow):
         if origin is self.history or origin is self:
             return
         self.history.record(selection)
+
+    def _history_back(self) -> None:
+        history = getattr(self, "history", None)
+        if history is None or getattr(self, "selection_bus", None) is None:
+            return
+        sel = history.back()
+        if sel is not None:
+            self.selection_bus.set(sel, origin=history)
+
+    def _history_forward(self) -> None:
+        history = getattr(self, "history", None)
+        if history is None or getattr(self, "selection_bus", None) is None:
+            return
+        sel = history.forward()
+        if sel is not None:
+            self.selection_bus.set(sel, origin=history)
 
     def _on_bus_changed(self, selection, origin) -> None:
         """React to the shared selection in the Live Viewer: seek playback to
@@ -1229,113 +1217,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self.selection_bus.update(origin=None, **fields)
 
     def _build_sessions(self) -> None:
-        """Named analysis sessions (V4-M6): wire the Sessions panel's
-        intents to state collection/application here (main_window owns the
-        grid, notebook, zones, and time window), and populate its list."""
+        """Named analysis sessions (V4-M6): _sessions_dir is still needed by
+        the autosave-on-close draft (closeEvent, below) even though the
+        Sessions tab's own UI (which used to wire save/load/delete/export
+        signals here) was removed (Analysis UX + reliability pass) --
+        session_store.py itself, and every function still reachable through
+        it (_refresh_sessions/_on_session_*/_apply_analysis_session), stay
+        as reusable session-management logic, just not wired to a visible
+        tab today."""
         self._sessions_dir = session_store.default_sessions_dir()
-        if self.sessions_panel is None:
-            return
-        self.sessions_panel.save_requested.connect(self._on_session_save)
-        self.sessions_panel.load_requested.connect(self._on_session_load)
-        self.sessions_panel.delete_requested.connect(self._on_session_delete)
-        self.sessions_panel.export_requested.connect(self._on_session_export)
-        self._refresh_sessions()
-        # V4-M9: an experiment hands a baseline-vs-scenario pair to the
-        # Advanced Comparison panel and raises that tab.
-        if self.experiments_panel is not None:
-            self.experiments_panel.compare_requested.connect(self._on_experiment_compare)
-        # V4-M12: the Safe Assistant runs on computed context supplied here.
-        if self.assistant_panel is not None:
-            self.assistant_panel.action_requested.connect(self._on_assistant_action)
-            self.assistant_panel.query_submitted.connect(self._on_assistant_query)
-            self.assistant_panel.save_requested.connect(self._on_assistant_save)
-
-    def _run_assistant(self, action: str) -> str:
-        """Gather computed context and run one deterministic assistant
-        action. No physics is inferred -- every result is a template filled
-        from already-computed values."""
-        if action == "summarize_session":
-            return assistant_mod.summarize_session(self._collect_session_dict())
-        if action == "list_key_findings":
-            return assistant_mod.list_key_findings(self.evidence_dock.notebook.to_list())
-        if action == "report_outline":
-            return assistant_mod.report_outline(self.evidence_dock.notebook.to_list())
-        if action == "compare_intervals":
-            return self._assistant_compare_intervals()
-        if action == "figure_caption":
-            return self._assistant_figure_caption()
-        return assistant_mod.REFUSAL
-
-    def _assistant_compare_intervals(self) -> str:
-        import time_window as tw
-        p = self.time_window_panel
-        if p is None or getattr(p, "_series", None) is None:
-            return "Open the Intervals tab and select a window first."
-        s = p._series
-        if p._mode == "split" and p._split is not None:
-            a, b = tw.before_after_split(s["mean"], s["max"], s["times"], p._split)
-            la, lb = f"before {p._split:.0f} s", f"after {p._split:.0f} s"
-        else:
-            a = tw.interval_stats(s["mean"], s["max"], s["times"], p._t0, p._t1)
-            b = tw.interval_stats(s["mean"], s["max"], s["times"],
-                                  float(s["times"][0]), float(s["times"][-1]))
-            la, lb = "selected window", "whole run"
-        return assistant_mod.compare_intervals(a, b, la, lb, s["unit"])
-
-    def _assistant_figure_caption(self) -> str:
-        import numpy as np
-        from registry import get_quantity
-        cell = self.view_grid.active_cell()
-        if cell is None or cell.cell_type != "slice":
-            return "Select a single-scenario cell in the Live viewer for a caption."
-        data = np.asarray(self.controller.store.get(cell.case_index, cell.quantity_key))
-        idx = min(self.time_controller.index, data.shape[0] - 1)
-        peak = float(data[idx].max())
-        scenario = next((e.folder for e in self.sim_data.manifest
-                         if e.case_index == cell.case_index), str(cell.case_index))
-        q = get_quantity(cell.quantity_key.quantity)
-        fps = self.time_controller.timesteps_per_second
-        return assistant_mod.figure_caption(scenario, q.label, q.unit, idx / fps, peak)
-
-    def _on_assistant_action(self, action: str) -> None:
-        self.assistant_panel.show_result(self._run_assistant(action))
-
-    def _on_assistant_query(self, text: str) -> None:
-        action = assistant_mod.interpret_request(text)
-        if action == "refuse":
-            self.assistant_panel.show_result(assistant_mod.REFUSAL, savable=False)
-        elif action == "search_scenarios":
-            # Assistant++ (V5-M5): experiment search over the study table.
-            summaries = getattr(self, "_scenario_summaries", None)
-            if not summaries:
-                self.assistant_panel.show_result(
-                    "Scenario search needs the factorial's computed summaries.",
-                    savable=False)
-                return
-            table = study_analytics_mod.build_table(summaries)
-            self.assistant_panel.show_result(assistant_mod.search_scenarios(table, text))
-        else:
-            self.assistant_panel.show_result(self._run_assistant(action))
-
-    def _on_assistant_save(self, text: str) -> None:
-        if not text:
-            return
-        from insight import Insight
-        first_line = text.strip().splitlines()[0] if text.strip() else "Assistant note"
-        self.evidence_dock.add_insight(Insight(
-            first_line[:200], category="query",
-            basis="assistant: organized from computed evidence (no cause inferred)"))
-        self.statusBar().showMessage("Saved assistant output to the Evidence Notebook", 4000)
-
-    def _on_experiment_compare(self, baseline_folder: str, other_folder: str) -> None:
-        if self.advanced_compare_panel is None:
-            return
-        by_folder = {e.folder: e.case_index for e in self.sim_data.manifest}
-        ca, cb = by_folder.get(baseline_folder), by_folder.get(other_folder)
-        if ca is None or cb is None:
-            return
-        self.advanced_compare_panel.set_scenarios(ca, cb)
-        self._reveal(self.advanced_compare_panel)
 
     def _build_evidence_notebook(self) -> None:
         """Evidence Notebook (V4-M2): a dockable, session-backed collection
@@ -1351,12 +1241,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.evidence_dock.hide()
         for panel_attr, list_attr in (
             ("inspector", "story_list"), ("height_panel", "insights"),
-            ("linked_panel", "insights"), ("zone_panel", "insights"),
+            ("zone_panel", "insights"),
             ("time_window_panel", "insights"),
             ("advanced_compare_panel", "temporal_list"),
             ("advanced_compare_panel", "spatial_list"),
             ("advanced_compare_panel", "physics_list"),
-            ("query_panel", "results"), ("semantic_diff_panel", "list"),
+            ("advanced_compare_panel", "semantic_diff_list"),
+            ("query_panel", "results"),
             ("cause_panel", "chain"),
         ):
             panel = getattr(self, panel_attr, None)
@@ -1725,10 +1616,12 @@ class MainWindow(QtWidgets.QMainWindow):
         """[(label, case_index), ...] for a grid cell's per-cell scenario
         combo (M2.2.2), sourced from the manifest (M2.1). Empty in demo
         mode -- there's no real manifest to pick scenarios from, same
-        convention as the quantity combo's demo-mode fallback."""
+        convention as the quantity combo's demo-mode fallback. label is a
+        human-readable factor-level summary (manifest.scenario_label),
+        not the raw "c1_d0_vod0_voc0" disk folder name."""
         if not self.sim_data.manifest:
             return []
-        return [(e.folder, e.case_index)
+        return [(self._scenario_label(e.case_index), e.case_index)
                 for e in sorted(self.sim_data.manifest, key=lambda e: e.case_index)]
 
     def _quantity_options(self) -> list:
@@ -1737,9 +1630,33 @@ class MainWindow(QtWidgets.QMainWindow):
         combo (self.quantity_infos, computed in _build_control_panel).
 
         Native quantities only -- calculated/derived fields are computed via the
-        QuantityProvider and the analysis panels still read the store directly,
-        so this list (which drives their combos) stays native (V6-M1.5)."""
+        QuantityProvider and most analysis panels still read the store directly,
+        so this list (which drives their combos) stays native (V6-M1.5). See
+        _analysis_quantity_options_with_computed for the two panels (Height,
+        Time series) that were extended to accept computed quantities too."""
         return [(self._quantity_label(info), info.key) for info in self.quantity_infos]
+
+    def _analysis_quantity_options_with_computed(self) -> list:
+        """_quantity_options() plus DYNAMIC PRESSURE/TEMPERATURE RISE (Live-
+        polish follow-up: a vertical profile at the vent is the standard way
+        to find dynamic pressure's neutral plane -- where flow reverses
+        direction -- and a fixed-height time series shows when the hot layer
+        descends to a given elevation; neither view is meaningful from a
+        heatmap alone). Only Height and Time series were extended -- Zones
+        has no quantity selector at all (hardcoded TEMPERATURE) and SOOT
+        DENSITY isn't in scope here (kind="volume", a separate concern from
+        the two "derived" quantities this list adds)."""
+        return self._quantity_options() + [
+            (self._quantity_label(info), info.key) for info in self._computed_quantity_infos()]
+
+    def _field_fn_for_analysis_panels(self):
+        """Bound (case_index, key) -> ndarray callable for Height/Time series
+        (Live-polish follow-up): self._field already knows computed vs.
+        native routing (see _field's own docstring) -- this just fixes the
+        store argument to self.controller.store, which is all these two
+        panels ever use (no store_override/prediction-source concept for
+        them, unlike a grid cell)."""
+        return lambda case_index, key: self._field(self.controller.store, case_index, key)
 
     # --- V6-M1.5: computed quantities as first-class visual quantities ----
     @staticmethod
@@ -1980,7 +1897,14 @@ class MainWindow(QtWidgets.QMainWindow):
         (M2.1). Called right after self.current_quantity_key changes, so
         the temp_slider.setValue() below -- via _on_temp_changed, which
         reads self.current_quantity_key -- already computes the correct
-        vmin/unit for the new quantity."""
+        vmin/unit for the new quantity.
+
+        SOOT DENSITY (Analysis final-polish follow-up, "smoke view looks
+        weird"): the slider default seeds from smoke_density.
+        soot_display_range's data-driven ceiling instead of the registry's
+        fixed 3000 -- see _soot_display_range_for's docstring for why a
+        fixed scale wastes almost its whole range on empty (zero-soot)
+        space for this quantity specifically."""
         display = self._display_for(quantity)
         self.current_colormap = display['cmap']
         self.settings.setValue("colormap", display['cmap'])
@@ -1988,12 +1912,29 @@ class MainWindow(QtWidgets.QMainWindow):
             action.setChecked(cmap == display['cmap'])
         self.view_grid.active_view().set_cmap(display['cmap'])
 
+        slider_default = display['slider_default']
+        if quantity == SOOT_QUANTITY:
+            _floor, ceiling = self._soot_display_range_for(
+                self.controller.current_case_index(), self.current_quantity_key)
+            # QSlider.setValue() is int-only; soot_display_range's ceiling
+            # is a float (a percentile) -- round, don't truncate, and clamp
+            # into the slider's own [slider_min, slider_max] range so a
+            # ceiling outside that range (e.g. a very smoky scenario) can't
+            # raise a Qt range error either.
+            slider_default = max(display['slider_min'],
+                                 min(display['slider_max'], round(ceiling)))
+        elif quantity == DYNAMIC_PRESSURE_QUANTITY:
+            ceiling = self._dynamic_pressure_ceiling_for(
+                self.controller.current_case_index(), self.current_quantity_key)
+            slider_default = max(display['slider_min'],
+                                 min(display['slider_max'], round(ceiling)))
+
         self.temp_slider.setRange(display['slider_min'], display['slider_max'])
         self.temp_slider.setAccessibleName(
             f"Maximum {display['label'].lower()} scale, {display['unit']}")
         self.temp_slider.setToolTip(
             f"Adjust the maximum {display['label'].lower()} shown on the color scale")
-        self.temp_slider.setValue(display['slider_default'])
+        self.temp_slider.setValue(slider_default)
 
         self.view_grid.active_view().set_colorbar_label(f"{display['label']} ({display['unit']})")
         self._apply_contour_overlay_state(self.view_grid.active_cell())  # levels are quantity-specific
@@ -2091,12 +2032,14 @@ class MainWindow(QtWidgets.QMainWindow):
     def _apply_contour_overlay_state(self, cell):
         """Sync one cell's contour overlays to their global View-menu
         toggles and quantity-specific levels (config.ISOTHERM_LEVELS) --
-        called for every cell whenever either toggle changes, and once for
-        each cell right after its view is first initialized. Two
+        called for every cell whenever any toggle changes, and once for
+        each cell right after its view is first initialized. Three
         independent overlays: the cell's own quantity's isotherms/speed-
-        bands (drawn on itself), and -- only for a "slice" cell currently
-        showing TEMPERATURE -- the opt-in VELOCITY overlay (GUI
-        modernization pass, item 6)."""
+        bands (drawn on itself), the opt-in VELOCITY overlay (GUI
+        modernization pass, item 6), and the opt-in real SOOT DENSITY
+        smoke overlay (continuous soot-density visualization pass) --
+        both of the latter only for a "slice" cell currently showing
+        TEMPERATURE."""
         quantity = cell.quantity_key.quantity if cell.quantity_key else None
         levels = ISOTHERM_LEVELS.get(quantity, [])
         cell.view.set_isotherm_levels(levels)
@@ -2110,6 +2053,108 @@ class MainWindow(QtWidgets.QMainWindow):
             velocity_frame = self._velocity_overlay_frame_for_cell(cell, self.time_controller.index)
             if velocity_frame is not None:
                 cell.view.show_frame(cell.view.heatmap.get_array(), velocity_frame=velocity_frame)
+
+        soot_overlay_on = getattr(self, "_soot_overlay_enabled", False)
+        soot_applies_here = soot_overlay_on and self._soot_supported_for_cell(cell)
+        cell.view.set_soot_overlay_enabled(soot_applies_here)
+        if soot_applies_here and cell.view.heatmap is not None:
+            soot_frame, soot_ceiling = self._soot_overlay_frame_for_cell(cell, self.time_controller.index)
+            if soot_frame is not None:
+                cell.view.show_frame(cell.view.heatmap.get_array(),
+                                     soot_frame=soot_frame, soot_ceiling=soot_ceiling)
+
+    def _soot_supported_for_cell(self, cell) -> bool:
+        """Whether real SOOT DENSITY can meaningfully be fetched for
+        `cell` at all -- a "slice" cell currently showing TEMPERATURE at
+        the y=0 plane (offset 0), the one plane SOOT DENSITY is confirmed
+        (empirically, against the real dataset) to share TEMPERATURE's
+        exact grid/frame-count for every scenario. Shared by both the
+        opt-in scientific overlay toggle and cinematic mode's smoke layer
+        (see _apply_cinematic_state / _on_time_changed) so the two paths
+        agree on exactly when real soot data is usable."""
+        quantity = cell.quantity_key.quantity if cell.quantity_key else None
+        return (cell.cell_type == "slice" and quantity == "TEMPERATURE"
+               and cell.quantity_key.direction == AXIS_TO_DIRECTION['y']
+               and cell.quantity_key.offset == 0)
+
+    def _soot_overlay_frame_for_cell(self, cell, index: int):
+        """(frame, ceiling) to overlay on `cell` at timeline `index`, or
+        (None, None) -- only ever called for a "slice" cell showing
+        TEMPERATURE at the y=0 plane (offset 0), the one plane SOOT
+        DENSITY is confirmed (empirically, against the real dataset, not
+        assumed) to share TEMPERATURE's exact grid and frame count for
+        every scenario. Other planes (e.g. the x=0.25 doorway plane) are
+        not currently supported here -- SOOT DENSITY's `plane_pos` is a
+        physical position that must land exactly on a registered mesh
+        boundary, and only y=0/x=0.25 are pre-verified anywhere in this
+        app (see main_window.py's own raw "Smoke" quantity options); a
+        different plane would need that same verification first rather
+        than being assumed to align.
+
+        The normalization ceiling (smoke_density.soot_ceiling) is
+        computed once per (scenario, plane) and cached -- it's a
+        percentile over the *whole* run's array, too expensive to redo
+        every tick, and doesn't change once computed."""
+        store = self._store_for_cell(cell)
+        soot_key = SliceKey(SOOT_QUANTITY, cell.quantity_key.direction, cell.quantity_key.offset, 0.0)
+        try:
+            data = store.get(cell.case_index, soot_key)
+        except Exception as e:  # noqa: BLE001 - overlay is a nice-to-have, must not blank the cell
+            logger.warning("soot overlay: failed to fetch SOOT DENSITY for case %s: %s", cell.case_index, e)
+            return None, None
+        if not hasattr(self, "_soot_ceiling_cache"):
+            self._soot_ceiling_cache = {}
+        cache_key = (cell.case_index, soot_key)
+        if cache_key not in self._soot_ceiling_cache:
+            self._soot_ceiling_cache[cache_key] = smoke_density.soot_ceiling(data)
+        idx = min(index, data.shape[0] - 1)
+        return data[idx], self._soot_ceiling_cache[cache_key]
+
+    def _dynamic_pressure_ceiling_for(self, case_index: int, key) -> float:
+        """Data-driven display ceiling for DYNAMIC PRESSURE -- see
+        derived_quantities.display_ceiling's docstring for why a fixed
+        registry default doesn't fit this quantity's ~15x scale swing
+        across ventilation modes. Computed once per (scenario, key) via
+        the QuantityProvider (this is a "derived" quantity -- see
+        _is_computed/_field) and cached, same convention as
+        _soot_display_range_for. Falls back to the registry's static
+        slider_default on any fetch failure."""
+        if not hasattr(self, "_dynamic_pressure_ceiling_cache"):
+            self._dynamic_pressure_ceiling_cache = {}
+        cache_key = (case_index, key)
+        if cache_key not in self._dynamic_pressure_ceiling_cache:
+            try:
+                data = self.quantity_provider.get(case_index, key)
+                self._dynamic_pressure_ceiling_cache[cache_key] = derived_quantities.display_ceiling(data)
+            except Exception as e:  # noqa: BLE001 - display range is a nice-to-have, must not crash the view
+                logger.warning("dynamic pressure ceiling: failed to fetch DYNAMIC PRESSURE for case %s: %s",
+                               case_index, e)
+                display = self._display_for(DYNAMIC_PRESSURE_QUANTITY)
+                self._dynamic_pressure_ceiling_cache[cache_key] = display['slider_default']
+        return self._dynamic_pressure_ceiling_cache[cache_key]
+
+    def _soot_display_range_for(self, case_index: int, key) -> tuple:
+        """(vmin, vmax) for displaying SOOT DENSITY as the *primary*
+        heatmap quantity (distinct from _soot_overlay_frame_for_cell's
+        ceiling-only, temperature-overlay use above) -- smoke_density.
+        soot_display_range's data-driven floor/ceiling over the whole run,
+        computed once per (scenario, key) and cached, same reasoning as
+        _soot_ceiling_cache above. Falls back to the registry's static
+        (vmin=0, slider_default) on any fetch failure, so a store error
+        degrades to the old flat scale rather than crashing the view."""
+        if not hasattr(self, "_soot_display_range_cache"):
+            self._soot_display_range_cache = {}
+        cache_key = (case_index, key)
+        if cache_key not in self._soot_display_range_cache:
+            try:
+                data = self.controller.store.get(case_index, key)
+                self._soot_display_range_cache[cache_key] = smoke_density.soot_display_range(data)
+            except Exception as e:  # noqa: BLE001 - display range is a nice-to-have, must not crash the view
+                logger.warning("soot display range: failed to fetch SOOT DENSITY for case %s: %s",
+                               case_index, e)
+                display = self._display_for(SOOT_QUANTITY)
+                self._soot_display_range_cache[cache_key] = (display['vmin'], display['slider_default'])
+        return self._soot_display_range_cache[cache_key]
 
     def _velocity_overlay_frame_for_cell(self, cell, index: int):
         """The VELOCITY frame to overlay on `cell` at timeline `index` --
@@ -2149,13 +2194,20 @@ class MainWindow(QtWidgets.QMainWindow):
         display = self._display_for(cell.quantity_key.quantity)
         is_active = cell is self.view_grid.active_cell()
         cmap = self.current_colormap if is_active else display['cmap']
-        vmax = self.temp_slider.value() if is_active else display['slider_default']
+        vmin = display['vmin']
+        slider_default = display['slider_default']
+        if cell.quantity_key.quantity == SOOT_QUANTITY:
+            vmin, ceiling = self._soot_display_range_for(cell.case_index, cell.quantity_key)
+            slider_default = ceiling
+        elif cell.quantity_key.quantity == DYNAMIC_PRESSURE_QUANTITY:
+            slider_default = self._dynamic_pressure_ceiling_for(cell.case_index, cell.quantity_key)
+        vmax = self.temp_slider.value() if is_active else slider_default
         index = min(self.time_controller.index, data.shape[0] - 1)
         cell.view.init_plot(
             data[index],
             cmap=cmap,
             interpolation=self.current_interpolation,
-            vmin=display['vmin'],
+            vmin=vmin,
             vmax=vmax,
             colorbar_label=f"{display['label']} ({display['unit']})",
             extent=self._extent_for(cell.case_index, cell.quantity_key),
@@ -2305,22 +2357,33 @@ class MainWindow(QtWidgets.QMainWindow):
             return self._field(store, cell.case_index, cell.quantity_key)[index]
         if cell.cell_type == "difference":
             store_b = cell.store_override_b if cell.store_override_b is not None else self.controller.store
-            data_a = self.controller.store.get(cell.case_index_a, cell.quantity_key)
-            data_b = store_b.get(cell.case_index_b, cell.quantity_key)
+            # self._field(), not store.get() directly -- a computed/derived
+            # quantity (DYNAMIC PRESSURE, TEMPERATURE RISE) isn't in the
+            # store at all (see _redraw_cell_now/_apply_link_clim above).
+            data_a = self._field(self.controller.store, cell.case_index_a, cell.quantity_key)
+            data_b = self._field(store_b, cell.case_index_b, cell.quantity_key)
             idx = min(index, data_a.shape[0] - 1, data_b.shape[0] - 1)
             return DifferenceView.compute_diff(data_a, data_b, idx)
         if cell.cell_type == "ensemble":
             if not cell.ensemble_case_indices:
                 return None
-            arrays = [self.controller.store.get(ci, cell.quantity_key) for ci in cell.ensemble_case_indices]
+            arrays = [self._field(self.controller.store, ci, cell.quantity_key)
+                     for ci in cell.ensemble_case_indices]
             idx = min(index, min(a.shape[0] for a in arrays) - 1)
             return EnsembleView.compute_composite(arrays, idx, cell.ensemble_stat)
         return None
 
     def _device_markers_for(self, case_index: int, index: int) -> list:
-        """(x, z, color) for every V6-M2 device placed on `case_index`, at
-        already-cached frame `index` -- Device.state_at() is a plain index
-        into results computed once at placement/edit, never a recompute."""
+        """(x, z, color, kind) for every V6-M2 device placed on `case_index`,
+        at already-cached frame `index` -- Device.state_at() is a plain
+        index into results computed once at placement/edit, never a
+        recompute. `kind` (Analysis UX + reliability pass) lets the view
+        draw each device type with its own marker shape -- heat_detector
+        and sprinkler are independent devices with independently different,
+        both-correct response models (a sprinkler's RTI thermal lag means
+        it's *supposed* to activate later than a heat detector at the same
+        point), so the marker shape must make which is which obvious rather
+        than relying on active/idle color alone."""
         panel = getattr(self, "device_panel", None)
         if panel is None:
             return []
@@ -2332,7 +2395,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 color = "#3DA5FF"
             else:
                 color = "#FF5252" if d.state_at(index).get("active") else "#3DA5FF"
-            markers.append((d.position[0], d.position[1], color))
+            markers.append((d.position[0], d.position[1], color, d.type))
         return markers
 
     def _refresh_device_markers(self) -> None:
@@ -2424,6 +2487,19 @@ class MainWindow(QtWidgets.QMainWindow):
                     quiver, streamlines, colors = self._vector_field_for(cell.case_index, index)
                     cell.view.set_streamline_colors(colors)
                     cell.view.set_vector_field(quiver=quiver, streamlines=streamlines)
+                # Cinematic mode's smoke layer (Tier 3, continuous soot-
+                # density visualization pass) wants real SOOT DENSITY every
+                # tick too, regardless of the separate overlay checkbox --
+                # same "cinematic always gets it" reasoning as VELOCITY
+                # above, and the same plane-support gate the scientific
+                # overlay uses (_soot_supported_for_cell) so both paths
+                # agree on when real soot data is usable.
+                if ((getattr(cell.view, "soot_overlay_enabled", False) or cinematic)
+                        and self._soot_supported_for_cell(cell)):
+                    soot_frame, soot_ceiling = self._soot_overlay_frame_for_cell(cell, index)
+                    if soot_frame is not None:
+                        extra["soot_frame"] = soot_frame
+                        extra["soot_ceiling"] = soot_ceiling
                 if cell.view.velocity_overlay_enabled or cinematic:
                     velocity_frame = self._velocity_overlay_frame_for_cell(cell, index)
                     cell.view.show_frame(frame, velocity_frame=velocity_frame, **extra)
@@ -2443,9 +2519,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.selection_bus.update(origin=self, time_s=current_time)
 
     def _scenario_label(self, case_index: int) -> str:
+        """A human-readable scenario identity (manifest.scenario_label),
+        e.g. for the grid cell's own scenario combo, the Inspector's
+        static-info line, and the difference-over-time dialog's legend --
+        not the raw "c1_d0_vod0_voc0" disk folder name."""
         for entry in (self.sim_data.manifest or []):
             if entry.case_index == case_index:
-                return entry.folder
+                return manifest_mod.scenario_label(entry)
         return f"scenario {case_index}"
 
     def _slice_location_label(self, slice_key) -> str:
@@ -2892,6 +2972,19 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self.time_controller.is_playing():
             self._on_time_changed(self.time_controller.index)
 
+    def _set_soot_overlay_enabled(self, checked: bool):
+        """View -> Show smoke (soot density) overlay toggle (continuous
+        soot-density visualization pass). Same "every visible cell" reach
+        and the same "only applies to a slice cell currently showing
+        TEMPERATURE at a plane SOOT DENSITY is registered for" gating as
+        the velocity overlay (see _apply_contour_overlay_state) -- any
+        other cell/quantity/plane is a no-op, not an error."""
+        self._soot_overlay_enabled = checked
+        for cell in self.view_grid.visible_cells():
+            self._apply_contour_overlay_state(cell)
+        if not self.time_controller.is_playing():
+            self._on_time_changed(self.time_controller.index)
+
     def _set_cinematic_enabled(self, checked: bool):
         """View -> Cinematic fire view toggle (FireLab roadmap Phase 2.1).
         Grid-wide like the isotherm/velocity-overlay toggles, but only
@@ -2952,8 +3045,16 @@ class MainWindow(QtWidgets.QMainWindow):
         for cell in cells:
             by_quantity.setdefault(cell.quantity_key.quantity, []).append(cell)
         for quantity, group in by_quantity.items():
-            vmax = max(float(np.max(self.controller.store.get(c.case_index, c.quantity_key))) for c in group)
-            vmin = QUANTITY_DISPLAY[quantity]['vmin']
+            # A computed/derived quantity (e.g. DYNAMIC PRESSURE, TEMPERATURE
+            # RISE) isn't backed by its own FDS slice file -- self._field()
+            # is the one routing point that knows to fetch it via
+            # self.quantity_provider instead of the raw store (same
+            # reasoning as _init_cell_view/_redraw_cell_now); calling
+            # store.get() directly here (as before) raised for any computed
+            # quantity the moment two cells shared it with linking on.
+            vmax = max(float(np.max(self._field(self._store_for_cell(c), c.case_index, c.quantity_key)))
+                      for c in group)
+            vmin = self._display_for(quantity)['vmin']
             for c in group:
                 c.view.set_clim(vmin, vmax)
 
@@ -2984,22 +3085,29 @@ class MainWindow(QtWidgets.QMainWindow):
         # Pull this cell's own last-set colormap/clim into the shared
         # controls rather than pushing MainWindow's previous state onto
         # it -- matches "other cells keep their own last-set clim/colormap
-        # independently" when unlinked (M2.2 design decision).
-        cmap_name = cell.view.heatmap.get_cmap().name
-        self.current_colormap = cmap_name
-        self.settings.setValue("colormap", cmap_name)
-        for action, (_, cmap) in zip(self.colormap_action_group.actions(), COLORMAPS):
-            action.setChecked(cmap == cmap_name)
+        # independently" when unlinked (M2.2 design decision). A freshly
+        # type-switched ensemble cell with no scenarios picked yet (stays
+        # blank until the picker dialog runs -- see _on_cell_type_changed)
+        # has never rendered a frame, so its heatmap is still None; there's
+        # nothing to pull in that case, so the shared controls are simply
+        # left as they are rather than crashing on a bare cell that has no
+        # colormap/clim of its own yet.
+        if cell.view.heatmap is not None:
+            cmap_name = cell.view.heatmap.get_cmap().name
+            self.current_colormap = cmap_name
+            self.settings.setValue("colormap", cmap_name)
+            for action, (_, cmap) in zip(self.colormap_action_group.actions(), COLORMAPS):
+                action.setChecked(cmap == cmap_name)
 
-        display = self._display_for(cell.quantity_key.quantity)
-        _vmin, vmax = cell.view.heatmap.get_clim()
-        self.temp_slider.blockSignals(True)
-        self.temp_slider.setRange(display['slider_min'], display['slider_max'])
-        self.temp_slider.setValue(int(vmax))
-        self.temp_slider.blockSignals(False)
-        self.temp_slider.setAccessibleName(f"Maximum {display['label'].lower()} scale, {display['unit']}")
-        self.temp_slider.setToolTip(f"Adjust the maximum {display['label'].lower()} shown on the color scale")
-        self.temp_label.setText(f"{int(vmax)} {display['unit']}")
+            display = self._display_for(cell.quantity_key.quantity)
+            _vmin, vmax = cell.view.heatmap.get_clim()
+            self.temp_slider.blockSignals(True)
+            self.temp_slider.setRange(display['slider_min'], display['slider_max'])
+            self.temp_slider.setValue(int(vmax))
+            self.temp_slider.blockSignals(False)
+            self.temp_slider.setAccessibleName(f"Maximum {display['label'].lower()} scale, {display['unit']}")
+            self.temp_slider.setToolTip(f"Adjust the maximum {display['label'].lower()} shown on the color scale")
+            self.temp_label.setText(f"{int(vmax)} {display['unit']}")
 
         self._current_n_frames = self._field(self.controller.store, cell.case_index, cell.quantity_key).shape[0]
         self.timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
@@ -3027,11 +3135,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_schematic()
 
     def _open_browser_scenario(self, case_index: int):
-        """Double-click in the experiment browser: load into active cell."""
+        """Double-click in the experiment browser, or a PCA-scatter click in
+        Ensemble analytics (Analysis-improvement roadmap Phase A -- that
+        panel had zero SelectionBus wiring, a dead-end scatter plot): load
+        into the active cell AND publish to the bus, so every other panel
+        follows too, not just the Live Viewer."""
         cell = self.view_grid.active_cell()
         if cell.cell_type != "slice":
             cell.set_cell_type("slice")
         self._apply_manifest_case_to_controller(case_index)
+        if getattr(self, "selection_bus", None) is not None:
+            self.selection_bus.update(origin=self, scenario=case_index)
 
     def _open_browser_grid(self, case_indices: list):
         """Open up to nine browser-selected scenarios in the grid."""
@@ -3283,18 +3397,54 @@ class MainWindow(QtWidgets.QMainWindow):
         """Assumes cell.case_index/quantity_key are already cached."""
         store = self._store_for_cell(cell)
         display = self._display_for(cell.quantity_key.quantity)
-        data = store.get(cell.case_index, cell.quantity_key)
+        # self._field(), not store.get() directly: a computed/derived
+        # quantity (DYNAMIC PRESSURE, TEMPERATURE RISE) isn't backed by its
+        # own FDS slice file and isn't in the store at all -- same
+        # computed/native routing _init_cell_view and _apply_link_clim
+        # (above) already rely on. Calling store.get() unconditionally here
+        # raised the moment a non-active cell's own combo was switched to
+        # either derived quantity.
+        data = self._field(store, cell.case_index, cell.quantity_key)
+        vmin, vmax = display['vmin'], display['slider_default']
+        if cell.quantity_key.quantity == SOOT_QUANTITY:
+            # `data` is already fetched from this cell's own store (which
+            # may be a PredictionSource override, not self.controller.store
+            # -- see _soot_display_range_for's docstring) -- computed
+            # directly from it rather than re-fetching through that helper.
+            if not hasattr(self, "_soot_display_range_cache"):
+                self._soot_display_range_cache = {}
+            cache_key = (cell.case_index, cell.quantity_key)
+            if cache_key not in self._soot_display_range_cache:
+                self._soot_display_range_cache[cache_key] = smoke_density.soot_display_range(data)
+            vmin, vmax = self._soot_display_range_cache[cache_key]
+        elif cell.quantity_key.quantity == DYNAMIC_PRESSURE_QUANTITY:
+            # Same "use this cell's own already-fetched data" reasoning as
+            # the SOOT DENSITY branch above (a PredictionSource override
+            # may differ from self.quantity_provider).
+            if not hasattr(self, "_dynamic_pressure_ceiling_cache"):
+                self._dynamic_pressure_ceiling_cache = {}
+            cache_key = (cell.case_index, cell.quantity_key)
+            if cache_key not in self._dynamic_pressure_ceiling_cache:
+                self._dynamic_pressure_ceiling_cache[cache_key] = derived_quantities.display_ceiling(data)
+            vmax = self._dynamic_pressure_ceiling_cache[cache_key]
         cell.view.set_cmap(display['cmap'])
-        cell.view.set_clim(display['vmin'], display['slider_default'])
+        cell.view.set_clim(vmin, vmax)
         cell.view.set_colorbar_label(f"{display['label']} ({display['unit']})")
         self._sync_cell_extent(cell)  # M2.2: a SOOT-plane switch may change the extent
         self._apply_contour_overlay_state(cell)  # levels are quantity-specific; quantity may have just changed
         self._apply_cinematic_state(cell)  # cinematic mode is TEMPERATURE-only; quantity may have just changed
         index = min(self.time_controller.index, data.shape[0] - 1)
+        extra = {}
+        if getattr(cell.view, "soot_overlay_enabled", False):
+            soot_frame, soot_ceiling = self._soot_overlay_frame_for_cell(cell, index)
+            if soot_frame is not None:
+                extra["soot_frame"] = soot_frame
+                extra["soot_ceiling"] = soot_ceiling
         if cell.view.velocity_overlay_enabled:
-            cell.view.show_frame(data[index], velocity_frame=self._velocity_overlay_frame_for_cell(cell, index))
+            cell.view.show_frame(data[index], velocity_frame=self._velocity_overlay_frame_for_cell(cell, index),
+                                 **extra)
         else:
-            cell.view.show_frame(data[index])
+            cell.view.show_frame(data[index], **extra)
 
     def _on_grid_prefetch_finished(self, case_idx: int):
         """A background prefetch completed -- check every grid cell
@@ -3381,8 +3531,10 @@ class MainWindow(QtWidgets.QMainWindow):
         _load_cell's docstring, which applies equally here)."""
         key = cell.quantity_key
         store_b = cell.store_override_b if cell.store_override_b is not None else self.controller.store
-        data_a = self.controller.store.get(cell.case_index_a, key)
-        data_b = store_b.get(cell.case_index_b, key)
+        # self._field(), not store.get() directly -- a computed/derived
+        # quantity (DYNAMIC PRESSURE, TEMPERATURE RISE) isn't in the store.
+        data_a = self._field(self.controller.store, cell.case_index_a, key)
+        data_b = self._field(store_b, cell.case_index_b, key)
         vmin, vmax = cell.view.symmetric_clim(
             data_a, data_b, cache_key=(cell.case_index_a, cell.case_index_b, key))
         display = self._display_for(key.quantity)
@@ -3410,7 +3562,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if not cell.ensemble_case_indices:
             return
         key = cell.quantity_key
-        arrays = [self.controller.store.get(ci, key) for ci in cell.ensemble_case_indices]
+        # self._field(), not store.get() directly -- see _render_difference_cell above.
+        arrays = [self._field(self.controller.store, ci, key) for ci in cell.ensemble_case_indices]
         display = self._display_for(key.quantity)
         stat = cell.ensemble_stat
         cmap = EnsembleView.cmap_for(stat, display['cmap'])
@@ -3451,8 +3604,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if cell is None or cell.cell_type != "difference":
             return
         key = cell.quantity_key
-        data_a = self.controller.store.get(cell.case_index_a, key)
-        data_b = self.controller.store.get(cell.case_index_b, key)
+        # self._field(), not store.get() directly -- see _render_difference_cell above.
+        data_a = self._field(self.controller.store, cell.case_index_a, key)
+        data_b = self._field(self.controller.store, cell.case_index_b, key)
         display = self._display_for(key.quantity)
         dialog = DifferenceOverTimeDialog(
             data_a, data_b, self.time_controller.timesteps_per_second,
@@ -3478,7 +3632,15 @@ class MainWindow(QtWidgets.QMainWindow):
         # "Link color scales" is on). SliceView.set_clim does the full
         # redraw (not blit) + recapture itself: the colorbar's tick range
         # depends on clim and needs to actually repaint.
-        self.view_grid.active_view().set_clim(display['vmin'], value)
+        # SOOT DENSITY: "physical floor" is a data-driven percentile of the
+        # nonzero population, not 0 -- see _soot_display_range_for. Clamped
+        # so a slider value dragged below that floor can't invert clim.
+        vmin = display['vmin']
+        if self.current_quantity_key.quantity == SOOT_QUANTITY:
+            vmin, _ceiling = self._soot_display_range_for(
+                self.controller.current_case_index(), self.current_quantity_key)
+        vmax = max(value, vmin + 1e-6)
+        self.view_grid.active_view().set_clim(vmin, vmax)
         self._apply_link_clim()
 
     # -------------------------------------------------------------- export
@@ -3665,21 +3827,25 @@ class MainWindow(QtWidgets.QMainWindow):
                          if self.time_window_panel is not None else {}),
             filters=(self.experiment_browser.get_filter_state()
                      if self.experiment_browser is not None else {}),
-            measurements=(self.measurement_panel.get_measurements()
-                          if self.measurement_panel is not None else []),
             selection=(self.selection_bus.current.to_dict()
                        if getattr(self, "selection_bus", None) is not None else {}),
             calculated_fields=[f.to_dict() for f in field_calculator_mod.all_fields()],
             devices=(self.device_panel.get_devices()
                      if self.device_panel is not None else []),
             vector_probes=(self.velocity_panel.get_probes()
-                          if self.velocity_panel is not None else []))
+                          if self.velocity_panel is not None else []),
+            comparisons=(self.advanced_compare_panel.get_comparisons()
+                        if self.advanced_compare_panel is not None else []))
 
     # --------------------------------------------------- named sessions (M6)
     def _refresh_sessions(self) -> None:
-        if self.sessions_panel is not None:
-            self.sessions_panel.set_sessions(
-                session_store.list_sessions(self._sessions_dir))
+        """No-op today (the Sessions tab that displayed this list was
+        removed, Analysis UX + reliability pass) -- kept as a safe no-op
+        rather than deleted, since _on_session_save/_on_session_delete
+        below still call it."""
+        panel = getattr(self, "sessions_panel", None)
+        if panel is not None:
+            panel.set_sessions(session_store.list_sessions(self._sessions_dir))
 
     def _on_session_save(self, name: str, intent: str) -> None:
         session = self._collect_session_dict(name, intent)
@@ -3740,8 +3906,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.time_window_panel.set_state(session.get("time_window", {}))
         if self.experiment_browser is not None:
             self.experiment_browser.set_filter_state(session.get("filters", {}))
-        if self.measurement_panel is not None:
-            self.measurement_panel.set_measurements(session.get("measurements", []))
         # V6-M1: restore the Field Calculator definitions (absent -> none). Clear
         # first so a load replaces rather than accumulates.
         field_calculator_mod.clear()
@@ -3750,8 +3914,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 field_calculator_mod.register(field_calculator_mod.CalculatedField.from_dict(d))
             except Exception:  # noqa: BLE001 - a bad definition must not block the load
                 continue
-        if self.calculator_panel is not None:
-            self.calculator_panel._refresh_list()
         self._refresh_quantity_list()   # V6-M1.5: reflect restored fields in the Live combo
         # V6-M2: restore devices with their cached results verbatim (no recompute).
         if self.device_panel is not None:
@@ -3761,6 +3923,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.velocity_panel is not None:
             self.velocity_panel.set_probes(session.get("vector_probes", []))
             self._refresh_vector_field()
+        # Analysis-improvement roadmap Phase C: restore pinned Compare Axes results.
+        if self.advanced_compare_panel is not None:
+            self.advanced_compare_panel.set_comparisons(session.get("comparisons", []))
         # V5-M1: restore the shared selection (absent in older sessions -> empty).
         if getattr(self, "selection_bus", None) is not None:
             self.selection_bus.set(Selection.from_dict(session.get("selection", {})))
@@ -3886,7 +4051,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if not path.lower().endswith(options["extension"]):
             path += options["extension"]
 
-        data = self.controller.store.get(cell.case_index, cell.quantity_key)
+        # self._field(), not store.get() directly -- a computed/derived
+        # quantity (DYNAMIC PRESSURE, TEMPERATURE RISE) isn't in the store.
+        data = self._field(self.controller.store, cell.case_index, cell.quantity_key)
         index = min(self.time_controller.index, data.shape[0] - 1)
         frame = np.asarray(data[index])
         display = self._display_for(cell.quantity_key.quantity)
@@ -4008,6 +4175,12 @@ class MainWindow(QtWidgets.QMainWindow):
         QtWidgets.QShortcut(QtGui.QKeySequence("Space"), self, activated=self._toggle_play_pause)
         QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+R"), self, activated=self._restart_simulation)
         QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Q"), self, activated=self.close)
+        # Investigation History (V6-M4): back/forward through recorded
+        # selections -- previously only reachable via the removed Context
+        # Panel's buttons (UX consolidation pass); browser-style shortcuts
+        # keep the feature reachable without dedicating screen space to it.
+        QtWidgets.QShortcut(QtGui.QKeySequence("Alt+Left"), self, activated=self._history_back)
+        QtWidgets.QShortcut(QtGui.QKeySequence("Alt+Right"), self, activated=self._history_forward)
         # M1.4.3: frame/second stepping while paused or playing.
         QtWidgets.QShortcut(QtGui.QKeySequence("Left"), self, activated=lambda: self.time_controller.step(-1))
         QtWidgets.QShortcut(QtGui.QKeySequence("Right"), self, activated=lambda: self.time_controller.step(1))
@@ -4153,8 +4326,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("splitter_state", self.splitter.saveState())
         # V4-M6: autosave a draft session so an unsaved investigation is
-        # recoverable next launch (best-effort; never blocks close).
-        if getattr(self, "sessions_panel", None) is not None and self.sim_data.manifest:
+        # recoverable next launch (best-effort; never blocks close). Gated
+        # only on having a manifest -- not on the (now-removed, Analysis UX
+        # + reliability pass) Sessions tab existing, since this must keep
+        # firing for everyone regardless of that UI.
+        if self.sim_data.manifest:
             try:
                 session_store.save_draft(self._sessions_dir, self._collect_session_dict())
             except OSError:

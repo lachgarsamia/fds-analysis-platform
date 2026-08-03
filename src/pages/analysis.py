@@ -1,15 +1,39 @@
 """Analysis page (FireLab roadmap Phase 4; extended into the app's
 combined "analysis workspace" by the scientific-visualization completion
-pass, item 7): re-hosts the analytics panel's existing content
-(analytics_panel.py's AnalyticsPanelDock, unchanged) as page content
-instead of a QDockWidget/tab, with the new static/playback-independent
-ForecastingPanel (forecasting_panel.py) stacked below it.
+pass, item 7).
 
 The one-shot background feature-index load used to be triggered by the
-dock's own visibilityChanged signal (tab raised) -- a plain page has no
-such signal, so on_enter() calls the supplied `on_shown` callback instead
-(main_window.py wires this to the same guarded, one-shot handler,
-unchanged in every other way).
+analytics dock's own visibilityChanged signal (tab raised) -- a plain page
+has no such signal, so on_enter() calls the supplied `on_shown` callback
+instead (main_window.py wires this to the same guarded, one-shot handler,
+unchanged in every other way, still triggered by the Analysis *page*
+being shown -- unaffected by which tab is active).
+
+Phase 6 folded Height/Time series/Time Window into
+spatiotemporal_panel.py's SpatiotemporalPanel (three modes of one
+"Field & Time Explorer" tab) -- see that module's docstring for why
+Space-time stays a separate top-level tab instead.
+
+Analysis UX + reliability pass removed Calculator and Sessions from
+Reference & Communication entirely (not hidden -- their backends,
+field_calculator.py and session_store.py respectively, are called
+directly by main_window.py/quantity_provider.py independent of either
+panel, and stay).
+
+Analysis final-polish pass (pre-supervisor-meeting review): every
+remaining tab was re-checked against "what scientific question does this
+help answer?" and several didn't clear that bar relative to their
+complexity/upkeep -- State space, Ensemble spread, Parallel coordinates,
+the disposable "Quick probe" measurement tool, and the Assistant
+template-summary layer were removed outright rather than kept because
+they already existed. Compare & Discover's former 4-mode
+CompareDiscoverPanel wrapper is unwrapped into two direct tabs (Pairwise
+Comparison, PCA/Clustering) now that only two of its four modes remain --
+a 2-child wrapper wasn't earning its own indirection layer. Reference &
+Communication's former Assistant tab is replaced by "Ask"
+(query_panel.py's QueryPanel, a distinct deterministic physics-query
+grammar previously reachable only as a secondary mode inside the removed
+Assistant wrapper) restored to its own tab.
 """
 
 from __future__ import annotations
@@ -20,46 +44,100 @@ from PyQt5 import QtCore, QtWidgets
 
 from pages.base import Page
 
+# Analysis section consolidation (docs: the "Analysis Section
+# Consolidation" audit + phased plan, later re-checked by the Analysis
+# final-polish pass -- see module docstring). Phase 4 folded Devices/
+# Zones/Velocity into one "Spatial Probes" tab (probe_measure_panel.py's
+# ProbeMeasurePanel). Phase 5 folded Sensitivity into Study itself as a
+# sub-tab (study_panel.py), the same "thin slot, not a rewrite" pattern
+# already used there for Factor effects -- so "Factors & Sensitivity" now
+# has a single "Study" tab rather than two separate ones (that tab's own
+# sub-tabs include Correlation & outliers -- already there, not moved).
+# Phase 6 did the same for Height/Time series/Time Window, now one "Field
+# & Time Explorer" tab (spatiotemporal_panel.py's SpatiotemporalPanel);
+# Space-time stays a separate top-level tab in the same group (deferred,
+# see that module's docstring). Membership:
+# - Overview & Interpretation: "what is happening in this simulation?"
+# - Compare & Discover: "how are scenarios similar or different?"
+# - Probe & Measure: "what happens at this location/region?"
+# - Factors & Sensitivity: "what drives the observed response?"
+# - Spatiotemporal Analysis: "how does a quantity evolve across time
+#   and/or space?"
+# - Reference & Communication: authoring/browsing/reporting tools that
+#   aren't themselves an investigation of the simulation
+# The lower-confidence/exploratory tools (Experimental, collapsed by
+# default) are unchanged from Phase D.
+_GROUPS = [
+    ("Overview & Interpretation", ["Dashboard", "Hazard & Tenability", "Narrative"]),
+    ("Compare & Discover", ["Pairwise Comparison", "PCA / Clustering"]),
+    ("Probe & Measure", ["Spatial Probes"]),
+    ("Factors & Sensitivity", ["Study"]),
+    ("Spatiotemporal Analysis", ["Field & Time Explorer", "Space-time"]),
+    ("Reference & Communication", ["Quantities", "Graph", "Ask"]),
+]
+# Fire MRI, Attention, Why is it hot?, and Forecasting are each individually
+# gated/heuristic/exploratory (per-panel disclaimers already say so) --
+# grouped together and collapsed by default rather than competing for
+# attention with the core workflow.
+_EXPERIMENTAL = ["Fire MRI", "Attention", "Why is it hot?", "Forecasting"]
+
+
+class _CollapsibleGroup(QtWidgets.QWidget):
+    """A tab-group that starts collapsed (Phase D: the Experimental group)
+    -- a checkable toggle button shows/hides the inner QTabWidget, instead
+    of it competing for attention with the four always-open groups."""
+
+    def __init__(self, inner_tabs: QtWidgets.QTabWidget, parent=None):
+        super().__init__(parent)
+        self.tabs = inner_tabs
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self.toggle = QtWidgets.QPushButton("▶ Show experimental panels")
+        self.toggle.setCheckable(True)
+        self.toggle.setChecked(False)
+        self.toggle.toggled.connect(self._on_toggled)
+        layout.addWidget(self.toggle)
+        inner_tabs.setVisible(False)
+        layout.addWidget(inner_tabs, 1)
+
+    def _on_toggled(self, checked: bool) -> None:
+        self.tabs.setVisible(checked)
+        self.toggle.setText("▼ Hide experimental panels" if checked
+                            else "▶ Show experimental panels")
+
+    def expand(self) -> None:
+        self.toggle.setChecked(True)
+
 
 class AnalysisPage(Page):
     title = "Analysis"
+    # Phase D: a tab switch at ANY level (outer group, or a group's own
+    # inner tab, or expanding the collapsed Experimental group) must still
+    # trigger the RC-polish "resend the current selection" catch-up
+    # (main_window.py's freeze-while-hidden mechanism) -- previously that
+    # was one flat QTabWidget's currentChanged; grouping adds two more
+    # places a panel can go from hidden to visible.
+    tab_shown = QtCore.pyqtSignal()
 
-    def __init__(self, content: QtWidgets.QWidget = None,
-                 on_shown: Optional[Callable[[], None]] = None,
+    def __init__(self, on_shown: Optional[Callable[[], None]] = None,
                  playback_bar: QtWidgets.QWidget = None,
                  forecasting_content: QtWidgets.QWidget = None,
-                 timeseries_content: QtWidgets.QWidget = None,
-                 energy_content: QtWidgets.QWidget = None,
-                 factor_effects_content: QtWidgets.QWidget = None,
-                 tenability_content: QtWidgets.QWidget = None,
                  fire_mri_content: QtWidgets.QWidget = None,
-                 semantic_diff_content: QtWidgets.QWidget = None,
-                 query_content: QtWidgets.QWidget = None,
-                 state_space_content: QtWidgets.QWidget = None,
                  attention_content: QtWidgets.QWidget = None,
                  cause_content: QtWidgets.QWidget = None,
-                 height_content: QtWidgets.QWidget = None,
-                 linked_content: QtWidgets.QWidget = None,
-                 zone_content: QtWidgets.QWidget = None,
-                 interval_content: QtWidgets.QWidget = None,
-                 measurement_content: QtWidgets.QWidget = None,
-                 advanced_compare_content: QtWidgets.QWidget = None,
+                 spatiotemporal_content: QtWidgets.QWidget = None,
+                 probe_measure_content: QtWidgets.QWidget = None,
+                 pairwise_content: QtWidgets.QWidget = None,
+                 clustering_content: QtWidgets.QWidget = None,
                  study_content: QtWidgets.QWidget = None,
-                 sensitivity_content: QtWidgets.QWidget = None,
-                 hazard_content: QtWidgets.QWidget = None,
+                 hazard_tenability_content: QtWidgets.QWidget = None,
                  dashboard_content: QtWidgets.QWidget = None,
                  spacetime_content: QtWidgets.QWidget = None,
                  narrative_content: QtWidgets.QWidget = None,
-                 ensemble_content: QtWidgets.QWidget = None,
                  graph_content: QtWidgets.QWidget = None,
-                 calculator_content: QtWidgets.QWidget = None,
-                 devices_content: QtWidgets.QWidget = None,
-                 velocity_content: QtWidgets.QWidget = None,
-                 context_content: QtWidgets.QWidget = None,
-                 experiments_content: QtWidgets.QWidget = None,
                  quantities_content: QtWidgets.QWidget = None,
-                 assistant_content: QtWidgets.QWidget = None,
-                 sessions_content: QtWidgets.QWidget = None, parent=None):
+                 ask_content: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self._on_shown = on_shown
         layout = QtWidgets.QVBoxLayout(self)
@@ -81,41 +159,24 @@ class AnalysisPage(Page):
         # pane at once. Only supplied (non-None) surfaces get a tab; demo
         # mode supplies none.
         sections = [
-            ("Context", context_content),
             ("Dashboard", dashboard_content),
-            ("Hazard", hazard_content),
+            ("Hazard & Tenability", hazard_tenability_content),
             ("Narrative", narrative_content),
             ("Space-time", spacetime_content),
-            ("Ensemble analytics", content),
-            ("Height", height_content),
-            ("Zones", zone_content),
-            ("Intervals", interval_content),
-            ("Measure", measurement_content),
+            ("Field & Time Explorer", spatiotemporal_content),
+            ("Spatial Probes", probe_measure_content),
             ("Graph", graph_content),
-            ("Experiments", experiments_content),
             ("Quantities", quantities_content),
-            ("Calculator", calculator_content),
-            ("Devices", devices_content),
-            ("Velocity", velocity_content),
-            ("Assistant", assistant_content),
-            ("Sessions", sessions_content),
-            ("Inspect moment", linked_content),
-            ("Ask", query_content),
+            ("Ask", ask_content),
             ("Fire MRI", fire_mri_content),
             ("Attention", attention_content),
             ("Why is it hot?", cause_content),
-            ("State space", state_space_content),
-            ("Semantic diff", semantic_diff_content),
-            ("Compare axes", advanced_compare_content),
+            ("Pairwise Comparison", pairwise_content),
+            ("PCA / Clustering", clustering_content),
             ("Study", study_content),
-            ("Sensitivity", sensitivity_content),
-            ("Ensemble", ensemble_content),
-            ("Factor effects", factor_effects_content),
-            ("Tenability", tenability_content),
-            ("Time series", timeseries_content),
-            ("Energy budget", energy_content),
             ("Forecasting", forecasting_content),
         ]
+        by_label = dict(sections)
         available = [(label, w) for label, w in sections if w is not None]
         if not available:
             # Demo mode: no manifest, nothing to analyze.
@@ -126,17 +187,73 @@ class AnalysisPage(Page):
             layout.addWidget(available[0][1], 1)
         else:
             self.tabs = QtWidgets.QTabWidget()
-            for label, w in available:
-                self.tabs.addTab(w, label)
+            self.tabs.currentChanged.connect(lambda _i: self.tab_shown.emit())
+
+            def add_group(group_label: str, member_labels: list) -> None:
+                members = [(lbl, by_label[lbl]) for lbl in member_labels
+                          if by_label.get(lbl) is not None]
+                if not members:
+                    return
+                inner = QtWidgets.QTabWidget()
+                inner.currentChanged.connect(lambda _i: self.tab_shown.emit())
+                for lbl, w in members:
+                    inner.addTab(w, lbl)
+                self.tabs.addTab(inner, group_label)
+
+            for group_label, member_labels in _GROUPS:
+                add_group(group_label, member_labels)
+
+            experimental = [(lbl, by_label[lbl]) for lbl in _EXPERIMENTAL
+                            if by_label.get(lbl) is not None]
+            if experimental:
+                inner = QtWidgets.QTabWidget()
+                inner.currentChanged.connect(lambda _i: self.tab_shown.emit())
+                for lbl, w in experimental:
+                    inner.addTab(w, lbl)
+                collapsible = _CollapsibleGroup(inner)
+                collapsible.toggle.toggled.connect(
+                    lambda checked: self.tab_shown.emit() if checked else None)
+                self.tabs.addTab(collapsible, "Experimental")
+
             layout.addWidget(self.tabs, 1)
 
     def show_tab(self, widget: QtWidgets.QWidget) -> None:
-        """Raise the tab hosting `widget` (V4-M9 comparison hand-off)."""
+        """Raise the tab hosting `widget` (V4-M9 comparison hand-off).
+        Tabs are grouped into an outer QTabWidget of QTabWidgets, some of
+        which are themselves thin workspace wrappers over further nested
+        QTabWidgets (Compare & Discover/Probe & Measure/... consolidation
+        phases), or a collapsible wrapper (Experimental) -- searches to
+        whatever depth `widget` is actually nested at, selecting every tab
+        along the path and expanding any collapsible wrapper found there,
+        so the revealed tab is actually visible."""
         tabs = getattr(self, "tabs", None)
-        if tabs is not None and widget is not None:
-            idx = tabs.indexOf(widget)
-            if idx >= 0:
-                tabs.setCurrentIndex(idx)
+        if tabs is None or widget is None:
+            return
+        self._reveal_in(tabs, widget)
+
+    @staticmethod
+    def _reveal_in(container: QtWidgets.QTabWidget, widget: QtWidgets.QWidget) -> bool:
+        """Recursively find `widget` inside `container` or any QTabWidget
+        nested inside its tabs (directly, or via a wrapper's own `.tabs`
+        attribute -- see _CollapsibleGroup and every Phase 3+ consolidation
+        wrapper). Selects every tab along the path and calls each
+        container's own `expand()` if it has one. Returns True if found."""
+        idx = container.indexOf(widget)
+        if idx >= 0:
+            container.setCurrentIndex(idx)
+            return True
+        for i in range(container.count()):
+            child = container.widget(i)
+            inner = child if isinstance(child, QtWidgets.QTabWidget) else getattr(child, "tabs", None)
+            if inner is None:
+                continue
+            if AnalysisPage._reveal_in(inner, widget):
+                container.setCurrentIndex(i)
+                expand = getattr(child, "expand", None)
+                if callable(expand):
+                    expand()
+                return True
+        return False
 
     def on_enter(self) -> None:
         if self._on_shown is not None:

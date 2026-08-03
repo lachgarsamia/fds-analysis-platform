@@ -10,6 +10,7 @@ from PyQt5 import QtWidgets
 from data_provider import load_simulation_data
 from main_window import MainWindow
 from nav import NavRail
+from pages.analysis import AnalysisPage
 from pages.base import Page
 from pages.placeholder import PlaceholderPage
 
@@ -54,6 +55,80 @@ class TestPageLifecycle:
         child_count = page.layout().count()
         page.on_enter()  # a second on_enter must not rebuild/duplicate content
         assert page.layout().count() == child_count
+
+
+class TestAnalysisPageGrouping:
+    """Analysis section consolidation Phase 1: tabs re-grouped by research
+    question (Overview & Interpretation / Compare & Discover / Probe &
+    Measure / Factors & Sensitivity / Spatiotemporal Analysis / Reference &
+    Communication), with Experimental collapsed by default."""
+
+    def test_panels_are_grouped_and_experimental_starts_collapsed(self, qapp):
+        page = AnalysisPage(
+            spatiotemporal_content=QtWidgets.QLabel("Spatiotemporal"),
+            study_content=QtWidgets.QLabel("Study"),
+            pairwise_content=QtWidgets.QLabel("Pairwise Comparison"),
+            graph_content=QtWidgets.QLabel("Graph"),
+            fire_mri_content=QtWidgets.QLabel("Fire MRI"),
+            attention_content=QtWidgets.QLabel("Attention"))
+        assert page.tabs.count() == 5
+        group_names = [page.tabs.tabText(i) for i in range(page.tabs.count())]
+        assert group_names == ["Compare & Discover", "Factors & Sensitivity",
+                               "Spatiotemporal Analysis", "Reference & Communication",
+                               "Experimental"]
+        experimental = page.tabs.widget(group_names.index("Experimental"))
+        assert experimental.tabs.count() == 2   # Fire MRI, Attention
+        assert experimental.tabs.isHidden()     # collapsed by default
+        experimental.toggle.setChecked(True)
+        assert not experimental.tabs.isHidden()
+
+    def test_only_supplied_panels_form_a_group(self, qapp):
+        """A group with nothing supplied gets no tab at all (same "only
+        supplied surfaces get a tab" rule the flat layout already had)."""
+        page = AnalysisPage(dashboard_content=QtWidgets.QLabel("Dashboard"),
+                            narrative_content=QtWidgets.QLabel("Narrative"))
+        assert page.tabs.count() == 1
+        assert page.tabs.tabText(0) == "Overview & Interpretation"
+
+    def test_show_tab_reveals_nested_panel_and_expands_experimental(self, qapp):
+        fire_mri = QtWidgets.QLabel("Fire MRI")
+        page = AnalysisPage(fire_mri_content=fire_mri,
+                            attention_content=QtWidgets.QLabel("Attention"),
+                            study_content=QtWidgets.QLabel("Study"))
+        page.show_tab(fire_mri)
+        experimental = page.tabs.currentWidget()
+        assert page.tabs.tabText(page.tabs.currentIndex()) == "Experimental"
+        assert experimental.tabs.currentWidget() is fire_mri
+        assert not experimental.tabs.isHidden()   # auto-expanded on reveal
+
+    def test_show_tab_reveals_a_panel_nested_inside_a_workspace_wrapper(self, qapp):
+        """Phase 4+: a workspace wrapper (e.g. ProbeMeasurePanel) nests its
+        children one level deeper than a plain Phase-D group did --
+        show_tab must recurse to whatever depth the target is actually at,
+        not just the one level Phase D originally needed."""
+        from probe_measure_panel import ProbeMeasurePanel
+        devices = QtWidgets.QLabel("Devices")
+        wrapper = ProbeMeasurePanel(devices=devices, zones=QtWidgets.QLabel("Zones"))
+        page = AnalysisPage(probe_measure_content=wrapper,
+                            study_content=QtWidgets.QLabel("Study"))
+        page.show_tab(devices)
+        group = page.tabs.currentWidget()
+        assert page.tabs.tabText(page.tabs.currentIndex()) == "Probe & Measure"
+        assert group.currentWidget() is wrapper
+        assert wrapper.tabs.currentWidget() is devices
+
+    def test_tab_shown_fires_on_outer_and_inner_switch(self, qapp):
+        calls = []
+        page = AnalysisPage(
+            dashboard_content=QtWidgets.QLabel("Dashboard"),
+            narrative_content=QtWidgets.QLabel("Narrative"),
+            graph_content=QtWidgets.QLabel("Graph"))
+        page.tab_shown.connect(lambda: calls.append(1))
+        overview_group = page.tabs.widget(0)   # Overview & Interpretation: Dashboard, Narrative
+        overview_group.setCurrentIndex(1)      # inner switch, no outer change
+        assert len(calls) == 1
+        page.tabs.setCurrentIndex(1)        # outer switch to Reference & Communication
+        assert len(calls) == 2
 
 
 class TestMainWindowPageSwitching:

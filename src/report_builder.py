@@ -186,6 +186,19 @@ def _measurements_block(measurements: list) -> str:
     return f"<h2>Measurements</h2><ul>{items}</ul>"
 
 
+def _comparisons_block(comparisons: list) -> str:
+    """Analysis-improvement roadmap Phase C: comparisons pinned from Compare
+    Axes -- reuses _differences_block's exact rendering for each pinned
+    pair's ranked semantic-diff statements."""
+    if not comparisons:
+        return ""
+    items = []
+    for c in comparisons:
+        header = f"<h3>{_esc(c.get('label_a', ''))} vs {_esc(c.get('label_b', ''))}</h3>"
+        items.append(header + _differences_block(c.get("differences", [])))
+    return f"<h2>Comparisons</h2>{''.join(items)}"
+
+
 def _devices_block(devices: list) -> str:
     """V6-M4: session.py has persisted devices (V6-M2) since they were
     added, but this report never rendered them until now."""
@@ -272,6 +285,7 @@ def build_session_report(session: dict, timeline_png: bytes = None) -> str:
         f"<h2>Evidence Notebook</h2>{_notebook_block(session.get('notebook', []))}"
         f"{_zones_block(session.get('zones', []))}"
         f"{_measurements_block(session.get('measurements', []))}"
+        f"{_comparisons_block(session.get('comparisons', []))}"
         f"{_devices_block(session.get('devices', []))}"
         f"{_vector_probes_block(session.get('vector_probes', []))}")
     return _document(f"Session — {name}", body)
@@ -311,41 +325,6 @@ def build_publication_manifest(figures: list, notebook: list, metadata: dict) ->
         + "<p class='provenance'>Figures use journal export presets; numbers are "
           "computed from simulation output, captions are templated.</p>")
     return _document("Publication bundle", body)
-
-
-def build_experiment_report(exp: dict, status: dict = None) -> str:
-    """Self-contained HTML summary of an experiment (V4-M9): description,
-    tags, baseline, shared parameters, and the scenario list with its
-    availability status. These are pre-computed cluster runs, stated as
-    such -- no simulation is launched from the app."""
-    name = exp.get("name") or "Experiment"
-    tags = ", ".join(exp.get("tags", []) or [])
-    params = exp.get("shared_params", {}) or {}
-    statuses = (status or {}).get("statuses", {})
-    rows = "".join(
-        f"<tr><td>{_esc(s)}</td>"
-        f"<td>{'baseline' if s == exp.get('baseline') else ''}</td>"
-        f"<td>{_esc(statuses.get(s, 'unknown'))}</td></tr>"
-        for s in exp.get("scenarios", []) or [])
-    param_rows = "".join(
-        f"<tr><td>{_esc(k)}</td><td>{_esc(v)}</td></tr>" for k, v in params.items())
-    completion = ""
-    if status:
-        completion = (f"<p class='prose'>{status.get('ready', 0)} of "
-                      f"{status.get('total', 0)} scenarios ready "
-                      f"({status.get('completion', 0.0) * 100:.0f}%).</p>")
-    body = (
-        f"<h1>{_esc(name)}</h1>"
-        f"<p class='prose'>{_esc(exp.get('description', '') or '(no description)')}</p>"
-        + (f"<p class='provenance'>Tags: {_esc(tags)}</p>" if tags else "")
-        + completion
-        + (f"<h2>Shared parameters</h2><table><tbody>{param_rows}</tbody></table>"
-           if param_rows else "")
-        + "<h2>Scenarios</h2><table><thead><tr><th>Scenario</th><th>Role</th>"
-          f"<th>Status</th></tr></thead><tbody>{rows}</tbody></table>"
-        + "<p class='provenance'>Scenarios are pre-computed cluster runs; "
-          "status reflects data availability, not an in-app simulation.</p>")
-    return _document(f"Experiment — {name}", body)
 
 
 def write_report(path: str, html_text: str) -> None:

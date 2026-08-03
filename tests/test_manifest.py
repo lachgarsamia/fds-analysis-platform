@@ -15,7 +15,7 @@ import pytest
 import manifest as manifest_module
 from manifest import (
     scan_scenarios, save_manifest, load_manifest, get_manifest,
-    factor_counts, data_matrix_from_manifest, ScenarioEntry,
+    factor_counts, data_matrix_from_manifest, ScenarioEntry, scenario_label,
 )
 
 
@@ -65,6 +65,28 @@ class TestScanScenarios:
         _make_folders(tmp_path, ["c1_d0_vod0_voc0"])
         entries = scan_scenarios(str(tmp_path))
         assert os.path.isabs(entries[0].path)
+
+
+class TestScenarioLabel:
+    def test_decodes_factor_levels_into_a_human_readable_string(self, tmp_path):
+        # Indices are derived from the sorted set of raw values actually
+        # present (manifest.py's own design) -- span every level on disk so
+        # the target folder's digits rank at their literal position.
+        _make_folders(tmp_path, ["c1_d0_vod0_voc0", "c2_d1_vod1_voc0", "c2_d1_vod2_voc0"])
+        entries = scan_scenarios(str(tmp_path))
+        entry = next(e for e in entries if e.folder == "c2_d1_vod2_voc0")
+        assert scenario_label(entry) == "2 candles · Wide door · Vent 1 HVAC · Vent 2 open"
+
+    def test_falls_back_to_folder_for_a_generic_non_factorial_entry(self):
+        entry = ScenarioEntry(case_index=0, folder="run_alpha", path="/x/run_alpha",
+                              candles=0, door=0, vod=0, voc=0)
+        assert scenario_label(entry) == "run_alpha"
+
+    def test_duck_types_a_scenario_summary_shaped_object(self):
+        class FakeSummary:
+            folder = "c1_d0_vod1_voc1"
+            candles, door, vod, voc = 0, 0, 1, 1
+        assert scenario_label(FakeSummary()) == "1 candle · Narrow door · Vent 1 closed · Vent 2 closed"
 
 
 class TestDataMatrixFromManifest:

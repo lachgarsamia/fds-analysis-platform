@@ -15,6 +15,7 @@ without Qt; the panel widget only wires them to clicks and combos.
 from __future__ import annotations
 
 import csv
+import logging
 
 import numpy as np
 from PyQt5 import QtCore, QtWidgets
@@ -23,6 +24,9 @@ from scipy.ndimage import map_coordinates
 
 from widgets import MplCanvas, plot_fg_color
 from views import EnsemblePickerDialog
+from analysis_panel_base import populate_scenario_combo
+
+logger = logging.getLogger(__name__)
 
 MODES = ("point", "line", "region")
 MODE_LABELS = {
@@ -105,11 +109,24 @@ class TimeSeriesPanel(QtWidgets.QWidget):
     Analysis page's on_enter, never at construction.
     """
 
-    def __init__(self, store, manifest: list, quantity_options: list, fps: int, parent=None):
+    def __init__(self, store, manifest: list, quantity_options: list, fps: int,
+                 field_fn=None, extent_fn=None, parent=None):
         """quantity_options: [(label, SliceKey), ...] -- same shape
-        MainWindow._quantity_options() already produces for GridCell."""
+        MainWindow._quantity_options() already produces for GridCell.
+
+        field_fn/extent_fn (Live-polish follow-up, "better ways to
+        visualize dynamic pressure/temperature rise" pass): optional
+        (case_index, key) -> ndarray/extent callables -- MainWindow passes
+        its own computed-vs-native-aware routing (self._field/
+        self._extent_for) so a computed quantity (DYNAMIC PRESSURE,
+        TEMPERATURE RISE) in quantity_options actually works here, not just
+        native ones. Default to the store directly (this panel's original,
+        native-only behavior) so every pre-existing caller/test needs no
+        changes."""
         super().__init__(parent)
         self._store = store
+        self._field_fn = field_fn or (lambda case_index, key: store.get(case_index, key))
+        self._extent_fn = extent_fn or (lambda case_index, key: store.get_extent(case_index, key))
         self._manifest = sorted(manifest, key=lambda e: e.case_index)
         self._quantity_options = list(quantity_options)
         self._fps = max(1, fps)
@@ -123,6 +140,7 @@ class TimeSeriesPanel(QtWidgets.QWidget):
         self._marker_artists: list = []
         self._last_curves: list = []  # [(label, values)] of the current plot
         self._last_x = None           # (axis label, values) of the current plot
+        self._bus = None
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -207,8 +225,7 @@ class TimeSeriesPanel(QtWidgets.QWidget):
             return
         self._loaded = True
         self.scenario_combo.blockSignals(True)
-        for entry in self._manifest:
-            self.scenario_combo.addItem(entry.folder, entry.case_index)
+        populate_scenario_combo(self.scenario_combo, self._manifest)
         self.scenario_combo.blockSignals(False)
         self._overlay_cases = [self._manifest[0].case_index]
         self._reload_locator()
@@ -223,10 +240,10 @@ class TimeSeriesPanel(QtWidgets.QWidget):
         return self._quantity_options[idx][1] if self._quantity_options else None
 
     def _data(self, case_index: int) -> np.ndarray:
-        return np.asarray(self._store.get(case_index, self.current_key))
+        return np.asarray(self._field_fn(case_index, self.current_key))
 
     def _extent(self, case_index: int):
-        extent = self._store.get_extent(case_index, self.current_key)
+        extent = self._extent_fn(case_index, self.current_key)
         if extent is None:
             # Fall back to pixel-index coordinates -- still functional,
             # same degradation SliceView documents for a missing extent.
@@ -251,7 +268,7 @@ class TimeSeriesPanel(QtWidgets.QWidget):
         # and in the Live Viewer / Analysis, instead of an ad-hoc gist_heat.
         from registry import get_quantity
         self._locator_image = self._locator_ax.imshow(
-            composite, cmap=get_quantity(self.current_key).cmap,
+            composite, cmap=get_quantity(self.current_key.quantity).cmap,
             aspect="auto", extent=extent)
         self._locator_ax.set_title("Time-max composite — click to probe", fontsize=8)
         self._locator_ax.set_xlabel("x (m)", fontsize=8)
@@ -320,6 +337,29 @@ class TimeSeriesPanel(QtWidgets.QWidget):
         self._draw_probe_markers()
         self.locator_canvas.draw_idle()
         self._update_plot()
+        self._publish_probe()
+
+    # ------------------------------------------------------------- bus (Phase 2)
+    def set_bus(self, bus) -> None:
+        """Publishes the current probe as Selection.point/region (previously
+        unused by any panel) so another panel that reacts to the shared
+        selection -- SpaceTimePanel already does, via its own custom
+        set_bus -- can follow this probe without the researcher re-picking
+        it. One-way (publish only): this panel's own mode/probe state stays
+        local, so accepting an external pick isn't required to get the
+        cross-panel value."""
+        self._bus = bus
+
+    def _publish_probe(self) -> None:
+        if self._bus is None or self._probe is None:
+            return
+        if self._mode == "point":
+            self._bus.update(origin=self, point=self._probe)
+        elif self._mode == "region":
+            (x0, z0), (x1, z1) = self._probe
+            self._bus.update(origin=self, region=(min(x0, x1), max(x0, x1),
+                                                   min(z0, z1), max(z0, z1)))
+        # line mode has no matching Selection field -- not published.
 
     # ------------------------------------------------------------- controls
     def _on_scenario_changed(self, _idx: int) -> None:
@@ -333,8 +373,40 @@ class TimeSeriesPanel(QtWidgets.QWidget):
         self._update_plot()
 
     def _on_quantity_changed(self, _idx: int) -> None:
-        self._reload_locator()
-        self._update_plot()
+        # PyQt5 aborts the whole process (qFatal -> abort()) on an unhandled
+        # exception inside a connected slot rather than raising a catchable
+        # Python error -- a crashed app is worse than a logged one, so this
+        # slot (the one directly wired to the quantity combo) must never let
+        # an exception escape into Qt's event loop.
+        try:
+            self._reload_locator()
+            key = self.current_key
+            if (key is not None and key.quantity == "TEMPERATURE RISE"
+                    and self._probe is None and self._pending_start is None):
+                # Live-polish follow-up ("better ways to visualize temperature
+                # rise"): DeltaT's default view is a fixed-height probe in the
+                # doorway (x=0.25 m; z=0.11 m -- this dataset's room is a
+                # 0.22 m-tall scaled model, not a real building, so "head
+                # height" doesn't apply here; z=0.11 m is the room's own
+                # geometric mid-height, ROOM_Z=(0.0, 0.22) in schematic.py, not
+                # a human-scale guess), not the full 2D slice -- there, the
+                # signal is a thin plume region dwarfed by the rest of the
+                # domain. Only auto-placed when nothing has been probed yet, so
+                # it never overrides a deliberate existing pick.
+                if self._mode != "point":
+                    self._mode = "point"
+                    self.mode_combo.blockSignals(True)
+                    self.mode_combo.setCurrentIndex(MODES.index("point"))
+                    self.mode_combo.blockSignals(False)
+                    self.hint_label.setText(MODE_HINTS[self._mode])
+                    self._frame_row_widget.setVisible(False)
+                self._apply_click(0.25, 0.11)
+                return
+            self._update_plot()
+        except Exception:
+            logger.exception("time series: failed to switch to quantity %r",
+                              self.quantity_combo.currentText())
+            self._show_plot_placeholder("Could not load this quantity here -- see logs.")
 
     def _on_mode_changed(self, idx: int) -> None:
         self._mode = MODES[idx]

@@ -29,6 +29,7 @@ from PyQt5 import QtCore, QtWidgets
 from widgets import MplCanvas
 from slice_key import SliceKey
 from quantity_provider import GatedQuantityError
+from analysis_panel_base import populate_scenario_combo
 import hazard_spaces as hz
 
 
@@ -102,8 +103,7 @@ class HazardPanel(QtWidgets.QWidget):
             return
         self._loaded = True
         self.scenario_combo.blockSignals(True)
-        for entry in self._manifest:
-            self.scenario_combo.addItem(entry.folder, entry.case_index)
+        populate_scenario_combo(self.scenario_combo, self._manifest)
         self.scenario_combo.blockSignals(False)
         self._reload()
 

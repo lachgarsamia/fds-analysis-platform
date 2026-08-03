@@ -33,11 +33,15 @@ RESPONSE_FIELDS = [
     ("peak_hrr_kw", "Peak HRR", "kW"),
     ("total_energy_kj", "Energy", "kJ"),
     ("growth_alpha_kw_s2", "Growth α", "kW/s²"),
-    ("layer_min_height_m", "Layer min", "m"),
+    ("time_to_peak_hrr_s", "Time to peak HRR", "s"),
+    ("layer_min_height_m", "Layer min height", "m"),
+    ("smoke_descent_rate_m_s", "Smoke descent rate", "m/s"),
     ("time_to_100c_s", "t→100°C (arrival)", "s"),
     ("time_to_300c_s", "t→300°C (arrival)", "s"),
     ("time_to_600c_s", "t→600°C (arrival)", "s"),
-    ("time_to_untenable_s", "t untenable", "s"),
+    ("time_to_untenable_s", "t untenable (onset)", "s"),
+    ("hazard_duration_s", "Hazard duration (Critical+)", "s"),
+    ("peak_heat_fed", "Peak heat FED", ""),
 ]
 RESPONSE_KEYS = [f[0] for f in RESPONSE_FIELDS]
 RESPONSE_LABEL = {f[0]: f[1] for f in RESPONSE_FIELDS}
@@ -67,19 +71,32 @@ def column(table: list, key: str, kind: str = "response") -> np.ndarray:
     return np.array([r[field][key] for r in table], dtype=float)
 
 
+def response_curve(table: list, response: str, factor: str) -> list:
+    """[{level, mean, std, n}, ...] sorted by level -- the response's
+    per-level group statistics for one factor, e.g. "how does changing
+    ventilation affect temperature": pick factor="vod", response=
+    "max_temp_c", and this is the curve to plot (level on x, mean on y).
+    The shared building block behind factor_influence's spread-of-means
+    summary and the Study panel's own response-curve view."""
+    x = column(table, factor, "param")
+    y = column(table, response)
+    out = []
+    for level in np.unique(x[~np.isnan(x)]):
+        vals = y[x == level]
+        vals = vals[~np.isnan(vals)]
+        if vals.size:
+            out.append({"level": float(level), "mean": float(np.mean(vals)),
+                        "std": float(np.std(vals)), "n": int(vals.size)})
+    return out
+
+
 def factor_influence(table: list, response: str) -> dict:
     """{param: influence} where influence is the range of the response's
     per-level group means -- how much that factor moves the response. 0 when
     the factor has fewer than two usable levels."""
-    y = column(table, response)
     out = {}
     for p in PARAMS:
-        x = column(table, p, "param")
-        means = []
-        for level in np.unique(x[~np.isnan(x)]):
-            m = np.nanmean(y[x == level])
-            if not np.isnan(m):
-                means.append(m)
+        means = [row["mean"] for row in response_curve(table, response, p)]
         out[p] = float(max(means) - min(means)) if len(means) >= 2 else 0.0
     return out
 
@@ -108,6 +125,27 @@ def correlation_matrix(table: list, keys: list = None) -> np.ndarray:
             else:
                 c[i, j] = c[j, i] = np.nan
     return c
+
+
+def pairwise_n(table: list, keys: list = None) -> np.ndarray:
+    """The same pairing/NaN-masking correlation_matrix uses, but returning
+    how many scenarios actually back each pair's r -- a response that's
+    NaN for some scenarios (e.g. a hazard threshold never reached) shrinks
+    just the pairs involving it, so a matrix's overall scenario count
+    doesn't guarantee every cell shares that same n. Diagonal is the
+    column's own non-NaN count."""
+    keys = keys or RESPONSE_KEYS
+    cols = [column(table, k) for k in keys]
+    n = len(keys)
+    counts = np.zeros((n, n), dtype=int)
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                counts[i, j] = int((~np.isnan(cols[i])).sum())
+            else:
+                mask = ~(np.isnan(cols[i]) | np.isnan(cols[j]))
+                counts[i, j] = int(mask.sum())
+    return counts
 
 
 def outlier_scores(table: list, keys: list = None) -> np.ndarray:

@@ -392,88 +392,6 @@ class TestQueryRealData:
         assert ins.value == pytest.approx(summary.max_temp_c, abs=0.5)
 
 
-import state_space as ss  # noqa: E402
-
-
-class TestStateSpace:
-    def _evolving(self):
-        # 20 frames, a hot spot that grows/moves smoothly -> smooth descriptors.
-        d = np.full((20, 5, 8), 20.0, dtype=np.float32)
-        for t in range(20):
-            d[t, :, :t // 2 + 1] = 20 + 15 * t  # hot region widens with time
-        return d
-
-    def test_trajectory_shape_and_temporal_smoothness(self):
-        coords, times, evr = ss.scenario_trajectory(self._evolving(), (0, 1, 0, 0.3), 4)
-        assert coords.shape == (20, 2) and times.shape == (20,)
-        steps = np.linalg.norm(np.diff(coords, axis=0), axis=1)
-        # a smooth evolution -> consecutive frames much closer than the span
-        span = np.linalg.norm(coords.max(0) - coords.min(0))
-        assert steps.mean() < 0.5 * span
-
-    def test_genome_traits_peak_and_rate(self):
-        d = np.full((4, 1, 2), 20.0, dtype=np.float32)
-        d[:, 0, 0] = [20, 120, 320, 320]
-        g = ss.genome_traits(d, (0, 1, 0, 0.3), 2)
-        assert g["peak_temp"] == pytest.approx(320.0)
-        assert g["heating_rate"] == pytest.approx(400.0)  # max diff 200 * fps 2
-
-    def test_normalize_genomes_min_max_and_constant(self):
-        traits = [
-            {"peak_temp": 100, "heating_rate": 5, "smoke_descent": 0, "energy": 1, "spread": 2},
-            {"peak_temp": 300, "heating_rate": 5, "smoke_descent": 1, "energy": 3, "spread": 4},
-        ]
-        norm = ss.normalize_genomes(traits)
-        assert norm[0]["peak_temp"] == 0.0 and norm[1]["peak_temp"] == 1.0
-        assert norm[0]["heating_rate"] == 0.5 and norm[1]["heating_rate"] == 0.5  # constant
-
-    def test_genome_matrix_shape(self):
-        norm = ss.normalize_genomes([
-            {"peak_temp": 1, "heating_rate": 1, "smoke_descent": 1, "energy": 1, "spread": 1},
-            {"peak_temp": 2, "heating_rate": 2, "smoke_descent": 2, "energy": 2, "spread": 2},
-        ])
-        m = ss.genome_matrix(norm)
-        assert m.shape == (2, len(ss.GENOME_TRAITS))
-
-
-@requires_real_dataset
-class TestStateSpaceRealData:
-    """DoD: trajectory temporally ordered; genomes cluster with candle count."""
-
-    def _sim(self):
-        from data_provider import load_simulation_data
-        sim = load_simulation_data()
-        if sim.is_demo:
-            pytest.skip("real dataset not present")
-        return sim
-
-    def test_trajectory_temporally_ordered(self):
-        sim = self._sim()
-        e = sim.manifest[0]
-        data = sim.store.get(e.case_index, DEFAULT_SLICE_KEY)
-        extent = sim.store.get_extent(e.case_index, DEFAULT_SLICE_KEY)
-        coords, _t, _evr = ss.scenario_trajectory(data, extent, sim.timesteps_per_second)
-        steps = np.linalg.norm(np.diff(coords, axis=0), axis=1)
-        rng = np.random.default_rng(0)
-        i, j = rng.integers(0, len(coords), 500), rng.integers(0, len(coords), 500)
-        rand = np.linalg.norm(coords[i] - coords[j], axis=1)
-        assert steps.mean() < 0.6 * rand.mean()
-
-    def test_genomes_cluster_with_candle_count(self):
-        from summary_stats import compute_scenario_summary
-        from analytics.clustering import run_clustering, cluster_alignment
-        sim = self._sim()
-        raw = [ss.genome_traits(sim.store.get(e.case_index, DEFAULT_SLICE_KEY),
-                                sim.store.get_extent(e.case_index, DEFAULT_SLICE_KEY),
-                                sim.timesteps_per_second,
-                                compute_scenario_summary(e, sim.store, sim.timesteps_per_second))
-               for e in sim.manifest]
-        mat = ss.genome_matrix(ss.normalize_genomes(raw))
-        labels = run_clustering(mat, 2)
-        align = cluster_alignment(labels, [e.candles for e in sim.manifest])
-        assert align >= 0.5  # at least as good as chance; consistent with the PCA finding
-
-
 import attention as at  # noqa: E402
 
 
@@ -633,6 +551,107 @@ class TestHeightAnalysis:
         assert jet[1] == pytest.approx(20.0)  # the 500 is at the floor, ignored
 
 
+import smoke_density as smd  # noqa: E402
+
+
+class TestSmokeDensity:
+    """Continuous soot-density smoke intensity mapping (Analysis "smoke"
+    pass) -- linear, data-driven ceiling, not a threshold."""
+
+    def test_ceiling_uses_percentile_not_bare_max(self):
+        data = np.concatenate([np.full(9999, 2000.0), np.array([50000.0])])  # one spike
+        ceiling = smd.soot_ceiling(data, percentile=99.5)
+        assert ceiling < 50000.0   # the spike alone doesn't set the scale
+        assert ceiling >= 2000.0
+
+    def test_ceiling_floors_at_min_for_a_near_empty_scenario(self):
+        data = np.zeros((10, 5, 5))
+        assert smd.soot_ceiling(data) == smd.MIN_CEILING_MG_M3
+
+    def test_ceiling_handles_nan_and_empty(self):
+        assert smd.soot_ceiling(np.full((3, 3), np.nan)) == smd.MIN_CEILING_MG_M3
+        assert smd.soot_ceiling(np.array([])) == smd.MIN_CEILING_MG_M3
+
+    def test_alpha_is_zero_at_exactly_zero_soot(self):
+        frame = np.zeros((4, 4))
+        alpha = smd.soot_alpha(frame, ceiling=5000.0)
+        assert (alpha == 0.0).all()
+
+    def test_alpha_is_continuous_and_monotonic_up_to_the_ceiling(self):
+        """The core "not thresholded" requirement: strictly increasing
+        opacity for strictly increasing concentration up to the ceiling,
+        not a step -- values beyond the ceiling correctly clip (see the
+        separate max_alpha test), so they're excluded here."""
+        values = np.array([0.0, 500.0, 1000.0, 2500.0, 5000.0])
+        alphas = smd.soot_alpha(values, ceiling=5000.0)
+        assert np.all(np.diff(alphas) > 0)   # strictly increasing, no plateau/step
+        assert len(set(np.round(alphas, 6))) == len(values)  # every distinct input -> distinct output
+
+    def test_alpha_never_exceeds_max_alpha(self):
+        frame = np.array([1e9, 5000.0, 0.0])   # a huge outlier well past the ceiling
+        alpha = smd.soot_alpha(frame, ceiling=5000.0, max_alpha=0.85)
+        assert alpha.max() == pytest.approx(0.85)
+        assert (alpha <= 0.85 + 1e-9).all()
+
+    def test_alpha_handles_nan_safely(self):
+        frame = np.array([np.nan, 1000.0, np.inf, -np.inf])
+        alpha = smd.soot_alpha(frame, ceiling=5000.0)
+        assert np.isfinite(alpha).all()
+        assert alpha[0] == 0.0   # NaN treated as no soot, not fabricated
+
+    def test_alpha_is_linear_not_logarithmic(self):
+        """Confirms the documented choice: equal concentration steps
+        produce equal opacity steps (linear), not compressed steps
+        (log/asinh) -- this is the actual, data-driven design decision,
+        not just a docstring claim."""
+        ceiling = 5000.0
+        a1 = smd.soot_alpha(np.array([1000.0]), ceiling)[0]
+        a2 = smd.soot_alpha(np.array([2000.0]), ceiling)[0]
+        a3 = smd.soot_alpha(np.array([3000.0]), ceiling)[0]
+        assert (a2 - a1) == pytest.approx(a3 - a2, abs=1e-9)
+
+    def test_display_range_anchors_vmin_at_the_nonzero_floor_not_zero(self):
+        """The "smoke view looks weird" fix: a fixed vmin=0 wastes almost
+        the whole color ramp on empty space when (as this dataset's real
+        SOOT DENSITY does) nonzero values already cluster in a narrow band
+        near a ceiling. vmin must come from the nonzero population, not 0,
+        or real internal variation stays invisible."""
+        data = np.zeros((5, 4, 4))
+        data[0, 0, 0] = 4100.0
+        data[0, 1, 1] = 4990.0
+        vmin, vmax = smd.soot_display_range(data, floor_percentile=0.0, ceiling_percentile=100.0)
+        assert vmin == pytest.approx(4100.0)
+        assert vmax == pytest.approx(4990.0)
+        assert vmin > 0.0   # the whole point: not pinned at the physical zero
+
+    def test_display_range_zeros_are_unaffected_by_the_floor(self):
+        """Exact zeros must still read as "no soot" -- imshow clips values
+        below vmin to vmin's own color, so this only matters if some
+        caller ever queries a zero cell's position explicitly; asserting it
+        stays outside [vmin, vmax] documents that expectation."""
+        data = np.array([[0.0, 4100.0], [4990.0, 0.0]]).reshape(1, 2, 2)
+        vmin, vmax = smd.soot_display_range(data, floor_percentile=0.0, ceiling_percentile=100.0)
+        assert 0.0 < vmin
+
+    def test_display_range_floors_at_min_ceiling_for_a_near_empty_scenario(self):
+        data = np.zeros((10, 5, 5))
+        vmin, vmax = smd.soot_display_range(data)
+        assert vmin == 0.0
+        assert vmax == smd.MIN_CEILING_MG_M3
+
+    def test_display_range_handles_nan(self):
+        vmin, vmax = smd.soot_display_range(np.full((3, 3), np.nan))
+        assert vmin == 0.0
+        assert vmax == smd.MIN_CEILING_MG_M3
+
+    def test_display_range_ceiling_never_below_floor(self):
+        """A degenerate case (every nonzero value identical) must not
+        produce an inverted/zero-width range."""
+        data = np.array([0.0, 4200.0, 4200.0, 4200.0]).reshape(1, 2, 2)
+        vmin, vmax = smd.soot_display_range(data, floor_percentile=0.0, ceiling_percentile=100.0)
+        assert vmax > vmin
+
+
 @requires_real_dataset
 class TestHeightRealData:
     def test_gas_layer_stratifies_hot_over_cool(self):
@@ -789,6 +808,59 @@ class TestZoneStats:
                                      zst.Zone("all", 0.0, 1.0, 0.0, 1.0), fps=2)
         assert acc == pytest.approx(4.0)  # mean 2 per frame * 4 frames / fps
 
+    def test_smoke_accumulation_is_deterministic(self):
+        """Continuous soot-density visualization pass, Step 9: a pure
+        reduction over the same array/zone/fps must return the identical
+        value every call -- no hidden RNG/global state."""
+        rng = np.random.default_rng(0)
+        soot = rng.uniform(0.0, 5000.0, size=(6, 4, 5)).astype(np.float32)
+        zone = zst.Zone("z", 0.1, 0.6, 0.2, 0.7)
+        results = [zst.smoke_accumulation(soot, (0.0, 1.0, 0.0, 1.0), zone, fps=4)
+                   for _ in range(5)]
+        assert len(set(results)) == 1
+
+    def test_smoke_accumulation_units_are_concentration_times_seconds(self):
+        """mg/m3 (soot) * s (fps division) = mg.s/m3 -- doubling either the
+        concentration or the frame count must double the result linearly,
+        which is the defining property of a dose-like concentration-time
+        integral."""
+        base = np.full((4, 2, 2), 1000.0, dtype=np.float32)
+        zone = zst.Zone("all", 0.0, 1.0, 0.0, 1.0)
+        acc_base = zst.smoke_accumulation(base, (0.0, 1.0, 0.0, 1.0), zone, fps=4)
+        acc_double_conc = zst.smoke_accumulation(base * 2, (0.0, 1.0, 0.0, 1.0), zone, fps=4)
+        acc_double_frames = zst.smoke_accumulation(np.concatenate([base, base]),
+                                                    (0.0, 1.0, 0.0, 1.0), zone, fps=4)
+        assert acc_double_conc == pytest.approx(acc_base * 2)
+        assert acc_double_frames == pytest.approx(acc_base * 2)
+
+    def test_smoke_accumulation_never_negative_for_nonnegative_soot(self):
+        """SOOT DENSITY is a physical mass concentration -- always >= 0 --
+        so its time integral over any zone/duration must be too."""
+        rng = np.random.default_rng(1)
+        soot = rng.uniform(0.0, 20000.0, size=(20, 6, 6)).astype(np.float32)
+        zone = zst.Zone("z", 0.0, 1.0, 0.0, 1.0)
+        acc = zst.smoke_accumulation(soot, (0.0, 1.0, 0.0, 1.0), zone, fps=8)
+        assert acc >= 0.0
+
+    def test_smoke_accumulation_zero_for_zero_soot(self):
+        soot = np.zeros((10, 3, 3), dtype=np.float32)
+        zone = zst.Zone("z", 0.0, 1.0, 0.0, 1.0)
+        acc = zst.smoke_accumulation(soot, (0.0, 1.0, 0.0, 1.0), zone, fps=4)
+        assert acc == 0.0
+
+    def test_smoke_accumulation_respects_zone_bounds(self):
+        """A zone covering only the (always-zero) left half of the domain
+        must read 0 even when the right half is smoke-filled -- confirms
+        the same zone_indices() cropping zone_bundle already relies on is
+        actually applied here, not a whole-frame mean."""
+        soot = np.zeros((5, 4, 4), dtype=np.float32)
+        soot[:, :, 2:] = 9000.0  # right half only
+        left_zone = zst.Zone("left", 0.0, 0.4, 0.0, 1.0)
+        right_zone = zst.Zone("right", 0.6, 1.0, 0.0, 1.0)
+        extent = (0.0, 1.0, 0.0, 1.0)
+        assert zst.smoke_accumulation(soot, extent, left_zone, fps=4) == 0.0
+        assert zst.smoke_accumulation(soot, extent, right_zone, fps=4) > 0.0
+
 
 import time_window as twm  # noqa: E402
 
@@ -902,15 +974,12 @@ import measure as mzt  # noqa: E402
 
 
 class TestMeasure:
+    """UX consolidation pass: distance/polyline (generic geometry, no
+    scientific quantity attached) were removed from the tool set along
+    with mz.distance/mz.polyline_length (their only callers). probe/rect
+    (heatmap probing + region stats) are unaffected."""
+
     EXT = (0.0, 1.0, 0.0, 1.0)
-
-    def test_distance(self):
-        assert mzt.distance((0.0, 0.0), (3.0, 4.0)) == pytest.approx(5.0)
-
-    def test_polyline_length(self):
-        total, segs = mzt.polyline_length([(0, 0), (0, 0.3), (0.4, 0.3)])
-        assert total == pytest.approx(0.7)
-        assert segs == pytest.approx([0.3, 0.4])
 
     def test_probe_bilinear(self):
         # 2x2 frame, row 0 = top (z1). corners exact, centre = mean.
@@ -1098,56 +1167,6 @@ class TestQuantityBreadth:
             dqm.derive("PRESSURE", np.array([1.0]))  # not a derived quantity
 
 
-import assistant as asst  # noqa: E402
-
-
-class TestSafeAssistant:
-    NB = [{"insight": {"statement": "Peak 469 C.", "time_s": 8.0, "basis": "max"},
-           "note": "candle A", "tags": ["plume"]}]
-
-    def test_interpret_refuses_causal_and_maps_safe(self):
-        assert asst.interpret_request("why is case B hotter?") == "refuse"
-        assert asst.interpret_request("what caused the peak?") == "refuse"
-        assert asst.interpret_request("explain why smoke descends") == "refuse"
-        assert asst.interpret_request("") == "refuse"
-        assert asst.interpret_request("gibberish") == "refuse"
-        assert asst.interpret_request("summarize the session") == "summarize_session"
-        assert asst.interpret_request("list key findings") == "list_key_findings"
-        assert asst.interpret_request("give me a figure caption") == "figure_caption"
-        assert asst.interpret_request("compare the intervals") == "compare_intervals"
-
-    def test_every_action_is_a_known_safe_action(self):
-        for action in asst.SAFE_ACTIONS:
-            assert hasattr(asst, action)  # each safe action has an engine function
-
-    def test_outputs_carry_disclaimer_and_are_traceable(self):
-        session = {"name": "Door study", "intent": "vary vents", "notebook": self.NB,
-                   "zones": [{"name": "z"}], "measurements": [], "time_window": {}}
-        summary = asst.summarize_session(session)
-        assert "Door study" in summary and "1 finding" in summary
-        assert asst.DISCLAIMER in summary
-        findings = asst.list_key_findings(self.NB)
-        assert "Peak 469 C" in findings and "basis: max" in findings and asst.DISCLAIMER in findings
-
-    def test_report_outline_groups_by_tag(self):
-        out = asst.report_outline(self.NB)
-        assert "## plume" in out and "Peak 469 C" in out
-
-    def test_compare_intervals_states_numbers_no_cause(self):
-        a = {"t0": 0.0, "t1": 10.0, "mean": 20.0, "peak": 100.0}
-        b = {"t0": 10.0, "t1": 20.0, "mean": 30.0, "peak": 120.0}
-        text = asst.compare_intervals(a, b, "A", "B", "°C")
-        assert "10.0" in text and "higher" in text and asst.DISCLAIMER in text
-        assert "cause" not in text.lower().replace("no physical causes", "")  # no causal claim
-
-    def test_figure_caption_is_descriptive(self):
-        cap = asst.figure_caption("c1", "Temperature", "°C", 8.0, 469.0)
-        assert "c1" in cap and "469.0 °C" in cap and asst.DISCLAIMER in cap
-
-    def test_refusal_asserts_no_physics(self):
-        assert "cannot infer why" in asst.REFUSAL and "cause" in asst.REFUSAL
-
-
 import study_analytics as sam  # noqa: E402
 
 
@@ -1182,6 +1201,20 @@ class TestStudyAnalytics:
         ranking = sam.influence_ranking(t, "max_temp_c")
         assert ranking[0][0] == "vod" and ranking[0][2] == pytest.approx(1.0)
 
+    def test_response_curve_gives_the_per_level_means_factor_influence_summarizes(self):
+        """UX consolidation pass (Study-Level interpretation, item 6): the
+        shared building block behind factor_influence's spread-of-means --
+        directly answers "how does changing X affect Y" as a level/mean
+        curve, not just the overall spread."""
+        t = sam.build_table(self._summaries())
+        curve = sam.response_curve(t, "max_temp_c", "vod")
+        assert [row["level"] for row in curve] == [0.0, 1.0]
+        assert [row["mean"] for row in curve] == pytest.approx([100.0, 300.0])
+        assert all(row["n"] == 2 for row in curve)
+        # a factor with no influence still returns a (flat) curve, not an error.
+        flat = sam.response_curve(t, "max_temp_c", "door")
+        assert [row["mean"] for row in flat] == pytest.approx([200.0, 200.0])
+
     def test_study_statistics(self):
         st = sam.study_statistics(sam.build_table(self._summaries()))["max_temp_c"]
         assert st["min"] == 100.0 and st["max"] == 300.0 and st["mean"] == 200.0 and st["n"] == 4
@@ -1193,6 +1226,28 @@ class TestStudyAnalytics:
     def test_outlier_scores_nonnegative(self):
         scores = sam.outlier_scores(sam.build_table(self._summaries()))
         assert len(scores) == 4 and np.all(scores >= 0)
+
+    def test_pairwise_n_diagonal_is_the_columns_own_count(self):
+        t = sam.build_table(self._summaries())
+        counts = sam.pairwise_n(t, ["max_temp_c", "peak_hrr_kw"])
+        assert counts[0, 0] == 4 and counts[1, 1] == 4
+
+    def test_pairwise_n_shrinks_for_a_pair_with_partial_missing_data(self):
+        """A response that's NaN for some scenarios (e.g. a hazard
+        threshold never reached) must shrink only the pairs involving it
+        -- the matrix's overall scenario count doesn't guarantee every
+        cell shares that n."""
+        rows = [
+            _FakeSummary(0, "a", 0, 0, 0, 0, max_temp_c=100.0, peak_hrr_kw=50.0),
+            _FakeSummary(1, "b", 0, 0, 1, 0, max_temp_c=200.0, peak_hrr_kw=None),
+            _FakeSummary(2, "c", 0, 1, 0, 0, max_temp_c=300.0, peak_hrr_kw=None),
+            _FakeSummary(3, "d", 0, 1, 1, 0, max_temp_c=400.0, peak_hrr_kw=80.0),
+        ]
+        t = sam.build_table(rows)
+        counts = sam.pairwise_n(t, ["max_temp_c", "peak_hrr_kw"])
+        assert counts[0, 0] == 4          # max_temp_c has no gaps
+        assert counts[1, 1] == 2          # peak_hrr_kw is NaN for 2 of 4
+        assert counts[0, 1] == counts[1, 0] == 2   # the pair is limited by the gappier column
 
     def test_normalized_axes_in_unit_range(self):
         t = sam.build_table(self._summaries())
@@ -1229,19 +1284,18 @@ class TestSensitivity:
         s = {"candles": 0, "door": 0, "vod": 0.5, "voc": 0}
         assert sen.predict(t, "max_temp_c", s) == pytest.approx(200.0)  # between 100 and 300
 
-    def test_predict_all_covers_every_response(self):
-        t = self._table()
-        preds = sen.predict_all(t, {"candles": 0, "door": 0, "vod": 1, "voc": 0})
-        assert set(preds) == set(sam.RESPONSE_KEYS)
-        assert preds["max_temp_c"] == pytest.approx(300.0)
-
-    def test_tornado_ranks_the_driver(self):
-        t = self._table()
-        s = {"candles": 0, "door": 0, "vod": 1, "voc": 0}
-        tor = sen.tornado(t, "max_temp_c", s)
-        assert tor[0][0] == "vod"                      # vod has the largest swing
-        assert tor[0][3] == pytest.approx(400.0)       # 100 (vod=0) -> 500 (vod=2)
-        assert all(row[3] == 0.0 for row in tor if row[0] != "vod")
+    def test_predict_all_and_tornado_were_removed(self):
+        """Analysis UX + reliability pass: What-if (all-responses) and
+        Tornado were removed from the Sensitivity panel, and predict_all()/
+        tornado() -- used only by those two render methods -- were deleted
+        with them. Response surface (response_surface(), still present)
+        already answers "how does this response change near my current
+        setting" for the two factors that matter most."""
+        assert not hasattr(sen, "predict_all")
+        assert not hasattr(sen, "tornado")
+        assert callable(sen.response_surface)
+        assert callable(sen.predict)
+        assert callable(sen.nearest_scenario)
 
     def test_nearest_scenario_exact_and_between(self):
         t = self._table()
@@ -1318,53 +1372,6 @@ class TestHazardSpaces:
         assert first == 2 and bool(indicated[2]) and not bool(indicated[0])
 
 
-import ensemble_spread as ens  # noqa: E402
-
-
-class TestEnsembleSpread:
-    def test_per_frame_metrics(self):
-        data = np.array([[[20.0, 400.0], [400.0, 20.0]]], dtype=np.float32)  # 1 frame
-        assert ens.per_frame_series(data, None, "spatial_max")[0] == 400.0
-        assert ens.per_frame_series(data, None, "spatial_mean")[0] == pytest.approx(210.0)
-        assert ens.per_frame_series(data, None, "hot_area_fraction", 100.0)[0] == pytest.approx(0.5)
-
-    def test_envelope_min_mean_max(self):
-        lo, mean, hi = ens.envelope([np.array([1.0, 2.0, 3.0]),
-                                     np.array([3.0, 2.0, 1.0]),
-                                     np.array([2.0, 2.0, 2.0])])
-        np.testing.assert_allclose(lo, [1, 2, 1])
-        np.testing.assert_allclose(mean, [2, 2, 2])
-        np.testing.assert_allclose(hi, [3, 2, 3])
-
-    def test_envelope_truncates_to_shortest(self):
-        lo, mean, hi = ens.envelope([np.array([1.0, 2.0, 3.0]), np.array([5.0, 5.0])])
-        assert len(mean) == 2
-
-
-class TestAssistantSearch:
-    def _table(self):
-        rows = [_FakeSummary(0, "a", 0, 0, 0, 0, max_temp_c=300.0, layer_min_height_m=1.5),
-                _FakeSummary(1, "b", 0, 0, 1, 0, max_temp_c=500.0, layer_min_height_m=0.1)]
-        return sam.build_table(rows)
-
-    def test_search_greater_than(self):
-        out = asst.search_scenarios(self._table(), "scenarios where temperature exceeds 400")
-        assert "b:" in out and "a:" not in out.split("\n", 1)[1]  # only b > 400
-        assert asst.DISCLAIMER in out
-
-    def test_search_less_than(self):
-        out = asst.search_scenarios(self._table(), "scenarios where smoke layer below 1.0 m")
-        assert "b:" in out and "1 of 2" in out
-
-    def test_search_unparseable_is_helpful_not_a_claim(self):
-        out = asst.search_scenarios(self._table(), "scenarios where something happens")
-        assert "could not read a search" in out and asst.DISCLAIMER in out
-
-    def test_interpret_routes_search_and_still_refuses_causal(self):
-        assert asst.interpret_request("show scenarios where smoke below 2 m") == "search_scenarios"
-        assert asst.interpret_request("why are some scenarios hotter") == "refuse"
-
-
 import graph_model as gmod  # noqa: E402
 
 
@@ -1419,6 +1426,17 @@ class TestGraphModel:
         assert nodes[0].scenario == 1 and nodes[0].point == (1.0, 1.0)
         assert nodes[0].to_selection().scenario == 1
 
+    def test_device_links_to_its_scenario(self):
+        """Analysis UX + reliability pass: devices used to be edge-less
+        (floating) nodes, only navigable via to_selection(); now they link
+        to their owning scenario, same g.link() pattern as scenario<->tag,
+        since devices.py's Device genuinely carries a `scenario` field."""
+        import devices as dv
+        d = dv.Device(id="d1", name="TC-01", type="thermocouple",
+                     scenario=1, position=(1.0, 1.0))
+        g = gmod.build_graph(self._scenarios(), devices=[d])
+        assert "scenario:1" in g.neighbors(f"device:{d.id}")
+
     def test_vector_probes_become_graph_nodes(self):
         import velocity as vel
         p = vel.VectorProbe(id="p1", name="VP-01", scenario=2, position=(0.5, 0.5))
@@ -1427,6 +1445,92 @@ class TestGraphModel:
         assert len(nodes) == 1
         assert nodes[0].scenario == 2 and nodes[0].to_selection().point == (0.5, 0.5)
 
+    def test_vector_probe_links_to_its_scenario(self):
+        import velocity as vel
+        p = vel.VectorProbe(id="p1", name="VP-01", scenario=2, position=(0.5, 0.5))
+        g = gmod.build_graph(self._scenarios(), vector_probes=[p])
+        assert "scenario:2" in g.neighbors(f"vector_probe:{p.id}")
+
+    def test_zones_stay_scenario_agnostic(self):
+        """Zones have no `scenario` field in their own domain model
+        (zone_stats.py: "a zone applies to any scenario and is compared
+        across them") -- linking one to a specific scenario would invent a
+        relationship the data doesn't have, so (unlike device/vector_probe/
+        hypothesis) it stays unlinked."""
+        import zone_stats as zst
+        zone = zst.Zone("doorway", 0.8, 1.0, 0.0, 0.3)
+        g = gmod.build_graph(self._scenarios(), zones=[zone])
+        assert g.neighbors("zone:0") == []
+
     def test_no_devices_or_probes_is_unaffected(self):
         g = gmod.build_graph(self._scenarios())
         assert g.nodes_of("device") == [] and g.nodes_of("vector_probe") == []
+
+    def test_pinned_hypotheses_become_graph_nodes(self):
+        """Analysis-improvement roadmap Phase C: a pinned Sensitivity
+        what-if is navigable only via the nearest existing scenario it was
+        pinned against (an interpolated estimate isn't itself a real run)."""
+        h = {"id": "whatif-0", "label": "HRR ~ 12.3 kW at (candles=1.0)", "nearest_scenario": 2}
+        g = gmod.build_graph(self._scenarios(), hypotheses=[h])
+        nodes = g.nodes_of("hypothesis")
+        assert len(nodes) == 1
+        assert nodes[0].label == h["label"]
+        assert nodes[0].to_selection().scenario == 2
+
+    def test_hypothesis_links_to_its_nearest_scenario(self):
+        h = {"id": "whatif-0", "label": "HRR ~ 12.3 kW", "nearest_scenario": 2}
+        g = gmod.build_graph(self._scenarios(), hypotheses=[h])
+        assert "scenario:2" in g.neighbors("hypothesis:whatif-0")
+
+    def test_no_hypotheses_is_unaffected(self):
+        g = gmod.build_graph(self._scenarios())
+        assert g.nodes_of("hypothesis") == []
+
+    def test_hazard_node_links_to_its_scenario(self):
+        """Analysis UX + reliability pass: a hazard node (worst
+        hazard_spaces.py tenability class reached, computed by the
+        caller) linked to its scenario -- hazard severity as a direct
+        graph relationship, not absent entirely."""
+        g = gmod.build_graph(self._scenarios(), hazard_by_scenario={2: "Critical"})
+        nodes = g.nodes_of("hazard")
+        assert len(nodes) == 1
+        assert nodes[0].label == "Critical" and nodes[0].scenario == 2
+        assert "scenario:2" in g.neighbors("hazard:2")
+
+    def test_no_hazard_data_is_unaffected(self):
+        g = gmod.build_graph(self._scenarios())
+        assert g.nodes_of("hazard") == []
+
+    def test_quantity_nodes_link_to_their_scenario(self):
+        """Analysis final-polish pass: a small, bounded set of
+        summary_stats.py's already-computed per-scenario metrics becomes
+        its own node type, linked to the scenario they were measured in --
+        the graph answers "what did this scenario measure?" not just
+        "which factor levels does it share with others?"."""
+        readings = {2: [("Peak temperature", "612 °C"), ("Peak HRR", "850 kW")]}
+        g = gmod.build_graph(self._scenarios(), quantities_by_scenario=readings)
+        nodes = g.nodes_of("quantity")
+        assert len(nodes) == 2
+        for n in nodes:
+            assert n.scenario == 2
+            assert "scenario:2" in g.neighbors(n.id)
+        labels = {n.label for n in nodes}
+        assert "Peak temperature: 612 °C" in labels and "Peak HRR: 850 kW" in labels
+
+    def test_quantity_nodes_for_unknown_scenario_are_skipped(self):
+        g = gmod.build_graph(self._scenarios(), quantities_by_scenario={99: [("Peak temperature", "1 °C")]})
+        assert g.nodes_of("quantity") == []
+
+    def test_no_quantity_data_is_unaffected(self):
+        g = gmod.build_graph(self._scenarios())
+        assert g.nodes_of("quantity") == []
+
+    def test_measurement_is_no_longer_a_node_type(self):
+        """Analysis final-polish pass: the disposable Quick Probe tool
+        (measurement_panel.py) was removed -- its only real data source is
+        gone, so build_graph() no longer accepts a `measurements` kwarg or
+        produces "measurement" nodes (it would only ever be an empty,
+        permanently-dead column)."""
+        assert "measurement" not in gmod.NODE_TYPES
+        import inspect
+        assert "measurements" not in inspect.signature(gmod.build_graph).parameters

@@ -142,6 +142,68 @@ def test_compute_scenario_summary_populates_growth_alpha(tmp_path):
     assert abs(summary.growth_alpha_kw_s2 - 3.0) / 3.0 < 0.05
 
 
+class ExtentStore(FakeStore):
+    """Adds get_extent (compute_scenario_summary treats its absence as a
+    test double without geometry support -- these new fields need it)."""
+
+    def get_extent(self, case_index, key=DEFAULT_SLICE_KEY):
+        return (0.0, 1.0, 0.0, 1.0)
+
+
+def test_compute_scenario_summary_new_study_responses(tmp_path):
+    """UX consolidation pass (Study-Level interpretation, item 6): four
+    more study-level responses, each a thin wire-up of an existing engine
+    -- verified here by matching what calling that engine directly on the
+    same data produces, not by re-deriving its math (already covered by
+    test_tenability.py / the hazard_spaces-backed dashboard tests)."""
+    import hazard_spaces as hz
+    from tenability import fed_heat_dose
+    folder = tmp_path / "c1_d0_vod0_voc0"
+    folder.mkdir()
+    _write_hrr(folder / "c1_d0_vod0_voc0_hrr.csv", [(0, 0), (1, 10), (3, 20)])
+    entry = ScenarioEntry(0, folder.name, str(folder), 0, 0, 0, 0)
+    data = np.asarray([
+        [[20, 30], [40, 50]],
+        [[80, 101], [60, 70]],
+        [[150, 250], [90, 100]],
+        [[310, 650], [100, 120]],
+    ], dtype=np.float32)
+    store = ExtentStore({0: data})
+
+    summary = compute_scenario_summary(entry, store, fps=2)
+
+    # HRR peaks at t=3 in the fixture's (time, kW) rows above.
+    assert summary.time_to_peak_hrr_s == 3.0
+
+    classes = hz.classify_series(data, hz.band_thresholds("TEMPERATURE"), fps=2)
+    expected_hazard_s = float(np.sum(hz.critical_fraction(classes) > 0) / 2)
+    assert summary.hazard_duration_s == expected_hazard_s
+    assert summary.hazard_duration_s > 0   # frames 1-3 all have a cell >= 100 C
+
+    assert summary.peak_heat_fed == float(np.max(fed_heat_dose(data, fps=2)))
+    assert summary.peak_heat_fed > 0
+
+    assert summary.smoke_descent_rate_m_s is not None
+    assert summary.smoke_descent_rate_m_s >= 0.0   # reported as a magnitude
+
+
+def test_new_study_responses_default_to_none_without_extent(tmp_path):
+    """The pre-existing FakeStore has no get_extent (a test double without
+    geometry support) -- smoke_descent_rate_m_s must degrade to None, not
+    crash, matching layer_min_height_m's existing convention."""
+    folder = tmp_path / "c1_d0_vod0_voc0"
+    folder.mkdir()
+    _write_hrr(folder / "c1_d0_vod0_voc0_hrr.csv", [(0, 0), (1, 10)])
+    entry = ScenarioEntry(0, folder.name, str(folder), 0, 0, 0, 0)
+    store = FakeStore({0: np.full((2, 2, 2), 120.0, dtype=np.float32)})
+    summary = compute_scenario_summary(entry, store, fps=1)
+    assert summary.smoke_descent_rate_m_s is None
+    assert summary.layer_min_height_m is None
+    # These two don't need extent -- still computed.
+    assert summary.peak_heat_fed is not None
+    assert summary.hazard_duration_s is not None
+
+
 def test_v1_cache_payload_is_rejected_and_rebuilt(tmp_path):
     import json
     folder = tmp_path / "c1_d0_vod0_voc0"

@@ -12,6 +12,8 @@ quantity) and cached; the profile recomputes cheaply per (x, frame).
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 from PyQt5 import QtCore, QtWidgets
 
@@ -19,16 +21,101 @@ from widgets import MplCanvas
 from registry import get_quantity, AMBIENT_C
 from insight import InsightList, Insight
 from layer_height import smoke_layer_height_series
+from analysis_panel_base import populate_scenario_combo
 import height_analysis as ha
+
+logger = logging.getLogger(__name__)
+
+
+#: Quantities the layer/plume/ceiling-jet time series below are physically
+#: meaningful for (Live-polish follow-up): smoke_layer_height_series/
+#: plume_height_series/ceiling_jet_series all threshold against AMBIENT_C --
+#: a thermal-layer concept. TEMPERATURE RISE is just T - ambient, so the
+#: same threshold logic still applies (its own registry hazard_levels are
+#: already calibrated in rise-space); DYNAMIC PRESSURE is not a temperature
+#: field at all, and there is no honest way to compute a "smoke layer
+#: height" from Pascals -- that series is skipped for it (see _reload),
+#: not computed with a number that would look plausible but mean nothing.
+#:
+#: SOOT DENSITY (continuous soot-density visualization pass, Step 5) is
+#: deliberately excluded too, for a different reason: a soot-based version
+#: of the same domain-mean/half-integral method WAS implemented and tested
+#: against this dataset's real SOOT DENSITY (all scenarios, y=0 plane), not
+#: just reasoned about -- and rejected. Investigation (see git history for
+#: the exact figures): SOOT DENSITY here is >85-99.8% exact zero even in
+#: the highest-candle scenarios, with what nonzero signal exists
+#: concentrated tightly around the floor-level source (the domain-mean
+#: profile's ceiling-row value was ~0 at every sampled frame across
+#: scenarios, vs. a strong floor-row value right next to the source) --
+#: i.e. a small, localized near-source plume, not the horizontally-
+#: stratified, ceiling-descending layer the "layer height" concept assumes.
+#: The resulting series was ~2x more volatile frame-to-frame than the
+#: temperature-based one and correlated with it at only r~0.15-0.18 (should
+#: track together if both measured the same physical interface) -- evidence
+#: it was tracking near-source blob drift, not a smoke layer. Shipping it
+#: anyway would be a number that looks plausible but measures the wrong
+#: thing. Not implemented; see _SOOT_DENSITY_CAPTION for what the panel
+#: tells the user instead.
+_THERMAL_QUANTITIES = ("TEMPERATURE", "TEMPERATURE RISE")
+
+#: Live-polish follow-up ("better ways to visualize dynamic pressure"):
+#: labeled "flow-forcing profile", never "neutral plane" -- see
+#: _update_caption/_render for why.
+DYNAMIC_PRESSURE_QUANTITY = "DYNAMIC PRESSURE"
+
+_DEFAULT_CAPTION = (
+    "Click the map to choose a vertical line. The profile shows how the "
+    "quantity changes with height there; the curves track the smoke layer, "
+    "plume, and ceiling over time.")
+
+#: Same wording convention as velocity_panel.py's own signed-data caveat
+#: (this dataset's VELOCITY is scalar speed, direction isn't stored) --
+#: reused here rather than re-explaining the same limitation differently.
+_DYNAMIC_PRESSURE_CAPTION = (
+    "Flow-forcing profile, not a neutral-plane finder. This dataset's VELOCITY "
+    "is the scalar speed |v| -- direction isn't stored (the signed U/V/W "
+    "components are gated; see the Velocity panel's own caveat). DYNAMIC "
+    "PRESSURE = 0.5·ρ·|v|² can therefore never go negative, so "
+    "this curve cannot show a flow-reversal zero-crossing -- only where flow "
+    "forcing concentrates vertically. Finding an actual neutral plane needs "
+    "signed velocity data this dataset doesn't have (see docs/msim-preparation.md).")
+
+#: Continuous soot-density visualization pass, Step 5: explains the missing
+#: layer/plume/ceiling curves rather than leaving their absence unexplained
+#: -- see _THERMAL_QUANTITIES' docstring for the investigation this
+#: rejection is based on.
+_SOOT_DENSITY_CAPTION = (
+    "Vertical soot profile, not a smoke-layer height. This dataset's SOOT "
+    "DENSITY is concentrated tightly around the floor-level fire source "
+    "rather than spread into a horizontally-stratified layer that "
+    "descends from the ceiling, so the same layer-height method used for "
+    "TEMPERATURE would measure near-source drift, not a real interface -- "
+    "it was tested against this data and rejected rather than shown. The "
+    "Temperature quantity's own smoke-layer curve remains the "
+    "temperature-derived estimate.")
 
 
 class HeightPanel(QtWidgets.QWidget):
-    def __init__(self, store, manifest: list, quantity_options: list, fps: int, parent=None):
+    def __init__(self, store, manifest: list, quantity_options: list, fps: int,
+                 field_fn=None, extent_fn=None, parent=None):
+        """field_fn/extent_fn: see TimeSeriesPanel's docstring for the same
+        params -- identical reasoning and default-to-store-directly
+        fallback, so existing callers/tests need no changes."""
         super().__init__(parent)
         self._store = store
+        self._field_fn = field_fn or (lambda case_index, key: store.get(case_index, key))
+        self._extent_fn = extent_fn or (lambda case_index, key: store.get_extent(case_index, key))
         self._manifest = sorted(manifest, key=lambda e: e.case_index)
+        # Live-polish follow-up: "derived" (DYNAMIC PRESSURE, TEMPERATURE
+        # RISE) and "volume" (SOOT DENSITY) join slice2d -- a vertical
+        # profile is generic (just value vs. height at a chosen x),
+        # meaningful for any scalar field, not only the kind this panel
+        # originally supported. The thermal-only layer/plume/ceiling series
+        # still gates separately on _THERMAL_QUANTITIES (see _reload),
+        # so smoke/pressure get the profile only, never a fabricated
+        # "smoke layer height" computed from the wrong field.
         self._quantity_options = [(label, key) for label, key in quantity_options
-                                  if get_quantity(key.quantity).kind == "slice2d"]
+                                  if get_quantity(key.quantity).kind in ("slice2d", "derived", "volume")]
         self._fps = max(1, fps)
         self._loaded = False
         self._cache = {}       # (case, quantity) -> dict(series...)
@@ -62,10 +149,7 @@ class HeightPanel(QtWidgets.QWidget):
         header.addWidget(self.export_button)
         layout.addLayout(header)
 
-        self.caption = QtWidgets.QLabel(
-            "Click the map to choose a vertical line. The profile shows how the "
-            "quantity changes with height there; the curves track the smoke layer, "
-            "plume, and ceiling over time.")
+        self.caption = QtWidgets.QLabel(_DEFAULT_CAPTION)
         self.caption.setWordWrap(True)
         self.caption.setProperty("role", "caption")
         layout.addWidget(self.caption)
@@ -117,30 +201,44 @@ class HeightPanel(QtWidgets.QWidget):
             return
         self._loaded = True
         self.scenario_combo.blockSignals(True)
-        for entry in self._manifest:
-            self.scenario_combo.addItem(entry.folder, entry.case_index)
+        populate_scenario_combo(self.scenario_combo, self._manifest)
         self.scenario_combo.blockSignals(False)
         self._reload()
 
     def _reload(self) -> None:
+        # This is the slot wired to quantity_combo.currentIndexChanged --
+        # PyQt5 aborts the whole process (qFatal -> abort(), no catchable
+        # Python exception) on an unhandled error inside a connected slot,
+        # so a bug here can otherwise take down the entire app rather than
+        # just failing this one quantity switch.
+        try:
+            self._reload_impl()
+        except Exception:
+            logger.exception("height panel: failed to switch to quantity %r",
+                              self.quantity_combo.currentText())
+            self.caption.setText(
+                "Could not load this quantity here -- see logs.")
+
+    def _reload_impl(self) -> None:
         if not self._loaded:
             return
         case_index = self.scenario_combo.currentData()
         key = self._key
         if case_index is None or key is None:
             return
-        self._data = np.asarray(self._store.get(case_index, key))
-        self._extent = self._store.get_extent(case_index, key)
+        self._data = np.asarray(self._field_fn(case_index, key))
+        self._extent = self._extent_fn(case_index, key)
         cache_key = (case_index, key.quantity)
         if cache_key not in self._cache:
             q = get_quantity(key.quantity)
             thr = (q.hazard_levels or (AMBIENT_C * 3,))[0]
+            is_thermal = key.quantity in _THERMAL_QUANTITIES
             self._cache[cache_key] = {
                 "layer": (smoke_layer_height_series(self._data, self._extent, AMBIENT_C)
-                          if self._extent is not None else None),
+                          if is_thermal and self._extent is not None else None),
                 "plume": (ha.plume_height_series(self._data, self._extent, thr)
-                          if self._extent is not None else None),
-                "ceiling": ha.ceiling_jet_series(self._data),
+                          if is_thermal and self._extent is not None else None),
+                "ceiling": (ha.ceiling_jet_series(self._data) if is_thermal else None),
                 "threshold": thr, "unit": q.unit, "label": q.label,
             }
         self._series = self._cache[cache_key]
@@ -152,6 +250,13 @@ class HeightPanel(QtWidgets.QWidget):
         self.frame_slider.blockSignals(False)
         if self._x_col is None:
             self._x_col = self._data.shape[2] // 2
+        else:
+            # Different quantities can come from slices of different
+            # orientation/width (e.g. the doorway smoke slice is much
+            # narrower than the side-view slice) -- a column picked under
+            # one shape can be out of bounds for another, so clamp rather
+            # than assuming the previous selection still fits.
+            self._x_col = min(self._x_col, self._data.shape[2] - 1)
         self._render()
         self._build_insights()
 
@@ -183,8 +288,16 @@ class HeightPanel(QtWidgets.QWidget):
         lfig = self.loc_canvas.fig
         lfig.clear()
         self._loc_ax = lfig.add_subplot(111)
-        self._loc_ax.imshow(frame, cmap=display.cmap, vmin=display.vmin,
-                            vmax=display.slider_default, aspect="auto",
+        loc_vmin, loc_vmax = display.vmin, display.slider_default
+        if self._key.quantity == "SOOT DENSITY":
+            # Same data-driven range as the Live Viewer's smoke fix (see
+            # smoke_density.soot_display_range's docstring) -- the fixed
+            # registry default wastes almost the whole ramp on empty space
+            # for this quantity, same root cause, same fix, reused here.
+            import smoke_density as smd
+            loc_vmin, loc_vmax = smd.soot_display_range(self._data)
+        self._loc_ax.imshow(frame, cmap=display.cmap, vmin=loc_vmin,
+                            vmax=loc_vmax, aspect="auto",
                             extent=self._extent if self._extent else None)
         self._loc_ax.set_xticks([]); self._loc_ax.set_yticks([])
         if self._extent is not None and self._x_col is not None:
@@ -195,12 +308,22 @@ class HeightPanel(QtWidgets.QWidget):
         lfig.subplots_adjust(top=0.90, bottom=0.03, left=0.03, right=0.97)
         self.loc_canvas.draw_idle()
 
-        # --- profile + over-time plots ---
+        # --- profile (+ over-time plots, thermal quantities only) ---
+        is_thermal = self._key.quantity in _THERMAL_QUANTITIES
         fig = self.plot_canvas.fig
         fig.clear()
-        prof_ax = fig.add_subplot(211)
+        # Non-thermal quantities (DYNAMIC PRESSURE) have no honest
+        # layer/plume/ceiling series to show (see _THERMAL_QUANTITIES) --
+        # the profile gets the full figure instead of half of one with a
+        # blank/misleading bottom half.
+        prof_ax = fig.add_subplot(111 if not is_thermal else 211)
         zs, vals = ha.vertical_profile(frame, self._extent, self._x_col)
         prof_ax.plot(vals, zs, "-", color="#E8622C")
+        if self._key.quantity == DYNAMIC_PRESSURE_QUANTITY:
+            # Visually reinforces the caption's caveat: this curve is
+            # provably non-negative (0.5*rho*|v|^2), so the zero line is
+            # always its floor, never a crossing -- see _update_caption.
+            prof_ax.axvline(0.0, color="#444", linewidth=0.8)
         for level in display.hazard_levels:
             prof_ax.axvline(level, color="#888", linewidth=0.6, linestyle=":")
         if self._series["layer"] is not None:
@@ -215,34 +338,60 @@ class HeightPanel(QtWidgets.QWidget):
         # air stays near the floor (bottom).
         px = (self._extent[0] + self._x_col / max(frame.shape[1] - 1, 1)
               * (self._extent[1] - self._extent[0])) if self._extent else self._x_col
-        prof_ax.set_title(f"{self._series['label']} vs height  ·  x = {px:.2f} m, "
+        title_label = self._series['label']
+        if self._key.quantity == DYNAMIC_PRESSURE_QUANTITY:
+            # Flow-forcing profile (Live-polish follow-up): explicitly NOT
+            # framed as a neutral-plane finder -- this dataset's VELOCITY is
+            # scalar speed |v|, and DYNAMIC PRESSURE = 0.5*rho*v^2 can never
+            # go negative, so there is no zero-crossing/flow-reversal point
+            # to find here regardless of how it's plotted. What the curve
+            # legitimately shows is where flow forcing concentrates
+            # vertically (typically peaking in the vent opening).
+            title_label = "Flow-forcing profile (dynamic pressure)"
+        prof_ax.set_title(f"{title_label}  ·  x = {px:.2f} m, "
                           f"t = {idx / self._fps:.1f} s", fontsize=9, fontweight="bold")
         if len(zs):
             prof_ax.set_ylim(zs.min(), zs.max())
         prof_ax.tick_params(labelsize=7)
 
-        time_ax = fig.add_subplot(212)
-        times = np.arange(self._data.shape[0]) / self._fps
-        if self._series["layer"] is not None:
-            time_ax.plot(times, self._series["layer"], color="#2563EB", label="smoke layer (m)")
-        if self._series["plume"] is not None:
-            time_ax.plot(times, self._series["plume"], color="#E8622C", label="plume height (m)")
-        time_ax.set_xlabel("time (s)", fontsize=8)
-        time_ax.set_ylabel("height (m)", fontsize=8)
-        time_ax.set_title("Layer, plume & ceiling over time", fontsize=8)
-        time_ax.tick_params(labelsize=7)
-        # ceiling-jet temperature on a twin axis (linked multi-quantity view)
-        jet_ax = time_ax.twinx()
-        jet_ax.plot(times, self._series["ceiling"], color="#888", linewidth=0.9,
-                    label="ceiling temp")
-        jet_ax.set_ylabel(f"ceiling {unit}", fontsize=8, color="#888")
-        jet_ax.tick_params(labelsize=7, colors="#888")
-        time_ax.axvline(idx / self._fps, color="#00E5FF", linewidth=1.0)  # time cursor
-        lines = [l for l in (time_ax.get_lines() + jet_ax.get_lines())
-                 if not l.get_label().startswith("_")]
-        time_ax.legend(lines, [l.get_label() for l in lines], fontsize=6, loc="upper left")
-        fig.subplots_adjust(top=0.92, bottom=0.10, left=0.12, right=0.88, hspace=0.85)
+        if is_thermal:
+            time_ax = fig.add_subplot(212)
+            times = np.arange(self._data.shape[0]) / self._fps
+            if self._series["layer"] is not None:
+                time_ax.plot(times, self._series["layer"], color="#2563EB", label="smoke layer (m)")
+            if self._series["plume"] is not None:
+                time_ax.plot(times, self._series["plume"], color="#E8622C", label="plume height (m)")
+            time_ax.set_xlabel("time (s)", fontsize=8)
+            time_ax.set_ylabel("height (m)", fontsize=8)
+            time_ax.set_title("Layer, plume & ceiling over time", fontsize=8)
+            time_ax.tick_params(labelsize=7)
+            # ceiling-jet temperature on a twin axis (linked multi-quantity view)
+            jet_ax = time_ax.twinx()
+            jet_ax.plot(times, self._series["ceiling"], color="#888", linewidth=0.9,
+                        label="ceiling temp")
+            jet_ax.set_ylabel(f"ceiling {unit}", fontsize=8, color="#888")
+            jet_ax.tick_params(labelsize=7, colors="#888")
+            time_ax.axvline(idx / self._fps, color="#00E5FF", linewidth=1.0)  # time cursor
+            lines = [l for l in (time_ax.get_lines() + jet_ax.get_lines())
+                     if not l.get_label().startswith("_")]
+            time_ax.legend(lines, [l.get_label() for l in lines], fontsize=6, loc="upper left")
+            fig.subplots_adjust(top=0.92, bottom=0.10, left=0.12, right=0.88, hspace=0.85)
+        else:
+            fig.subplots_adjust(top=0.90, bottom=0.12, left=0.14, right=0.95)
         self.plot_canvas.draw_idle()
+        self._update_caption()
+
+    def _update_caption(self) -> None:
+        """Swaps in the dynamic-pressure- or soot-density-specific caveat
+        while that quantity is selected, same "explain the limitation
+        plainly" pattern velocity_panel.py's own caption already uses --
+        reverts to the default caption for every other quantity."""
+        if self._key is not None and self._key.quantity == DYNAMIC_PRESSURE_QUANTITY:
+            self.caption.setText(_DYNAMIC_PRESSURE_CAPTION)
+        elif self._key is not None and self._key.quantity == "SOOT DENSITY":
+            self.caption.setText(_SOOT_DENSITY_CAPTION)
+        else:
+            self.caption.setText(_DEFAULT_CAPTION)
 
     def _build_insights(self) -> None:
         if self._series is None:
@@ -262,8 +411,9 @@ class HeightPanel(QtWidgets.QWidget):
                                category="query", quantity=self._key.quantity,
                                time_s=i / self._fps, value=float(s["layer"][i]),
                                basis="min of the smoke-layer-height series"))
-        ci = int(np.argmax(s["ceiling"]))
-        out.append(Insight(f"Ceiling {s['label'].lower()} peaks at {s['ceiling'][ci]:.0f} {unit}.",
-                           category="query", quantity=self._key.quantity, time_s=ci / self._fps,
-                           value=float(s["ceiling"][ci]), basis="max of the near-ceiling band"))
+        if s["ceiling"] is not None:
+            ci = int(np.argmax(s["ceiling"]))
+            out.append(Insight(f"Ceiling {s['label'].lower()} peaks at {s['ceiling'][ci]:.0f} {unit}.",
+                               category="query", quantity=self._key.quantity, time_s=ci / self._fps,
+                               value=float(s["ceiling"][ci]), basis="max of the near-ceiling band"))
         self.insights.set_insights(out)

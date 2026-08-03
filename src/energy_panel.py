@@ -16,6 +16,9 @@ from PyQt5 import QtWidgets
 
 from summary_stats import fit_growth_alpha, read_hrr_table
 from widgets import MplCanvas
+from analysis_panel_base import populate_scenario_combo
+
+_trapz = getattr(np, "trapezoid", None) or np.trapz
 
 # Budget components plotted against HRR, in FDS's own column names.
 BUDGET_COLUMNS = ("Q_RADI", "Q_CONV", "Q_COND", "Q_TOTAL")
@@ -36,7 +39,7 @@ def energy_metrics(table: dict) -> dict:
     if times is None or hrr is None or times.size < 2:
         return {"total_energy_kj": None, "radiative_fraction": None,
                 "budget_gap_fraction": None, "growth_alpha_kw_s2": None}
-    total = float(np.trapz(hrr, times))
+    total = float(_trapz(hrr, times))
     metrics = {
         "total_energy_kj": total,
         "radiative_fraction": None,
@@ -46,11 +49,11 @@ def energy_metrics(table: dict) -> dict:
     if total > 0.0:
         q_radi = table.get("Q_RADI")
         if q_radi is not None:
-            metrics["radiative_fraction"] = float(np.trapz(np.abs(q_radi), times)) / total
+            metrics["radiative_fraction"] = float(_trapz(np.abs(q_radi), times)) / total
         q_total = table.get("Q_TOTAL")
         if q_total is not None:
             metrics["budget_gap_fraction"] = abs(
-                total - float(np.trapz(np.abs(q_total), times))) / total
+                total - float(_trapz(np.abs(q_total), times))) / total
     return metrics
 
 
@@ -96,8 +99,7 @@ class EnergyBudgetPanel(QtWidgets.QWidget):
             return
         self._loaded = True
         self.scenario_combo.blockSignals(True)
-        for entry in self._manifest:
-            self.scenario_combo.addItem(entry.folder, entry.case_index)
+        populate_scenario_combo(self.scenario_combo, self._manifest)
         self.scenario_combo.blockSignals(False)
         self._plot_scenario(0)
 

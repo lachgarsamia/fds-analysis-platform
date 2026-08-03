@@ -49,3 +49,31 @@ def source_quantity(name: str):
     """The base quantity a derived one is computed from, or None."""
     entry = DERIVED.get(name)
     return entry[0] if entry else None
+
+
+# Floor under any computed display ceiling below, mirroring
+# smoke_density.MIN_CEILING_MG_M3's reasoning: a scenario with a
+# near-zero field must not divide the color range down to nothing.
+MIN_DYNAMIC_PRESSURE_CEILING_PA = 0.05
+
+
+def display_ceiling(data, percentile: float = 99.0, floor: float = MIN_DYNAMIC_PRESSURE_CEILING_PA) -> float:
+    """A data-driven display-scale ceiling for one scenario's whole run of
+    a derived quantity (all frames) -- percentile (not the bare max) so one
+    outlier cell/frame doesn't set the scale, same "robust ceiling"
+    reasoning smoke_density.soot_ceiling already uses for SOOT DENSITY.
+
+    Investigated directly (Live-polish follow-up, "only see a blue
+    heatmap" report on DYNAMIC PRESSURE): this quantity's absolute scale
+    varies roughly 15x across this dataset depending on ventilation mode
+    (~0.6-0.7 Pa for natural ventilation vs. ~8-9.4 Pa for HVAC-forced
+    scenarios) -- a single fixed registry default can't fit both regimes,
+    so it under-fills the color range for most scenarios (natural
+    ventilation is the common case). Computed once per (scenario, key) by
+    the caller and reused, same "stable across playback" convention as
+    soot_ceiling."""
+    finite = np.asarray(data, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return floor
+    return max(float(np.percentile(finite, percentile)), floor)

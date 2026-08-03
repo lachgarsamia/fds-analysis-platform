@@ -6,6 +6,7 @@ array math, see test_views.py's TestSliceViewCinematicMode for the
 SliceView/scatter-artist integration."""
 
 import numpy as np
+import pytest
 
 from cinema.bloom import apply_bloom
 from cinema.interp import lerp_frames
@@ -144,6 +145,45 @@ class TestSmokeSimulator:
             density = sim.step(frame, velocity_frame=velocity)
         assert density.sum() > 0.0
         assert np.isfinite(density).all()
+
+    def test_tier3_real_soot_overrides_tiers_1_and_2(self):
+        """Continuous soot-density visualization pass: when soot_frame is
+        given, the buffer blends toward the *real* field, not the
+        temperature-derived Tier 1/2 simulation -- confirmed by a case
+        where they'd disagree: a cold frame (no Tier 1/2 production at
+        all) but a real soot field that says otherwise."""
+        shape = (10, 10)
+        sim = SmokeSimulator(shape, ambient_c=20.0)
+        cold_frame = np.full(shape, 20.0, dtype=np.float32)  # below SOURCE_THRESHOLD_C -- no Tier 1/2 production
+        soot = np.zeros(shape, dtype=np.float32)
+        soot[5, 5] = 5000.0
+        for _ in range(5):
+            density = sim.step(cold_frame, soot_frame=soot, soot_ceiling=3000.0)
+        assert density[5, 5] > 0.0, "real soot data must drive density even with a cold frame"
+        assert density[0, 0] == 0.0, "no soot -> no density, no fake spread"
+
+    def test_tier3_never_advects_the_real_field(self):
+        """FDS's own physics already computed where soot moved -- Tier 3
+        must not additionally advect it (that would distort the real
+        spatial pattern), unlike Tiers 1/2 which simulate transport."""
+        shape = (10, 10)
+        sim = SmokeSimulator(shape, ambient_c=20.0)
+        hot_frame = np.full(shape, 300.0, dtype=np.float32)  # would drive Tier 1/2 buoyant drift if used
+        soot = np.zeros(shape, dtype=np.float32)
+        soot[8, 5] = 5000.0  # near the bottom row -- Tier 1's upward drift would move this toward row 0
+        for _ in range(20):
+            density = sim.step(hot_frame, soot_frame=soot, soot_ceiling=3000.0)
+        assert density[8, 5] > 0.0, "density should converge at the real source location"
+        assert density[0, 5] == 0.0, "must not have drifted upward the way Tier 1 would"
+
+    def test_tier3_converges_toward_the_normalized_target(self):
+        sim = SmokeSimulator((3, 3), ambient_c=20.0)
+        soot = np.zeros((3, 3), dtype=np.float32)
+        soot[1, 1] = 3000.0  # exactly at the ceiling -> normalized target = 1.0
+        density = None
+        for _ in range(60):
+            density = sim.step(np.full((3, 3), 20.0), soot_frame=soot, soot_ceiling=3000.0)
+        assert density[1, 1] == pytest.approx(1.0, abs=0.01)
 
 
 class TestSmokeCompositing:

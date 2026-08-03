@@ -321,6 +321,25 @@ class Device:
                    offset=int(d.get("offset", DEFAULT_OFFSET)))
 
 
+def compare_across_scenarios(device: Device, provider, manifest: list, fps: int) -> list:
+    """Evaluate `device` (same type/position/parameters/plane) at every
+    scenario in `manifest`, holding everything but scenario fixed -- the
+    devices analogue of Zone Statistics' cross-scenario zone_bundle sweep
+    (place once, compare everywhere). Returns a list of (entry, computed
+    Device | None) pairs; None marks a scenario where this device's plane
+    is gated on that dataset (never fabricated)."""
+    from dataclasses import replace
+    out = []
+    for entry in manifest:
+        tmp = replace(device, scenario=entry.case_index, results=None)
+        try:
+            tmp.compute(provider, fps)
+            out.append((entry, tmp))
+        except Exception:  # noqa: BLE001 - a gated/missing plane on this scenario
+            out.append((entry, None))
+    return out
+
+
 def export_csv(dev: Device, path: str) -> None:
     """time_s, temperature_C, device_state -- plus fed_heat/fed_full for a
     thermocouple (V6-M6; fed_full omitted when CO is gated) -- plus a

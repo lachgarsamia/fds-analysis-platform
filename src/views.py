@@ -7,6 +7,7 @@ matplotlib internals directly. Single-view mode (MainWindow) is just a
 1-cell user of this same interface -- not a special case.
 """
 
+import re
 from typing import Protocol
 
 import matplotlib as mpl
@@ -22,6 +23,7 @@ from cinema.pipeline import EffectsPipeline
 from cinema.interp import lerp_frames
 from cinema.particles import EmberParticles
 from cinema.velocity_arrows import sample_points, compute_deltas
+import smoke_density as smd
 
 # Sub-frame interpolation (FireLab roadmap Phase 2.1d): visual refresh
 # rate while cinematic mode is on, decoupled from the data's native
@@ -49,6 +51,35 @@ _VENT_STATE_COLORS = {"open": "#22C55E", "closed": "#94A3B8", "HVAC": "#F59E0B"}
 _ROOM_WALL_LW = 1.4
 _ROOM_DOOR_LW = 2.6
 _ROOM_VENT_LW = 4.0
+
+# Virtual device marker shapes, one per device kind (Analysis UX +
+# reliability pass): heat_detector (instant threshold) and sprinkler (RTI
+# thermal-lag ODE) are independent devices with independently different,
+# both-correct response models -- a sprinkler is *supposed* to lag a heat
+# detector at the same point. Previously every kind drew as the same
+# diamond, distinguished only by active/idle fill color, so two correctly-
+# disagreeing devices were visually indistinguishable from "the alarm
+# system is broken." Duplicated here (not imported from devices.py) for
+# the same view-layer/data-layer boundary EnsemblePickerDialog's
+# FACTOR_LABELS already keeps -- just the 3 literal kind strings devices.py
+# uses, not a real dependency.
+_DEVICE_MARKER_SHAPES = {"thermocouple": "o", "heat_detector": "^", "sprinkler": "s"}
+
+# Legend labels for the same 3 kinds (Analysis final-polish pass): the
+# marker-shape distinction above was previously only explained inside the
+# separate Devices analysis tab (device_panel.py's model_note caption) --
+# nothing on the Live Viewer itself, where the markers are actually
+# watched during playback, said what a triangle vs. a square means. A
+# small always-available legend closes that gap without touching
+# devices.py's activation math (already correct: heat detectors trip an
+# instant temperature threshold, sprinklers lag it via a genuine RTI
+# thermal-element ODE -- see devices.py -- so the two disagreeing is
+# expected physics, not a fault, and is never forced to agree here).
+_DEVICE_KIND_LABELS = {
+    "thermocouple": "Thermocouple",
+    "heat_detector": "Heat detector (instant threshold)",
+    "sprinkler": "Sprinkler (RTI thermal lag)",
+}
 
 
 class PlotView(Protocol):
@@ -113,6 +144,20 @@ class SliceView:
         self._velocity_overlay_enabled = False
         self._velocity_contour_artist = None
         self._velocity_frame = None
+        # Real soot-density smoke overlay (continuous soot-density
+        # visualization pass): a second, always-present-but-empty imshow
+        # over the temperature heatmap, same "always present, empty by
+        # default" convention as device_scatters/ember_scatter below --
+        # updated via set_data()/set_alpha() (not remove+recreate like the
+        # isotherm/velocity contour artists), so it blit-updates cheaply.
+        # Continuous opacity, driven by the real SOOT DENSITY field
+        # (smoke_density.py) -- never a threshold. Meaningful only for a
+        # "slice" cell showing TEMPERATURE at a plane SOOT DENSITY is
+        # actually registered for (see main_window.py's
+        # _soot_overlay_frame_for_cell); off by default.
+        self.soot_overlay = None
+        self.soot_colorbar = None
+        self._soot_overlay_enabled = False
         # Cinematic fire rendering (FireLab roadmap Phase 2, task 1):
         # off by default, so every existing "science mode" call site
         # (research views, tests) is pixel-unaffected.
@@ -129,6 +174,8 @@ class SliceView:
         self._interp_phase = 1.0
         self._interp_bloom_intensity = 1.0
         self._interp_velocity_frame = None
+        self._interp_soot_frame = None
+        self._interp_soot_ceiling = None
         # Ember particles (FireLab roadmap Phase 2.1g): a second,
         # independently blit-tracked artist -- see widgets.py's
         # multi-artist blit_update() extension.
@@ -141,10 +188,15 @@ class SliceView:
         self._arrow_rows = None
         self._arrow_cols = None
         # Virtual device markers (V6-M2): same blit-tracked-artist treatment
-        # as embers/arrows -- a fixed-position, per-frame-recolored scatter,
+        # as embers/arrows -- fixed-position, per-frame-recolored scatters,
         # never recreated. No color-mapping (literal facecolors only), so
-        # (unlike the heatmap) it needs no cmap/clim bookkeeping.
-        self.device_scatter = None
+        # (unlike the heatmap) they need no cmap/clim bookkeeping. One
+        # scatter per device kind (Analysis UX + reliability pass) so kind
+        # is visible as marker shape, not just active/idle color -- see
+        # _DEVICE_MARKER_SHAPES.
+        self.device_scatters: dict = {}
+        self._device_legend = None
+        self._device_markers_present = False
         # True velocity vectors (V6-M3): a *different* artist from the
         # cinema-mode `velocity_quiver` above (that one is a heuristic
         # direction guess from |v| + a temperature gradient, explicitly not
@@ -192,6 +244,19 @@ class SliceView:
         if extent is not None:
             imshow_kwargs["extent"] = extent
         self.heatmap = self.ax.imshow(first_frame, **imshow_kwargs)
+        # Real soot-density smoke overlay (continuous soot-density
+        # visualization pass): a second image over the heatmap, initially
+        # fully transparent (alpha=0 everywhere) -- same shape/extent as
+        # the primary heatmap so it's pixel-aligned by construction. Uses
+        # SOOT DENSITY's own registry colormap (gray_r), not a new color
+        # convention. zorder above the heatmap, below devices/room/hover
+        # so those stay legible through the smoke.
+        soot_q = get_quantity("SOOT DENSITY")
+        self.soot_overlay = self.ax.imshow(
+            np.zeros_like(first_frame, dtype=np.float32), cmap=soot_q.cmap,
+            vmin=0.0, vmax=smd.MIN_CEILING_MG_M3,
+            alpha=np.zeros_like(first_frame, dtype=np.float32),
+            aspect="auto", zorder=2, **({"extent": extent} if extent is not None else {}))
         # Ember particles (Phase 2.1g): always present, empty/invisible
         # outside cinematic mode -- zorder puts it above the heatmap.
         # Deliberately no c=... at construction: passing a color arg (even
@@ -201,10 +266,29 @@ class SliceView:
         # silently overwritten back to empty on the very next blit.
         self.ember_scatter = self.ax.scatter([], [], s=[], zorder=5)
         # Virtual device markers (V6-M2): scientific style -- a small fixed
-        # diamond per placed device, above embers/quiver. No c=... at
-        # construction for the same scalar-mappable reason as ember_scatter.
-        self.device_scatter = self.ax.scatter([], [], s=70, marker="D", zorder=7,
-                                              edgecolors="#14171F", linewidths=1.0)
+        # marker per placed device, above embers/quiver, shaped by device
+        # kind (Analysis UX + reliability pass -- see _DEVICE_MARKER_SHAPES)
+        # so a heat detector and a sprinkler are visually distinguishable at
+        # a glance, not just by their (independently, correctly differing)
+        # active/idle fill color. No c=... at construction for the same
+        # scalar-mappable reason as ember_scatter.
+        self.device_scatters = {
+            kind: self.ax.scatter([], [], s=70, marker=shape, zorder=7,
+                                  edgecolors="#14171F", linewidths=1.0)
+            for kind, shape in _DEVICE_MARKER_SHAPES.items()
+        }
+        # Device-kind legend (Analysis final-polish pass): a static overlay
+        # artist added once, same convention as the colorbar above -- not
+        # in _animated_artists(), so it costs nothing per-frame. Built from
+        # the scatters themselves so its shapes always match what's
+        # actually drawn. Hidden until set_device_markers() sees at least
+        # one placed device (nothing to explain on a scenario with none).
+        self._device_legend = self.ax.legend(
+            handles=[self.device_scatters[k] for k in _DEVICE_MARKER_SHAPES],
+            labels=[_DEVICE_KIND_LABELS[k] for k in _DEVICE_MARKER_SHAPES],
+            loc="lower left", fontsize=6, framealpha=0.55, facecolor="#14171F",
+            labelcolor="white", borderpad=0.4, handletextpad=0.4)
+        self._device_legend.set_visible(False)
         # True velocity streamlines (V6-M3): empty until a panel supplies
         # segments; the quiver itself is created lazily on first real data
         # (see set_vector_field) since its arrow positions are fixed for a
@@ -234,7 +318,8 @@ class SliceView:
         self.canvas.capture_background()
 
     def show_frame(self, frame: np.ndarray, velocity_frame: np.ndarray = None,
-                    next_frame: np.ndarray = None, bloom_intensity: float = 1.0) -> None:
+                    next_frame: np.ndarray = None, bloom_intensity: float = 1.0,
+                    soot_frame: np.ndarray = None, soot_ceiling: float = None) -> None:
         """velocity_frame (GUI modernization pass, item 6): this cell's
         VELOCITY data at the same timestep -- meaningful when the velocity
         overlay is on (drives the contour overlay) and/or cinematic mode
@@ -251,11 +336,26 @@ class SliceView:
         interpolation is simply skipped that tick. bloom_intensity scales
         the pipeline's bloom/flicker strength (typically the scenario's
         current HRR normalized to its own peak); ignored outside cinematic
-        mode."""
+        mode.
+
+        soot_frame/soot_ceiling (continuous soot-density visualization
+        pass): this cell's real SOOT DENSITY data at the same timestep,
+        and the normalization ceiling MainWindow computed once for this
+        (scenario, plane). Drives two *different* things depending on
+        mode, deliberately kept distinct (never both at once, to avoid
+        double-rendering smoke): outside cinematic mode, the separate
+        scientific soot_overlay artist (see set_soot_overlay_enabled) --
+        the actual SOOT DENSITY field, continuously mapped to opacity.
+        Inside cinematic mode, the fire pipeline's own smoke layer (see
+        cinema/smoke.py) -- a visually-enhanced (smoothed) rendering of
+        that same real field, not a separate/fabricated effect. Both None
+        outside either case, the default for every pre-existing caller."""
         self._last_frame = frame
         if self._cinematic_enabled:
             self._interp_bloom_intensity = bloom_intensity
             self._interp_velocity_frame = velocity_frame
+            self._interp_soot_frame = soot_frame
+            self._interp_soot_ceiling = soot_ceiling
             if next_frame is not None:
                 self._interp_from = frame
                 self._interp_to = next_frame
@@ -267,11 +367,19 @@ class SliceView:
                 self._interp_from = None
                 self._interp_to = None
             display_data = self._cinema_pipeline.render(
-                frame, hrr_intensity=bloom_intensity, velocity_frame=velocity_frame)
+                frame, hrr_intensity=bloom_intensity, velocity_frame=velocity_frame,
+                soot_frame=soot_frame, soot_ceiling=soot_ceiling)
             self._update_ember_scatter(frame, velocity_frame)
             self._update_velocity_arrows(frame, velocity_frame)
+            # The cinema pipeline's own smoke layer (above) is the smoke
+            # representation while cinematic mode is on -- the separate
+            # scientific overlay artist stays cleared so the two never
+            # composite on top of each other.
+            self._clear_soot_overlay()
         else:
             display_data = frame
+            if soot_frame is not None and soot_ceiling is not None:
+                self._update_soot_overlay(soot_frame, soot_ceiling)
         self.heatmap.set_data(display_data)
         self._velocity_frame = velocity_frame
         overlay_active = (
@@ -293,7 +401,8 @@ class SliceView:
             self.canvas.blit_update(self._animated_artists())
 
     def _animated_artists(self) -> list:
-        artists = [self.heatmap, self.ember_scatter, self.device_scatter,
+        artists = [self.heatmap, self.soot_overlay, self.ember_scatter,
+                  *self.device_scatters.values(),
                   self.streamline_collection, self.hover_highlight,
                   self.room_walls, self.room_door, self.room_vents]
         if self.velocity_quiver is not None:
@@ -335,19 +444,39 @@ class SliceView:
         self.canvas.set_dpi_scale(scale)
 
     def set_device_markers(self, markers: list) -> None:
-        """markers: [(x, z, color), ...] physical positions (V6-M2 Virtual
-        Device Network) -- MainWindow recomputes this cheaply every tick
-        from each device's already-cached results (state_at()), never a
-        recompute here. No-op (markers cleared) when this cell has no
-        physical extent to place a point on."""
-        if not markers or self._extent is None:
-            self.device_scatter.set_offsets(np.empty((0, 2)))
-            self.device_scatter.set_facecolor([])
-            return
-        offsets = [(x, z) for x, z, _color in markers]
-        colors = [color for _x, _z, color in markers]
-        self.device_scatter.set_offsets(offsets)
-        self.device_scatter.set_facecolor(colors)
+        """markers: [(x, z, color, kind), ...] physical positions (V6-M2
+        Virtual Device Network) -- MainWindow recomputes this cheaply every
+        tick from each device's already-cached results (state_at()), never
+        a recompute here. Bucketed by kind into device_scatters (Analysis
+        UX + reliability pass) so each kind keeps its own marker shape;
+        unrecognized kinds are silently skipped (never guessed). No-op
+        (every kind's markers cleared) when this cell has no physical
+        extent to place a point on."""
+        by_kind: dict = {kind: ([], []) for kind in self.device_scatters}
+        if markers and self._extent is not None:
+            for x, z, color, kind in markers:
+                if kind in by_kind:
+                    offsets, colors = by_kind[kind]
+                    offsets.append((x, z))
+                    colors.append(color)
+        for kind, scatter in self.device_scatters.items():
+            offsets, colors = by_kind[kind]
+            scatter.set_offsets(offsets if offsets else np.empty((0, 2)))
+            scatter.set_facecolor(colors)
+        # Device-kind legend: only visible once something is actually
+        # placed (nothing to explain on a scenario with no devices), and
+        # only redrawn on the rare present/absent transition -- this is
+        # called every tick, but the legend isn't in _animated_artists()
+        # (a static overlay, like the colorbar), so a plain set_visible()
+        # wouldn't survive the next blit_update() without an explicit full
+        # draw + background recapture, same as the isotherm/overlay toggle.
+        present = any(offsets for offsets, _ in by_kind.values())
+        if present != self._device_markers_present:
+            self._device_markers_present = present
+            if self._device_legend is not None:
+                self._device_legend.set_visible(present)
+                self.canvas.draw_idle()
+                self.canvas.capture_background()
 
     def set_vector_field(self, quiver: tuple = None, streamlines: list = None) -> None:
         """V6-M3: `quiver` is (xs, zs, us, ws) or None to clear; `streamlines`
@@ -567,7 +696,8 @@ class SliceView:
         self._interp_phase = min(1.0, self._interp_phase + _INTERP_INTERVAL_MS / _NOMINAL_TICK_MS)
         blended = lerp_frames(self._interp_from, self._interp_to, self._interp_phase)
         rgba = self._cinema_pipeline.render(
-            blended, hrr_intensity=self._interp_bloom_intensity, velocity_frame=self._interp_velocity_frame)
+            blended, hrr_intensity=self._interp_bloom_intensity, velocity_frame=self._interp_velocity_frame,
+            soot_frame=self._interp_soot_frame, soot_ceiling=self._interp_soot_ceiling)
         self._update_ember_scatter(blended, self._interp_velocity_frame)
         self._update_velocity_arrows(blended, self._interp_velocity_frame)
         self.heatmap.set_data(rgba)
@@ -663,6 +793,55 @@ class SliceView:
             self._velocity_contour_artist = self.ax.contour(xs, zs, frame, levels=levels, **style)
         else:
             self._velocity_contour_artist = self.ax.contour(frame, levels=levels, **style)
+
+    # ------------------------ real soot-density smoke overlay ("smoke" pass)
+    def set_soot_overlay_enabled(self, enabled: bool) -> None:
+        if enabled == self._soot_overlay_enabled:
+            return
+        self._soot_overlay_enabled = enabled
+        if enabled:
+            if self.soot_colorbar is None and self.soot_overlay is not None:
+                # Lazily created only while the overlay is actually on, so
+                # a plain temperature view's layout is byte-for-byte
+                # unchanged when the overlay is off (never reserves this
+                # space by default).
+                self.soot_colorbar = self.canvas.fig.colorbar(
+                    self.soot_overlay, fraction=0.04, pad=0.10)
+                self.soot_colorbar.set_label(
+                    f"{get_quantity('SOOT DENSITY').label} ({get_quantity('SOOT DENSITY').unit})")
+        else:
+            self._clear_soot_overlay()
+            if self.soot_colorbar is not None:
+                self.soot_colorbar.remove()
+                self.soot_colorbar = None
+        self.canvas.capture_background()
+        # else (enabling): left to the next show_frame(..., soot_frame=...)
+        # call to actually draw it -- same "no current frame to redraw
+        # from yet" reasoning as the velocity overlay above.
+
+    @property
+    def soot_overlay_enabled(self) -> bool:
+        return self._soot_overlay_enabled
+
+    def _clear_soot_overlay(self) -> None:
+        if self.soot_overlay is None:
+            return
+        self.soot_overlay.set_alpha(np.zeros(self.soot_overlay.get_array().shape, dtype=np.float32))
+
+    def _update_soot_overlay(self, soot_frame: np.ndarray, soot_ceiling: float) -> None:
+        """One real SOOT DENSITY frame + its (externally computed, stable-
+        across-playback) normalization ceiling -- a continuous scalar->
+        opacity mapping (smoke_density.py), never a threshold. Ceiling is
+        supplied rather than computed here (same "MainWindow computes the
+        scale, the view just displays it" convention already used for the
+        primary heatmap's own vmin/vmax) so it's computed once per
+        (scenario, plane) by the caller, not re-derived from the whole
+        array on every tick."""
+        if self.soot_overlay is None or not self._soot_overlay_enabled or soot_frame is None:
+            return
+        self.soot_overlay.set_clim(0.0, soot_ceiling)
+        self.soot_overlay.set_data(soot_frame)
+        self.soot_overlay.set_alpha(smd.soot_alpha(soot_frame, soot_ceiling))
 
     # ------------------------------------------------------ probe (M2.6.1)
     def enable_probe(self, callback) -> None:
@@ -833,6 +1012,19 @@ class DifferenceView:
     def velocity_overlay_enabled(self) -> bool:
         return self._inner.velocity_overlay_enabled
 
+    # Real soot-density smoke overlay: same "never actually applies to
+    # this cell type, but delegate straight through rather than crash on
+    # a missing attribute" reasoning as the velocity overlay above -- see
+    # main_window.py's _apply_smoke_overlay_state, which (like the
+    # velocity overlay) only ever turns this on for a "slice" cell showing
+    # TEMPERATURE.
+    def set_soot_overlay_enabled(self, enabled: bool) -> None:
+        self._inner.set_soot_overlay_enabled(enabled)
+
+    @property
+    def soot_overlay_enabled(self) -> bool:
+        return self._inner.soot_overlay_enabled
+
     def enable_probe(self, callback) -> None:
         self._inner.enable_probe(callback)
 
@@ -972,6 +1164,19 @@ class EnsembleView:
     def velocity_overlay_enabled(self) -> bool:
         return self._inner.velocity_overlay_enabled
 
+    # Real soot-density smoke overlay: same "never actually applies to
+    # this cell type, but delegate straight through rather than crash on
+    # a missing attribute" reasoning as the velocity overlay above -- see
+    # main_window.py's _apply_smoke_overlay_state, which (like the
+    # velocity overlay) only ever turns this on for a "slice" cell showing
+    # TEMPERATURE.
+    def set_soot_overlay_enabled(self, enabled: bool) -> None:
+        self._inner.set_soot_overlay_enabled(enabled)
+
+    @property
+    def soot_overlay_enabled(self) -> bool:
+        return self._inner.soot_overlay_enabled
+
     def enable_probe(self, callback) -> None:
         self._inner.enable_probe(callback)
 
@@ -1039,6 +1244,13 @@ class EnsemblePickerDialog(QtWidgets.QDialog):
         'voc': {0: 'Vent 2 open', 1: 'Vent 2 closed'},
     }
     FACTORS = ('candles', 'door', 'vod', 'voc')
+    # Same pattern manifest.py's own scan_scenarios() matches -- a generic
+    # (non-factorial) study's folders never match it, and its 4 factor
+    # fields are meaningless placeholders (always zeroed), so decoding them
+    # would show the same misleading label for every scenario. Duplicated
+    # here rather than imported (see class docstring: this dialog
+    # deliberately avoids a view-layer -> data-layer dependency).
+    _FACTORIAL_FOLDER_RE = re.compile(r'^c\d+_d\d+_vod\d+_voc\d+$')
 
     def __init__(self, manifest_entries: list, initial_selection: list, parent=None):
         super().__init__(parent)
@@ -1066,7 +1278,8 @@ class EnsemblePickerDialog(QtWidgets.QDialog):
         self.list_widget.setAccessibleName("Ensemble scenario checklist")
         initial = set(initial_selection)
         for entry in self._entries:
-            item = QtWidgets.QListWidgetItem(entry.folder)
+            item = QtWidgets.QListWidgetItem(self._label_for(entry))
+            item.setToolTip(entry.folder)
             item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
             item.setCheckState(QtCore.Qt.Checked if entry.case_index in initial else QtCore.Qt.Unchecked)
             item.setData(QtCore.Qt.UserRole, entry.case_index)
@@ -1087,6 +1300,12 @@ class EnsemblePickerDialog(QtWidgets.QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _label_for(self, entry) -> str:
+        if not self._FACTORIAL_FOLDER_RE.match(entry.folder):
+            return entry.folder
+        return " · ".join(self.FACTOR_LABELS[f].get(getattr(entry, f), f"{f}={getattr(entry, f)}")
+                          for f in self.FACTORS)
 
     def _apply_filter(self, factor: str, value):
         for i in range(self.list_widget.count()):
@@ -1148,6 +1367,7 @@ class GridCell(QtWidgets.QWidget):
 
         self.cell_type = "slice"
         self.view = SliceView(self)
+        self._install_activation_filter()
         self.case_index = self._scenario_options[0][1] if self._scenario_options else 0
         self.case_index_a = self.case_index
         self.case_index_b = (self._scenario_options[1][1] if len(self._scenario_options) > 1
@@ -1192,6 +1412,23 @@ class GridCell(QtWidgets.QWidget):
     def mousePressEvent(self, event):
         self.activated.emit(self)
         super().mousePressEvent(event)
+
+    def _install_activation_filter(self) -> None:
+        """A click almost anywhere in a cell lands on its plot canvas (the
+        canvas fills nearly the whole cell; mousePressEvent above only
+        fires for the ~2px margin around it), and FigureCanvasQTAgg's own
+        mousePressEvent consumes the click without forwarding it to this
+        widget -- so "click a cell to make it active" previously only
+        worked from that sliver of margin, not from clicking the heatmap
+        itself. An event filter on the canvas catches the click before the
+        canvas processes it, without changing that processing (the filter
+        doesn't consume the event, just observes it)."""
+        self.view.widget().installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if obj is self.view.widget() and event.type() == QtCore.QEvent.MouseButtonPress:
+            self.activated.emit(self)
+        return super().eventFilter(obj, event)
 
     def set_active(self, is_active: bool):
         self._is_active = is_active
@@ -1245,6 +1482,7 @@ class GridCell(QtWidgets.QWidget):
             self.view = DifferenceView(self)
         elif cell_type == "ensemble":
             self.view = EnsembleView(self)
+        self._install_activation_filter()
         self._outer_layout.addWidget(self.view.widget(), 1)
 
     # Header widget attribute names per type, dropped in _clear_header so a

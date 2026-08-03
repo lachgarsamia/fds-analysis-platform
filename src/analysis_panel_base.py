@@ -17,7 +17,21 @@ per-panel point/region sync rides along as panels are individually touched
 
 from __future__ import annotations
 
-from PyQt5 import QtWidgets
+from PyQt5 import QtCore, QtWidgets
+
+from manifest import scenario_label
+
+
+def populate_scenario_combo(combo: QtWidgets.QComboBox, entries: list) -> None:
+    """Fill `combo` with one item per manifest/summary entry: display text
+    is a human-readable factor-level summary (manifest.scenario_label)
+    instead of the raw disk folder name, with the folder itself kept as
+    each item's tooltip (still there for provenance/debugging, just not
+    the visible label every scenario picker across the app used to show).
+    Shared so ~20 panels don't each carry their own copy of this loop."""
+    for entry in entries:
+        combo.addItem(scenario_label(entry), entry.case_index)
+        combo.setItemData(combo.count() - 1, entry.folder, QtCore.Qt.ToolTipRole)
 
 
 def bind_to_bus(panel, bus, fps: int) -> None:

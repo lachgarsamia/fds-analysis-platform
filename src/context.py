@@ -86,6 +86,72 @@ def _related_graph_nodes(app, selection: Selection) -> list:
     return nodes
 
 
+def _nearest_narrative_event(app, selection: Selection):
+    """The narrative event closest in time to the selection, for this
+    scenario. Reuses narrative_panel's own cached, per-scenario event
+    detection (`_events`) -- the same store-read-once-then-cache cost
+    graph_panel._events_for already accepts at this same bus-changed rate;
+    a scenario already visited in the Narrative tab is a pure cache hit."""
+    panel = getattr(app, "narrative_panel", None)
+    if panel is None or selection.scenario is None:
+        return None
+    try:
+        events = panel._events(selection.scenario)
+    except Exception:
+        return None
+    timed = [e for e in events if e.primary_time() is not None]
+    if not timed:
+        return None
+    t = selection.time_s if selection.time_s is not None else 0.0
+    return min(timed, key=lambda e: abs(e.primary_time() - t))
+
+
+def _related_cause_chain(app, selection: Selection) -> list:
+    """The Cause Explorer's last-computed chain, only when the researcher
+    has already traced a hot spot near the selected point in that panel --
+    already-cached on the panel (no new store read; context.py never
+    touches the store), consistent with "if available" rather than a
+    fresh trace on every selection change."""
+    panel = getattr(app, "cause_panel", None)
+    if panel is None or selection.point is None:
+        return []
+    if not _near(getattr(panel, "_last_point", None), selection.point):
+        return []
+    return list(getattr(panel, "_last_insights", None) or [])
+
+
+def _point_story(app, selection: Selection) -> str:
+    """A short combined paragraph for the selected point (Analysis-
+    improvement roadmap Phase C): nearest Narrative event + a local
+    measurement/zone reading + the Cause Explorer's chain, if available.
+    Every clause reuses an existing engine's own already-computed result --
+    nothing here fabricates a new number. Empty string if nothing applies
+    (no point selected, or nothing related found yet)."""
+    if selection.point is None:
+        return ""
+    sentences = []
+    event = _nearest_narrative_event(app, selection)
+    if event is not None:
+        sentences.append(f"Nearest narrative event: {event.statement}")
+    reading = None
+    for m in _related_measurements(app, selection):
+        if m.readout:
+            reading = f"{m.label or m.kind}: {m.readout}"
+            break
+    if reading is None:
+        zones = _related_zones(app, selection)
+        if zones:
+            reading = f"inside zone \"{zones[0].name}\""
+    if reading is not None:
+        sentences.append(f"Local reading: {reading}")
+    chain = _related_cause_chain(app, selection)
+    if chain:
+        sentences.append(f"Cause trace (association, not causation): {chain[-1].statement}")
+    if not sentences:
+        return ""
+    return " ".join(sentences)
+
+
 def _related_sessions(app, selection: Selection) -> list:
     """Saved sessions whose grid references the selected scenario --
     determined by scanning each session file's cells (bounded by the
@@ -126,4 +192,5 @@ def gather_context(app, selection: Selection) -> dict:
         "measurements": _related_measurements(app, selection),
         "graph_nodes": _related_graph_nodes(app, selection),
         "sessions": _related_sessions(app, selection),
+        "point_story": _point_story(app, selection),
     }

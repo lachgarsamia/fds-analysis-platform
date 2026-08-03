@@ -8,8 +8,16 @@ by tag (e.g. "vod2", a notebook tag) to isolate a slice of the memory.
 
 Built deterministically from existing artifacts (scenarios, experiments,
 sessions, notebook, zones, measurements, placed devices/vector probes (V6-M4),
-and the selected scenario's narrative events). "Refresh" re-gathers them.
-Reuses graph_model, events, and the M1 bus.
+the selected scenario's narrative events and hazard classification (Analysis
+UX + reliability pass -- hazard_spaces.py's own worst-tenability-class-
+reached, not a new model)). "Refresh" re-gathers them. Reuses graph_model,
+events, hazard_spaces, and the M1 bus.
+
+Analysis UX + reliability pass also added a "Focus on selected" toggle:
+hides everything more than one hop from the currently-selected node
+(reusing the same neighbor computation click-highlighting already used),
+so the graph stays legible as it gains real edges from the additions
+above instead of becoming a hairball.
 """
 
 from __future__ import annotations
@@ -21,6 +29,7 @@ from widgets import MplCanvas
 from slice_key import SliceKey
 from descriptors import compute_descriptors
 from events import detect_events
+import hazard_spaces as hz
 import graph_model as gm
 
 
@@ -36,7 +45,10 @@ class GraphPanel(QtWidgets.QWidget):
         self._pos = {}
         self._selected = None
         self._event_cache = {}
+        self._hazard_cache = {}
+        self._quantity_cache = {}
         self._current_scenario = None
+        self._focus_selected = False
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -56,6 +68,12 @@ class GraphPanel(QtWidgets.QWidget):
         header.addWidget(QtWidgets.QLabel("Tag:"))
         self.tag_combo = QtWidgets.QComboBox()
         header.addWidget(self.tag_combo)
+        self.focus_checkbox = QtWidgets.QCheckBox("Focus on selected")
+        self.focus_checkbox.setToolTip(
+            "Hide everything more than one connection away from the selected node, "
+            "so the graph stays readable as it grows")
+        self.focus_checkbox.toggled.connect(self._on_focus_toggled)
+        header.addWidget(self.focus_checkbox)
         self.refresh_button = QtWidgets.QPushButton("Refresh")
         self.refresh_button.clicked.connect(self._rebuild)
         header.addWidget(self.refresh_button)
@@ -67,6 +85,18 @@ class GraphPanel(QtWidgets.QWidget):
         self.caption.setWordWrap(True)
         self.caption.setProperty("role", "caption")
         layout.addWidget(self.caption)
+
+        # Compact type legend (Analysis final-polish pass): node color was
+        # previously only decodable via the x-axis column headers and the
+        # tree browser's own grouping -- a small always-visible swatch row
+        # makes "what does this color mean" immediate.
+        self.legend = QtWidgets.QLabel(" &middot; ".join(
+            f'<span style="color:{gm.TYPE_COLOR[t]}">&#9679;</span> {t.capitalize()}'
+            for t in gm.NODE_TYPES))
+        self.legend.setTextFormat(QtCore.Qt.RichText)
+        self.legend.setWordWrap(True)
+        self.legend.setProperty("role", "caption")
+        layout.addWidget(self.legend)
 
         body = QtWidgets.QSplitter()
         self.tree = QtWidgets.QTreeWidget()
@@ -108,6 +138,16 @@ class GraphPanel(QtWidgets.QWidget):
         if not self._loaded:
             self._loaded = True
             self._rebuild()
+            # Analysis final-polish pass: start focused on the current
+            # scenario (if any) instead of dumping every node/edge on
+            # first open -- avoids the "hairball by default" problem while
+            # the "Focus on selected" checkbox stays available to widen
+            # the view back out.
+            sid = (f"scenario:{self._current_scenario}"
+                   if self._current_scenario is not None else None)
+            if sid is not None and sid in self._graph.nodes:
+                self.focus_checkbox.setChecked(True)
+                self._select_node(sid)
 
     def _events_for(self, case_index):
         if case_index is None:
@@ -122,6 +162,51 @@ class GraphPanel(QtWidgets.QWidget):
                 self._event_cache[case_index] = []
         return self._event_cache[case_index]
 
+    def _quantities_for(self, case_index):
+        """A small, fixed set of summary_stats.py's already-computed
+        per-scenario metrics for `case_index` -- deliberately just 3 (peak
+        temperature, peak HRR, minimum smoke-layer height), not every
+        ScenarioSummary field, so the graph answers "what did this
+        scenario measure?" without growing into another dense, hairball
+        view. Cached and scoped to the same "currently selected scenario
+        only" bound as _hazard_class_for/_events_for."""
+        if case_index is None:
+            return []
+        if case_index not in self._quantity_cache:
+            readings = []
+            summaries = getattr(self._app, "_scenario_summaries", None) or []
+            summary = next((s for s in summaries if s.case_index == case_index), None)
+            if summary is not None:
+                if summary.max_temp_c is not None:
+                    readings.append(("Peak temperature", f"{summary.max_temp_c:.0f} °C"))
+                if summary.peak_hrr_kw is not None:
+                    readings.append(("Peak HRR", f"{summary.peak_hrr_kw:.0f} kW"))
+                if summary.layer_min_height_m is not None:
+                    readings.append(("Min. smoke-layer height", f"{summary.layer_min_height_m:.2f} m"))
+            self._quantity_cache[case_index] = readings
+        return self._quantity_cache[case_index]
+
+    def _hazard_class_for(self, case_index):
+        """Worst hazard_spaces.py tenability class reached in `case_index`
+        (a class *name*, e.g. "Critical") -- reuses that module's own
+        classification (temperature thresholds + cumulative exposure), not
+        a new hazard model. Cached like _events_for, and scoped to the
+        same "currently selected scenario only" bound for the same reason
+        (keeps the graph's node/edge growth bounded rather than
+        classifying all 24 scenarios' full arrays on every rebuild)."""
+        if case_index is None:
+            return None
+        if case_index not in self._hazard_cache:
+            try:
+                data = np.asarray(self._store.get(case_index, SliceKey("TEMPERATURE")))
+                thresholds = hz.band_thresholds("TEMPERATURE")
+                classes = hz.classify_series(data, thresholds, self._fps)
+                worst = int(hz.worst_class(classes).max())
+                self._hazard_cache[case_index] = hz.CLASS_NAMES[worst]
+            except Exception:
+                self._hazard_cache[case_index] = None
+        return self._hazard_cache[case_index]
+
     # ------------------------------------------------------------- build
     def _gather(self):
         app = self._app
@@ -131,11 +216,12 @@ class GraphPanel(QtWidgets.QWidget):
         notebook = getattr(getattr(app, "evidence_dock", None), "notebook", None)
         entries = list(notebook.entries) if notebook is not None else []
         zones = live("zone_panel", "_zones") or []
-        measures = live("measurement_panel", "_measurements") or []
         # V6-M4: placed devices/vector probes become graph nodes too, the
         # same way zones/measurements already do.
         devices = live("device_panel", "_devices") or []
         vector_probes = live("velocity_panel", "_probes") or []
+        # Phase C: pinned Sensitivity what-if estimates become hypothesis nodes.
+        hypotheses = live("sensitivity_panel", "_hypotheses") or []
         experiments = []
         sessions = []
         try:
@@ -151,16 +237,28 @@ class GraphPanel(QtWidgets.QWidget):
         except Exception:
             sessions = []
         ev = {}
+        hazard = {}
+        quantities = {}
         if self._current_scenario is not None:
             ev[self._current_scenario] = self._events_for(self._current_scenario)
-        return entries, zones, measures, experiments, sessions, ev, devices, vector_probes
+            cls = self._hazard_class_for(self._current_scenario)
+            if cls is not None:
+                hazard[self._current_scenario] = cls
+            q = self._quantities_for(self._current_scenario)
+            if q:
+                quantities[self._current_scenario] = q
+        return (entries, zones, experiments, sessions, ev, devices,
+               vector_probes, hypotheses, hazard, quantities)
 
     def _rebuild(self) -> None:
-        entries, zones, measures, experiments, sessions, ev, devices, vector_probes = self._gather()
+        (entries, zones, experiments, sessions, ev, devices,
+         vector_probes, hypotheses, hazard, quantities) = self._gather()
         self._graph = gm.build_graph(self._manifest, notebook=entries, zones=zones,
-                                     measurements=measures, experiments=experiments,
+                                     experiments=experiments,
                                      sessions=sessions, events_by_scenario=ev,
-                                     devices=devices, vector_probes=vector_probes)
+                                     devices=devices, vector_probes=vector_probes,
+                                     hypotheses=hypotheses, hazard_by_scenario=hazard,
+                                     quantities_by_scenario=quantities)
         # tag filter options
         self.tag_combo.blockSignals(True)
         self.tag_combo.clear()
@@ -191,7 +289,20 @@ class GraphPanel(QtWidgets.QWidget):
             if tag is not None and tag not in node.tags and f"tag:{tag}" != node.id:
                 continue
             ids.append(node.id)
-        return set(ids)
+        visible = set(ids)
+        # Focus on selected (Analysis UX + reliability pass): restrict to
+        # the selected node's one-hop neighborhood -- as the graph gains
+        # real edges (hazard/device/vector_probe/hypothesis links above),
+        # this is what keeps it from becoming a hairball, reusing the same
+        # neighbor computation click-highlighting already relies on.
+        if self._focus_selected and self._selected is not None and self._selected in self._graph.nodes:
+            neighborhood = {self._selected, *self._graph.neighbors(self._selected)}
+            visible &= neighborhood
+        return visible
+
+    def _on_focus_toggled(self, checked: bool) -> None:
+        self._focus_selected = checked
+        self._render()
 
     def _populate_tree(self) -> None:
         self.tree.clear()
