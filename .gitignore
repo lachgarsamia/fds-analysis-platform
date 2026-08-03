@@ -45,6 +45,8 @@ report/*.toc
 report/*.lof
 report/*.lot
 report/*.synctex.gz
+report/*.fls
+report/*.fdb_latexmk
 protocol/*.synctex.gz
 
 # Session/tooling local state
