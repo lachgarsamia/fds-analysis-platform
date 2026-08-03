@@ -15,6 +15,8 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 
+_trapz = getattr(np, "trapezoid", None) or np.trapz
+
 from slice_key import DEFAULT_SLICE_KEY
 from layer_height import smoke_layer_height_series
 from tenability import TENABILITY_THRESHOLD_C, fed_heat_dose
@@ -267,7 +269,7 @@ def compute_scenario_summary(entry, store, fps: int) -> ScenarioSummary:
     else:
         hrr_t, hrr_kw = hrr_data
         peak_hrr_kw = float(np.max(hrr_kw))
-        total_energy_kj = float(np.trapz(hrr_kw, hrr_t))
+        total_energy_kj = float(_trapz(hrr_kw, hrr_t))
         growth_alpha_kw_s2 = fit_growth_alpha(hrr_t, hrr_kw)
         time_to_peak_hrr_s = float(hrr_t[int(np.argmax(hrr_kw))])
 
