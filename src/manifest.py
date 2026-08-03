@@ -14,7 +14,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 
 import numpy as np
 
@@ -174,7 +174,14 @@ def get_manifest(sim_root: str, manifest_path: str = None, force_regenerate: boo
 
     if not force_regenerate and os.path.exists(manifest_path):
         try:
-            return load_manifest(manifest_path)
+            entries = load_manifest(manifest_path)
+            # entry.path is stored absolute, which breaks the moment the
+            # study directory is moved or re-cloned elsewhere (e.g. the
+            # manifest was written under an old checkout path) -- sim_root
+            # is what's actually being scanned right now, so it's the one
+            # source of truth for where these folders live on this machine.
+            return [replace(e, path=os.path.abspath(os.path.join(sim_root, e.folder)))
+                    for e in entries]
         except (OSError, ValueError, KeyError, TypeError) as e:
             logger.warning("manifest at %s is unreadable (%s); regenerating", manifest_path, e)
 
