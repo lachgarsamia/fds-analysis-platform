@@ -1067,6 +1067,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.nav_rail = NavRail(nav_entries)
         self.nav_rail.page_selected.connect(self._navigate_to)
+        self.nav_rail.theme_toggle_requested.connect(self._toggle_theme)
 
         shell = QtWidgets.QWidget()
         shell.setObjectName("shellWidget")
@@ -1612,6 +1613,15 @@ class MainWindow(QtWidgets.QMainWindow):
         # section so changing what's shown is immediately accessible, instead of
         # being buried below the scenario controls.
         outer.insertWidget(outer.indexOf(playback_section) + 1, quantity_section)
+        # Layout-declutter pass, round 2: kept this sidebar card (matches
+        # where Candles/Door/Vents already live) as the *one* visible
+        # quantity control and removed the per-cell toolbar combo instead
+        # (views.py's GridCell headers) -- having both was the original
+        # complaint; hiding this one first turned out to be the wrong half
+        # to hide, since it left multi-cell grids with no quantity control
+        # at all once the toolbar one goes too. To change a non-active
+        # cell's quantity in a multi-cell grid now: click the cell to
+        # activate it, then use this combo.
 
         # --- Display controls -------------------------------------------------
         # Range/default/label come from QUANTITY_DISPLAY for the starting
@@ -4206,6 +4216,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings.setValue("theme", name)
         self._apply_theme()
 
+    def _toggle_theme(self):
+        """Nav-rail's fast-path toggle. Flips off whatever's actually on
+        screen right now (resolved -- 'system' and 'theatre' both land on
+        one side or the other), not just self.current_theme_name's raw
+        value, so clicking it never surprises someone using 'system' or
+        'theatre' with a no-op or the wrong direction. Always lands on a
+        plain 'light'/'dark' choice, same as picking one from the View menu
+        -- 'system'/'theatre' stay reachable there for anyone who wants them
+        back."""
+        resolved = self._resolve_theme(self.current_theme_name)
+        self._set_theme("light" if resolved != "light" else "dark")
+        # Keep the View menu's own radio-button state in sync (it doesn't
+        # auto-update just because current_theme_name changed underneath it).
+        for action in self.theme_action_group.actions():
+            action.setChecked(action.text() in ("Light", "Dark")
+                              and action.text().lower() == self.current_theme_name)
+
     def _set_ui_scale(self, scale: float):
         self.ui_scale = scale
         self.settings.setValue("ui_scale", scale)
@@ -4244,14 +4271,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # RC polish: every matplotlib plot follows the theme's chrome colors.
         from widgets import set_plot_theme
         set_plot_theme(palette)
-
-    @staticmethod
-    def _resolve_theme(name: str) -> str:
-        """Map the chosen theme to a concrete palette key. 'system' follows the
-        OS appearance (macOS); anything unknown falls back to light."""
-        if name == "system":
-            return _detect_system_theme()
-        return name if name in THEMES else "light"
         self.view_grid.apply_accent(palette.accent)
         # Card shadows are Python-side (QGraphicsDropShadowEffect, not QSS --
         # see theme.apply_card_shadow), so a theme switch has to reapply
@@ -4265,6 +4284,19 @@ class MainWindow(QtWidgets.QMainWindow):
         # cell, not just the active one.
         for cell in self.view_grid.visible_cells():
             cell.view.capture_background()
+        # Nav-rail toggle button reflects whatever theme just got resolved
+        # (including 'system'/'theatre' picked from the View menu, not just
+        # the button's own light/dark toggling) -- palette.name is one of
+        # THEMES' own keys ("light"/"dark"/"theatre").
+        self.nav_rail.set_dark(palette.name != "light")
+
+    @staticmethod
+    def _resolve_theme(name: str) -> str:
+        """Map the chosen theme to a concrete palette key. 'system' follows the
+        OS appearance (macOS); anything unknown falls back to light."""
+        if name == "system":
+            return _detect_system_theme()
+        return name if name in THEMES else "light"
 
     def _refresh_toggle_icons(self, palette):
         """Icon color is redrawn per theme so it stays legible against both

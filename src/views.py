@@ -500,8 +500,22 @@ class SliceView:
             self.room_door.set_segments([])
             self.room_vents.set_segments([])
             self.room_door_label.set_visible(False)
+            self.ax.set_ylim(auto=True)
+            self.ax.autoscale(True, axis="y")
+            self.canvas.capture_background()
             return
         self.room_walls.set_segments([[(x0, z0), (x1, z1)] for x0, z0, x1, z1 in geometry["walls"]])
+        # Layout-tightening pass: the y-normal mesh domain reaches well above
+        # the real ceiling (ambient buffer air FDS needs but nothing this app
+        # visualizes), so the un-cropped view was mostly empty sky above the
+        # room. Crop the visible range to the room's own wall bounds (floor to
+        # the ceiling slab's top face) plus a small margin -- not the full
+        # `extent` itself (that stays untouched: probes/pixel math/colorbar
+        # all still address the real mesh coordinates, only the camera moves).
+        wall_zs = [z for _x0, z0, _x1, z1 in geometry["walls"] for z in (z0, z1)]
+        z_bottom, z_top = min(wall_zs), max(wall_zs)
+        margin = (z_top - z_bottom) * 0.05
+        self.ax.set_ylim(z_bottom - margin, z_top + margin)
         dx0, dz0, dx1, dz1 = geometry["door"]
         self.room_door.set_segments([[(dx0, dz0), (dx1, dz1)]])
         # "Door" (colormap expressiveness follow-up): the door line sits
@@ -520,6 +534,14 @@ class SliceView:
             vent_colors.append(_VENT_STATE_COLORS.get(state, "#94A3B8"))
         self.room_vents.set_segments(vent_segs)
         self.room_vents.set_color(vent_colors)
+        # set_ylim above changes what's underneath the animated artists
+        # (MplCanvas's own docstring: anything that does must recapture) --
+        # skipping this left the blit cache holding a stale, differently-
+        # zoomed snapshot (sometimes the *previous quantity's* heatmap and
+        # colorbar), which the next blit_update() would restore and then
+        # paint the new, differently-scaled frame on top of -- a doubled,
+        # misaligned-looking plot.
+        self.canvas.capture_background()
 
     def set_ui_scale(self, scale: float) -> None:
         """View -> UI Scale (accessibility zoom): delegates to the canvas's
@@ -1691,9 +1713,15 @@ class GridCell(QtWidgets.QWidget):
         self.scenario_combo.setCurrentIndex(idx)
         self.scenario_combo.currentIndexChanged.connect(self._on_scenario_combo_changed)
 
+        # Layout-declutter pass: not added to _header_layout -- the sidebar's
+        # "Data shown" combo (main_window.py) is the one visible quantity
+        # control now, applying to whichever cell is active (click a cell to
+        # activate it, then use that combo). self.quantity_combo stays
+        # constructed and wired (_on_quantity_combo_changed, set_quantity_
+        # silently) since MainWindow reads/drives it directly by attribute,
+        # not by it being on screen.
         self.quantity_combo = self._make_quantity_combo()
         self._header_layout.addWidget(self.scenario_combo, 1)
-        self._header_layout.addWidget(self.quantity_combo, 1)
 
     def _build_difference_header(self):
         self.scenario_combo_a = QtWidgets.QComboBox()
@@ -1715,17 +1743,16 @@ class GridCell(QtWidgets.QWidget):
         self.scenario_combo_a.currentIndexChanged.connect(self._on_difference_combo_changed)
         self.scenario_combo_b.currentIndexChanged.connect(self._on_difference_combo_changed)
 
+        # See _build_slice_header's comment -- same combo, same reason it's
+        # constructed but not added to _header_layout here.
         self.quantity_combo = self._make_quantity_combo()
         self._header_layout.addWidget(self.scenario_combo_a, 1)
         self._header_layout.addWidget(QtWidgets.QLabel("−"))
         self._header_layout.addWidget(self.scenario_combo_b, 1)
-        # A difference cell's quantity combo picks WHICH quantity to
-        # difference, not a raw value -- the "Δ" makes that explicit next to
-        # the A−B scenario pickers, since the plot itself uses a diverging
-        # colormap (not the quantity's own sequential one) and could
-        # otherwise read as an inconsistent palette for the "same quantity".
+        # "Δ" still flags this as a difference cell (the plot itself uses a
+        # diverging colormap, not the quantity's own sequential one) even
+        # without its own quantity combo alongside it now.
         self._header_layout.addWidget(QtWidgets.QLabel("Δ"))
-        self._header_layout.addWidget(self.quantity_combo, 1)
 
     def _build_ensemble_header(self):
         self.ensemble_select_button = QtWidgets.QPushButton(self._ensemble_button_text())
@@ -1740,10 +1767,11 @@ class GridCell(QtWidgets.QWidget):
         self.stat_combo.setCurrentIndex(EnsembleView.STATS.index(self.ensemble_stat))
         self.stat_combo.currentIndexChanged.connect(self._on_stat_combo_changed)
 
+        # See _build_slice_header's comment -- same combo, same reason it's
+        # constructed but not added to _header_layout here.
         self.quantity_combo = self._make_quantity_combo()
         self._header_layout.addWidget(self.ensemble_select_button, 1)
         self._header_layout.addWidget(self.stat_combo)
-        self._header_layout.addWidget(self.quantity_combo, 1)
 
     def _ensemble_button_text(self) -> str:
         n = len(self.ensemble_case_indices)

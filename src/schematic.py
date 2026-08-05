@@ -272,6 +272,13 @@ def room_overlay_geometry(door: int, vod: int, voc: int) -> dict:
     vents = [
         ((_VOD_X[0], z1, _VOD_X[1], z1), _VOD_STATES.get(vod, "?")),   # vertical opening door
         ((_VOC_X[0], z1, _VOC_X[1], z1), _VOC_STATES.get(voc, "?")),   # vertical opening candle
+        # Same two openings, repeated on the slab's top face (z=_OBST_Z_TOP):
+        # a VOD/VOC hole actually cuts through the *whole* slab thickness,
+        # not just its underside, so the upper boundary line needs the same
+        # vent-color overlay as the lower one -- otherwise the top line reads
+        # as a solid, unbroken ceiling even directly above an open vent.
+        ((_VOD_X[0], _OBST_Z_TOP, _VOD_X[1], _OBST_Z_TOP), _VOD_STATES.get(vod, "?")),
+        ((_VOC_X[0], _OBST_Z_TOP, _VOC_X[1], _OBST_Z_TOP), _VOC_STATES.get(voc, "?")),
     ]
 
     return {"walls": walls, "door": door_seg, "vents": vents}

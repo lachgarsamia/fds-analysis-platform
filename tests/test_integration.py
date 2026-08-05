@@ -388,7 +388,10 @@ class TestIntegration:
         # inside the concrete instead of reading as an unexplained offset.
         assert len(wall_segs) == 6
         assert len(view.room_door.get_segments()) == 1
-        assert len(view.room_vents.get_segments()) == 2
+        # 2 vents x 2 boundary lines (ceiling underside + slab top face) --
+        # a VOD/VOC hole cuts through the whole slab thickness, so both
+        # lines need the vent-color overlay, not just the lower one.
+        assert len(view.room_vents.get_segments()) == 4
         xs = [p[0] for seg in wall_segs for p in seg]
         zs = [p[1] for seg in wall_segs for p in seg]
         assert min(xs) == pytest.approx(ROOM_X[0])
@@ -428,8 +431,11 @@ class TestIntegration:
         assert wide_h > narrow_h
 
         geo = room_overlay_geometry(door=1, vod=1, voc=0)  # vod closed, voc open
-        (_seg0, state0), (_seg1, state1) = geo["vents"]
+        # 4 entries: (VOD, VOC) at the ceiling underside, then the same pair
+        # repeated at the slab top face -- states match pairwise.
+        (_seg0, state0), (_seg1, state1), (_seg2, state2), (_seg3, state3) = geo["vents"]
         assert state0 == "closed" and state1 == "open"
+        assert state2 == state0 and state3 == state1
 
     def test_room_overlay_vent_and_door_positions_match_real_fds_geometry(self, qapp):
         """Bug found live: vents were drawn at placeholder fractions (34%/
@@ -441,9 +447,12 @@ class TestIntegration:
         Pins the fix to the exact real coordinates so it can't regress."""
         from schematic import room_overlay_geometry
         geo = room_overlay_geometry(door=0, vod=0, voc=0)
-        (vod_seg, _vod_state), (voc_seg, _voc_state) = geo["vents"]
+        (vod_seg, _vod_state), (voc_seg, _voc_state), (vod_top_seg, _s2), (voc_top_seg, _s3) = geo["vents"]
         assert (vod_seg[0], vod_seg[2]) == pytest.approx((0.32, 0.40))
         assert (voc_seg[0], voc_seg[2]) == pytest.approx((0.86, 0.94))
+        # Slab top-face duplicates share the same x-span, at _OBST_Z_TOP.
+        assert (vod_top_seg[0], vod_top_seg[2]) == pytest.approx((0.32, 0.40))
+        assert (voc_top_seg[0], voc_top_seg[2]) == pytest.approx((0.86, 0.94))
 
         narrow = room_overlay_geometry(door=0, vod=0, voc=0)
         wide = room_overlay_geometry(door=1, vod=0, voc=0)

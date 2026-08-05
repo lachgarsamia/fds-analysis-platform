@@ -440,6 +440,20 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
         color: {p.text_primary};
     }}
 
+    QPushButton#navThemeButton {{
+        background-color: transparent;
+        border: none;
+        border-radius: {r_md};
+        text-align: left;
+        padding: {pad_sm} {pad_md};
+        color: {p.text_secondary};
+    }}
+
+    QPushButton#navThemeButton:hover {{
+        background-color: {p.bg_elevated};
+        color: {p.text_primary};
+    }}
+
     QSlider::groove:horizontal {{
         height: 6px;
         background: {p.bg_sunken};
