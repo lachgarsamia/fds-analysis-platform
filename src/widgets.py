@@ -520,9 +520,15 @@ class TimeSeriesStrip(QtWidgets.QWidget):
         to the left. Keeps the same proportions whether this cell is one
         of a 1400px single view or a small grid cell."""
         w, h = float(self.width()), float(self.height())
-        top = h * 0.24
-        bottom = h * 0.32
-        left = min(34.0, w * 0.16)
+        # Live-testing pass: bigger fonts (below) need a bit more of these
+        # margins in absolute terms, but the strip's own share of the cell
+        # also grew (GridCell's stretch factor), so the fractions themselves
+        # could shrink -- title/label/caption rows fit tighter around their
+        # (now larger) text instead of leaving dead space, giving the actual
+        # plotted line more of the strip's height, not less.
+        top = h * 0.18
+        bottom = h * 0.24
+        left = min(38.0, w * 0.16)
         right = w * 0.03
         return QtCore.QRectF(left, top, max(w - left - right, 1.0), max(h - top - bottom, 1.0))
 
@@ -533,41 +539,82 @@ class TimeSeriesStrip(QtWidgets.QWidget):
         muted = QtGui.QColor("#94A3B8")
         plot_rect = self._plot_rect()
 
-        # --- title (+ band legend, same row) --------------------------------
+        # --- title (+ legend/live-value readout, same row) ------------------
         title_font = QtGui.QFont(self.font())
-        title_font.setPointSizeF(max(title_font.pointSizeF() * 0.9, 7.0))
+        title_font.setPointSizeF(max(title_font.pointSizeF() * 1.25, 13.0))
         title_font.setBold(True)
         painter.setFont(title_font)
         painter.setPen(fg)
         title_rect = QtCore.QRectF(plot_rect.left(), 1, plot_rect.width(), plot_rect.top() - 2)
         painter.drawText(title_rect, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, self._title)
 
-        if self._band_labels:
-            legend_font = QtGui.QFont(self.font())
-            legend_font.setPointSizeF(max(legend_font.pointSizeF() * 0.75, 6.0))
-            painter.setFont(legend_font)
-            metrics = QtGui.QFontMetricsF(legend_font)
-            swatch = metrics.height() * 0.6
-            x = title_rect.right()
-            widths = [metrics.horizontalAdvance(text) for _color, text in self._band_labels]
-            total = sum(widths) + len(self._band_labels) * (swatch + 10) + 4
-            x -= total
-            y_mid = title_rect.center().y()
-            for (color, text), tw in zip(self._band_labels, widths):
-                painter.setPen(QtCore.Qt.NoPen)
-                painter.setBrush(QtGui.QColor(color))
-                painter.drawRect(QtCore.QRectF(x, y_mid - swatch / 2, swatch, swatch))
-                painter.setPen(fg)
-                painter.drawText(QtCore.QRectF(x + swatch + 3, title_rect.top(), tw + 4, title_rect.height()),
-                                  QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, text)
-                x += swatch + 6 + tw + 10
-
         if not self._series or not self._series[0] or plot_rect.width() <= 0 or plot_rect.height() <= 0:
             return
 
+        n = len(self._series[0])
+        idx = min(self._index, n - 1)
+
+        # Live-reading pass: a bare title/axis strip (no legend at all, as
+        # DYNAMIC PRESSURE's single-line case had) reads as "mediocre" next
+        # to the hazard-band strip's 3-swatch legend even when the *data*
+        # is fine -- it's just a plain line with no number attached to it.
+        # Every strip now gets a same-row readout: swatch + label (if any,
+        # from _band_labels) + the *current frame's* value in that series'
+        # own color, live-updating with set_index() the same as the moving
+        # cursor below. A single unlabeled series (DP) still gets its own
+        # swatch-less colored number -- not just the 3-swatch case.
+        legend_font = QtGui.QFont(self.font())
+        legend_font.setPointSizeF(max(legend_font.pointSizeF() * 1.05, 11.0))
+        painter.setFont(legend_font)
+        metrics = QtGui.QFontMetricsF(legend_font)
+        swatch = metrics.height() * 0.6
+        labels = self._band_labels if self._band_labels else [(c, None) for c in self._colors]
+
+        def entries_for(with_value: bool):
+            out = []
+            for (color, label), series in zip(labels, self._series):
+                if with_value:
+                    value = series[idx] if idx < len(series) else series[-1]
+                    text = f"{label}: {value:.3g}" if label else f"{value:.3g}"
+                else:
+                    text = label or ""
+                out.append((color, text))
+            return out
+
+        def total_width(entries) -> float:
+            widths = [metrics.horizontalAdvance(text) for _color, text in entries]
+            return sum(widths) + len(entries) * (swatch + 10) + 4, widths
+
+        # Available room is whatever's left of the title row after the title
+        # text itself -- fall back to the plain label (pre-existing,
+        # narrower behavior) rather than overlapping the title if the fuller
+        # "label: value" text doesn't fit at this strip's current width.
+        title_width = QtGui.QFontMetricsF(title_font).horizontalAdvance(self._title)
+        available = title_rect.width() - title_width - 8
+        entries = entries_for(True)
+        total, widths = total_width(entries)
+        if total > available and any(label for _c, label in labels):
+            entries = entries_for(False)
+            total, widths = total_width(entries)
+        x = title_rect.right()
+        x -= total
+        # Final safety net (e.g. DP's single unlabeled value, which has no
+        # shorter fallback text to drop to): never start left of the title.
+        x = max(x, title_rect.left() + title_width + 8)
+        y_mid = title_rect.center().y()
+        for (color, text), tw in zip(entries, widths):
+            qcolor = QtGui.QColor(color)
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.setBrush(qcolor)
+            painter.drawRect(QtCore.QRectF(x, y_mid - swatch / 2, swatch, swatch))
+            painter.setPen(qcolor)
+            painter.drawText(QtCore.QRectF(x + swatch + 3, title_rect.top(), tw + 4, title_rect.height()),
+                              QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, text)
+            x += swatch + 6 + tw + 10
+
         # --- y-axis ticks (min/max of the fixed range) + rotated label -----
         tick_font = QtGui.QFont(self.font())
-        tick_font.setPointSizeF(max(tick_font.pointSizeF() * 0.75, 6.0))
+        tick_font.setPointSizeF(max(tick_font.pointSizeF() * 1.05, 11.0))
         painter.setFont(tick_font)
         painter.setPen(muted)
         lo, hi = self._y_range
@@ -591,13 +638,30 @@ class TimeSeriesStrip(QtWidgets.QWidget):
         painter.drawLine(plot_rect.bottomLeft(), plot_rect.bottomRight())
         painter.drawLine(plot_rect.topLeft(), plot_rect.bottomLeft())
 
-        n = len(self._series[0])
-
         def point(series: list, i: int) -> QtCore.QPointF:
             x = plot_rect.left() + (i / max(n - 1, 1)) * plot_rect.width()
             v = min(max(series[i], lo), hi)  # clip to the fixed range, never extrapolate the axis
             y = plot_rect.bottom() - ((v - lo) / span) * plot_rect.height()
             return QtCore.QPointF(x, y)
+
+        # Filled area under each line: a bare 1.4pt line against a mostly-
+        # empty axis reads as "broken/empty" rather than "correctly a small
+        # number" -- a soft fill gives the line real visual presence, the
+        # same way an area/sparkline chart would, without changing what's
+        # plotted or how the axis itself is scaled (that's the caller's
+        # call -- see main_window.py's per-quantity y_range comments).
+        painter.setPen(QtCore.Qt.NoPen)
+        for series, color in zip(self._series, self._colors):
+            fill_color = QtGui.QColor(color)
+            fill_color.setAlpha(50)
+            painter.setBrush(fill_color)
+            path = QtGui.QPainterPath()
+            path.moveTo(plot_rect.left(), plot_rect.bottom())
+            for i in range(n):
+                path.lineTo(point(series, i))
+            path.lineTo(plot_rect.right(), plot_rect.bottom())
+            path.closeSubpath()
+            painter.drawPath(path)
 
         for series, color in zip(self._series, self._colors):
             path = QtGui.QPainterPath()
@@ -607,15 +671,15 @@ class TimeSeriesStrip(QtWidgets.QWidget):
             painter.setPen(QtGui.QPen(QtGui.QColor(color), 1.4))
             painter.drawPath(path)
 
-        # Moving playback cursor, same convention as the Inspector sparkline.
-        idx = min(self._index, n - 1)
+        # Moving playback cursor, same convention as the Inspector sparkline
+        # (idx computed above, alongside the live-value readout).
         painter.setPen(QtGui.QPen(muted, 1.0, QtCore.Qt.DashLine))
         x = plot_rect.left() + (idx / max(n - 1, 1)) * plot_rect.width()
         painter.drawLine(QtCore.QPointF(x, plot_rect.top()), QtCore.QPointF(x, plot_rect.bottom()))
 
         # --- x-axis label + static caption, below the axes box -------------
         label_font = QtGui.QFont(self.font())
-        label_font.setPointSizeF(max(label_font.pointSizeF() * 0.75, 6.0))
+        label_font.setPointSizeF(max(label_font.pointSizeF() * 1.05, 11.0))
         painter.setFont(label_font)
         painter.setPen(muted)
         x_label_rect = QtCore.QRectF(plot_rect.left(), plot_rect.bottom() + 2, plot_rect.width(), 14)
@@ -623,7 +687,7 @@ class TimeSeriesStrip(QtWidgets.QWidget):
 
         if self._caption:
             caption_font = QtGui.QFont(self.font())
-            caption_font.setPointSizeF(max(caption_font.pointSizeF() * 0.7, 6.0))
+            caption_font.setPointSizeF(max(caption_font.pointSizeF() * 0.95, 10.0))
             caption_font.setItalic(True)
             painter.setFont(caption_font)
             caption_rect = QtCore.QRectF(plot_rect.left(), x_label_rect.bottom(),

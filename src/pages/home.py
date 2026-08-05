@@ -10,7 +10,7 @@ from typing import Callable, Optional
 
 from PyQt5 import QtCore, QtWidgets
 
-from branding import build_logo_widget
+from branding import build_partner_logos_widget
 from pages.base import Page
 
 
@@ -28,7 +28,7 @@ class HomePage(Page):
 
         logo_row = QtWidgets.QHBoxLayout()
         logo_row.addStretch(1)
-        logo_row.addWidget(build_logo_widget(140))
+        logo_row.addWidget(build_partner_logos_widget(140))
         logo_row.addStretch(1)
         layout.addLayout(logo_row)
 

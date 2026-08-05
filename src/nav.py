@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from PyQt5 import QtCore, QtWidgets
 
-from branding import build_logo_widget
+from branding import build_partner_logos_widget
 
 EXPANDED_WIDTH = 340
+MIN_EXPANDED_WIDTH = 220
+MAX_EXPANDED_WIDTH = 560
 COLLAPSED_WIDTH = 48
 LOGO_HEIGHT = 150
 
@@ -22,6 +24,7 @@ class NavRail(QtWidgets.QWidget):
 
     page_selected = QtCore.pyqtSignal(str)  # page key
     theme_toggle_requested = QtCore.pyqtSignal()
+    collapsed_changed = QtCore.pyqtSignal(bool)
 
     def __init__(self, entries: list, parent=None):
         super().__init__(parent)
@@ -36,7 +39,7 @@ class NavRail(QtWidgets.QWidget):
 
         self._logo_row = QtWidgets.QHBoxLayout()
         self._logo_row.addStretch(1)
-        self._logo = build_logo_widget(LOGO_HEIGHT)
+        self._logo = build_partner_logos_widget(LOGO_HEIGHT)
         self._logo_row.addWidget(self._logo)
         self._logo_row.addStretch(1)
         layout.addLayout(self._logo_row)
@@ -85,7 +88,17 @@ class NavRail(QtWidgets.QWidget):
         self._relabel()
         if entries:
             self._buttons[entries[0][0]].setChecked(True)
-        self.setFixedWidth(EXPANDED_WIDTH)
+        # Drag-to-resize (live-testing feedback: collapse/expand was the
+        # only width control) -- bounded, not fixed, so the containing
+        # QSplitter (main_window.py's shell) can resize this via its own
+        # drag handle. _expanded_width remembers whatever width was last in
+        # effect while NOT collapsed (the splitter drag, or a restored
+        # QSettings value main_window.py applies after construction), so a
+        # collapse/expand cycle restores it instead of snapping back to the
+        # EXPANDED_WIDTH default every time.
+        self._expanded_width = EXPANDED_WIDTH
+        self.setMinimumWidth(MIN_EXPANDED_WIDTH)
+        self.setMaximumWidth(MAX_EXPANDED_WIDTH)
 
     def set_active(self, key: str) -> None:
         button = self._buttons.get(key)
@@ -102,6 +115,7 @@ class NavRail(QtWidgets.QWidget):
         self._theme_full_label = "Light mode" if is_dark else "Dark mode"
         self._theme_button.setToolTip(
             "Switch to light mode" if is_dark else "Switch to dark mode")
+        self._logo.set_dark(is_dark)
         self._relabel()
 
     def toggle_collapsed(self) -> None:
@@ -109,9 +123,37 @@ class NavRail(QtWidgets.QWidget):
 
     def set_collapsed(self, collapsed: bool) -> None:
         self._collapsed = collapsed
-        self.setFixedWidth(COLLAPSED_WIDTH if collapsed else EXPANDED_WIDTH)
+        if collapsed:
+            self.setFixedWidth(COLLAPSED_WIDTH)
+        else:
+            # Release the collapsed state's fixed width back to the normal
+            # drag range -- main_window.py's splitterMoved handler (or the
+            # collapsed_changed signal below) is what actually restores
+            # target_width() as the on-screen width via setSizes().
+            self.setMinimumWidth(MIN_EXPANDED_WIDTH)
+            self.setMaximumWidth(MAX_EXPANDED_WIDTH)
         self._logo.setVisible(not collapsed)
         self._relabel()
+        self.collapsed_changed.emit(collapsed)
+
+    def is_collapsed(self) -> bool:
+        return self._collapsed
+
+    def target_width(self) -> int:
+        """The width the containing QSplitter should apply right now --
+        main_window.py calls this after set_collapsed() (via
+        collapsed_changed) and after restoring a saved width from
+        QSettings."""
+        return COLLAPSED_WIDTH if self._collapsed else self._expanded_width
+
+    def note_expanded_width(self, width: int) -> None:
+        """main_window.py calls this from the splitter's splitterMoved
+        signal, but only while NOT collapsed (a drag can't happen while
+        collapsed anyway, since width is fixed then) -- keeps
+        _expanded_width tracking the user's actual choice so it survives a
+        collapse/expand round-trip, and so it's there to persist."""
+        if not self._collapsed:
+            self._expanded_width = max(MIN_EXPANDED_WIDTH, min(MAX_EXPANDED_WIDTH, width))
 
     def _relabel(self) -> None:
         for key, button in self._buttons.items():

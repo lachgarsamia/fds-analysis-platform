@@ -300,7 +300,14 @@ class SliceView:
         # at whatever size this was tuned at -- right=0.83 in particular
         # reserves real figure width *outside* the colorbar's own box for
         # its tick labels and rotated unit label to render into.
-        gs = self.canvas.fig.add_gridspec(1, 2, width_ratios=(18, 1), wspace=0.6,
+        # wspace is a fraction of the *average* column width, not of the
+        # figure -- with a heatmap:colorbar width ratio this lopsided
+        # (18:1), the old wspace=0.6 worked out to ~18% of the whole figure
+        # width as dead space between them (live-testing pass: reported as
+        # "the gap ... is so big"). 0.05 keeps a small, deliberate gap
+        # (~2%) without touching the colorbar or its tick labels, which
+        # still render into the right=0.83..1.0 margin reserved above.
+        gs = self.canvas.fig.add_gridspec(1, 2, width_ratios=(18, 1), wspace=0.05,
                                           left=0.03, right=0.83, top=0.97, bottom=0.05)
         self.ax = self.canvas.fig.add_subplot(gs[0, 0])
         self._colorbar_ax = self.canvas.fig.add_subplot(gs[0, 1])
@@ -1557,12 +1564,11 @@ class GridCell(QtWidgets.QWidget):
         self._header_layout = QtWidgets.QHBoxLayout()
         self._header_layout.setSpacing(4)
         self._outer_layout.addLayout(self._header_layout)
-        # Stretch factors (live-cell re-proportioning pass): both the
-        # heatmap and the strip below it have an Expanding vertical size
-        # policy, so QVBoxLayout actually honors these ratios -- 3:1 gives
-        # the strip a real, legible vertical share (title + ticks + x-axis
-        # label + caption all fit) without shrinking the heatmap to a
-        # sliver, and holds at any window size since it's a ratio, not a
+        # Stretch factors (live-cell re-proportioning pass, twice widened on
+        # live-testing feedback that first 3:1 then 2:1 still read as too
+        # small to be legible): both the heatmap and the strip below it have
+        # an Expanding vertical size policy, so QVBoxLayout actually honors
+        # these ratios -- holds at any window size since it's a ratio, not a
         # pixel count. Only takes effect while the strip is visible; a
         # hidden widget (TEMPERATURE, which never gets a strip) claims no
         # layout space regardless of its stretch factor, so the heatmap
@@ -1577,7 +1583,7 @@ class GridCell(QtWidgets.QWidget):
         # PlotView concern -- DifferenceView/EnsembleView never need it.
         self.timeseries_strip = TimeSeriesStrip(self)
         self.timeseries_strip.setVisible(False)
-        self._outer_layout.addWidget(self.timeseries_strip, 1)
+        self._outer_layout.addWidget(self.timeseries_strip, 2)
 
         self._build_slice_header()
         self._restyle()

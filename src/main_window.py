@@ -96,7 +96,7 @@ from evidence_notebook_panel import EvidenceNotebookDock
 from evidence_notebook import EvidenceNotebook
 from diff_analysis import DifferenceOverTimeDialog
 from session import build_session_dict, read_session, write_session
-from nav import NavRail
+from nav import NavRail, EXPANDED_WIDTH as NAV_DEFAULT_WIDTH
 from pages.live import LivePage
 from pages.home import HomePage
 from pages.compare import ComparePage
@@ -114,15 +114,18 @@ APP_NAME = "FDSSLCFVisualizer"
 # Time-series strips (colormap expressiveness follow-up): DYNAMIC PRESSURE
 # and TEMPERATURE RISE keep their heatmap but gain a per-frame reduction
 # strip underneath, since their real story is temporal, not spatial (see
-# derived_quantities.peak_series/hazard_fraction_series). Fixed y-ranges,
-# measured directly against the real dataset (not the two-scenario sample
-# Phase 1 named alone -- cross-checked against all 24 scenarios so the
-# range isn't set by an unrepresentative pair):
-#   DYNAMIC PRESSURE peak-per-frame: natural ventilation ~0.57-0.69 Pa,
-#   HVAC-forced ~6-9.4 Pa across the full dataset -- 9.5 Pa covers both
-#   regimes on one axis (a line, unlike a heatmap color, stays legible at
-#   either end of a wide range).
-_DP_STRIP_RANGE = (0.0, 9.5)
+# derived_quantities.peak_series/hazard_fraction_series).
+#   DYNAMIC PRESSURE peak-per-frame, measured across the full 24-scenario
+#   dataset: natural ventilation ~0.57-0.69 Pa, HVAC-forced ~6-9.4 Pa. A
+#   single fixed 0-9.5 Pa axis kept every scenario cross-comparable on one
+#   shared scale, but squashed a natural-ventilation run's real swing into
+#   the bottom ~7% of the strip (live-testing feedback: "make ... more
+#   width of the curve"). _timeseries_strip_data now scales DYNAMIC
+#   PRESSURE to each scenario's own min/max instead (+10% padding, not
+#   clamped to 0) -- an explicit trade of that cross-scenario comparability
+#   for per-scenario resolution, kept only for this one strip (unlike the
+#   hazard-fraction strip below, its single line has no other line on the
+#   same axis that a rescale could make misleading relative to).
 #   Hazard-fraction (room-area above 60/100/300 degC): full-dataset max is
 #   ~20.7%/6.5%/0.7% respectively (the two Phase-1-named scenarios alone
 #   only reach ~6.1%/2.5%/0.35%, which would have under-ranged the axis
@@ -1068,15 +1071,29 @@ class MainWindow(QtWidgets.QMainWindow):
         self.nav_rail = NavRail(nav_entries)
         self.nav_rail.page_selected.connect(self._navigate_to)
         self.nav_rail.theme_toggle_requested.connect(self._toggle_theme)
+        self.nav_rail.collapsed_changed.connect(self._on_nav_collapsed_changed)
 
-        shell = QtWidgets.QWidget()
-        shell.setObjectName("shellWidget")
-        shell_layout = QtWidgets.QHBoxLayout(shell)
-        shell_layout.setContentsMargins(0, 0, 0, 0)
-        shell_layout.setSpacing(0)
-        shell_layout.addWidget(self.nav_rail)
-        shell_layout.addWidget(self.page_stack, 1)
-        self.setCentralWidget(shell)
+        # Drag-to-resize nav rail (live-testing feedback: collapse/expand was
+        # the only width control) -- a QSplitter instead of the previous
+        # plain QHBoxLayout, since that's the standard Qt way to get a
+        # draggable divider for free rather than hand-rolling one. The rail
+        # itself still enforces its own min/max width (nav.py); the
+        # splitter just lets the user pick anywhere in that range.
+        self.nav_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.nav_splitter.setObjectName("shellSplitter")
+        self.nav_splitter.setContentsMargins(0, 0, 0, 0)
+        self.nav_splitter.setHandleWidth(6)
+        self.nav_splitter.addWidget(self.nav_rail)
+        self.nav_splitter.addWidget(self.page_stack)
+        self.nav_splitter.setCollapsible(0, False)  # the rail's own Collapse button owns that, not a drag-to-0
+        self.nav_splitter.setCollapsible(1, False)
+        self.nav_splitter.setStretchFactor(0, 0)
+        self.nav_splitter.setStretchFactor(1, 1)
+        saved_width = int(self.settings.value("nav_rail_width", NAV_DEFAULT_WIDTH))
+        self.nav_rail.note_expanded_width(saved_width)
+        self.nav_splitter.setSizes([self.nav_rail.target_width(), 10_000])
+        self.nav_splitter.splitterMoved.connect(self._on_nav_splitter_moved)
+        self.setCentralWidget(self.nav_splitter)
 
         self._build_evidence_notebook()
         self._build_sessions()
@@ -1327,6 +1344,25 @@ class MainWindow(QtWidgets.QMainWindow):
         # selection/time (hidden panels skip live updates for performance).
         if getattr(self, "selection_bus", None) is not None:
             self.selection_bus.resend()
+
+    def _on_nav_collapsed_changed(self, collapsed: bool) -> None:
+        """NavRail's Collapse button changed state -- snap the splitter to
+        whatever width that implies (target_width()) rather than relying on
+        the splitter to notice the rail's own min/max width changed, which
+        isn't guaranteed to reposition an already-dragged handle."""
+        self.nav_splitter.setSizes([self.nav_rail.target_width(), 10_000])
+
+    def _on_nav_splitter_moved(self, _pos: int, _index: int) -> None:
+        """User dragged the nav rail's own edge -- persist it (same
+        QSettings convention as theme/ui_scale) and remember it as the
+        width to restore to after a collapse/expand round-trip. No-op
+        while collapsed: note_expanded_width() itself guards that, since a
+        collapsed rail is fixed-width and can't actually be the thing being
+        dragged."""
+        width = self.nav_rail.width()
+        self.nav_rail.note_expanded_width(width)
+        if not self.nav_rail.is_collapsed():
+            self.settings.setValue("nav_rail_width", width)
 
     def _reset_grid_after_compare(self) -> None:
         """Bugfix: leaving a Compare preset's comparison grid (2x1, two
@@ -2115,7 +2151,16 @@ class MainWindow(QtWidgets.QMainWindow):
             if cache_key not in self._dp_series_cache:
                 data = self._field(store, cell.case_index, cell.quantity_key)
                 self._dp_series_cache[cache_key] = peak_series(data)
-            return ([self._dp_series_cache[cache_key]], ["#38BDF8"], _DP_STRIP_RANGE,
+            series = self._dp_series_cache[cache_key]
+            # Scaled to this scenario's own min/max, not the fixed
+            # cross-scenario 0-9.5 Pa range -- see the comment above this
+            # section for why. TEMPERATURE RISE's hazard-fraction strip
+            # keeps its fixed shared axis -- unaffected, and its multi-line
+            # "which band is bigger" comparison still needs one common scale.
+            lo, hi = float(min(series)), float(max(series))
+            pad = max((hi - lo) * 0.1, 1e-6)
+            dp_range = (lo - pad, hi + pad)
+            return ([series], ["#38BDF8"], dp_range,
                     _DP_STRIP_TITLE, _DP_STRIP_Y_LABEL, _DP_STRIP_CAPTION, [])
         # TEMPERATURE RISE: hazard fraction reads off the raw TEMPERATURE
         # field (same absolute 60/100/300 degC bands as the isotherm

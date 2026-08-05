@@ -23,8 +23,21 @@ dist/
 # under tests/fixtures/ carry the data needed by the test suite.
 fds/sim/
 
-# Large media assets from the 2019 outreach event (425M + 647M)
-banner/
+# Large media assets from the 2019 outreach event, ignored individually
+# (not the whole banner/ directory -- a directory-level ignore also blocks
+# git from ever re-including a file under it, even via a later `!` rule;
+# see git's own gitignore(5) docs on that exact limitation). This keeps
+# banner/img/'s small partner-logo assets (each under 100K) trackable,
+# since branding.py actually loads them at runtime -- discovered while
+# adding the Wuppertal logo that a blanket `banner/` rule meant even the
+# pre-existing logo_fzj.svg had never been tracked, silently falling back
+# to a plain-text label on any machine but ones that already had banner/
+# locally from before it was gitignored.
+banner/*.ai
+banner/*.pdf
+banner/img/front_image.jpg
+banner/img/left_image.jpg
+banner/img/right_image.jpg
 image_video_sim/
 
 # Runtime caches and ML outputs (see ROADMAP.md §8)
