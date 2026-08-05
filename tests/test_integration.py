@@ -373,7 +373,7 @@ class TestIntegration:
         the door gap, the door opening, and the two vents -- is drawn
         directly on the heatmap for the default (y-normal) slice, matching
         the sidebar diagram's own geometry, not just a plain closed box."""
-        from schematic import ROOM_X, ROOM_Z
+        from schematic import ROOM_X, ROOM_Z, _OBST_Z_TOP
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo:
@@ -381,7 +381,12 @@ class TestIntegration:
             return
         view = window.view_grid.active_cell().view
         wall_segs = view.room_walls.get_segments()
-        assert len(wall_segs) == 5           # floor, ceiling, right wall, 2 left-wall pieces
+        # floor, ceiling (slab underside), slab top face, right wall, 2
+        # left-wall pieces -- the slab top face (z=_OBST_Z_TOP) draws the
+        # ceiling &OBST's true thickness as a second parallel line, so the
+        # dead z=0.23 grid row (see _OBST_Z_TOP's docstring) visibly sits
+        # inside the concrete instead of reading as an unexplained offset.
+        assert len(wall_segs) == 6
         assert len(view.room_door.get_segments()) == 1
         assert len(view.room_vents.get_segments()) == 2
         xs = [p[0] for seg in wall_segs for p in seg]
@@ -389,7 +394,7 @@ class TestIntegration:
         assert min(xs) == pytest.approx(ROOM_X[0])
         assert max(xs) == pytest.approx(ROOM_X[1])
         assert min(zs) == pytest.approx(ROOM_Z[0])
-        assert max(zs) == pytest.approx(ROOM_Z[1])
+        assert max(zs) == pytest.approx(_OBST_Z_TOP)
         window.close()
 
     def test_room_outline_hidden_for_non_y_normal_or_non_slice_cell(self, qapp):
@@ -2156,37 +2161,16 @@ class TestSootAnyPlaneUI:
         window.close()
 
     def test_soot_planes_appear_with_real_s3d_data(self, qapp):
+        """The x=0.25 m doorway plane was removed by request (discarded,
+        not gated) -- only the side-view (y=0) SOOT DENSITY plane remains."""
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo:
             window.close()
             return
         soot = [i for i in window.quantity_infos if i.key.quantity == "SOOT DENSITY"]
-        assert len(soot) == 2  # side view + doorway
-        positions = {i.key.plane_pos for i in soot}
-        assert positions == {0.0, 0.25}
-        # Labels are plane-distinct (not two identical "Smoke (soot)" entries).
-        labels = [window._quantity_label(i) for i in soot]
-        assert len(set(labels)) == 2
-        window.close()
-
-    def test_switching_to_doorway_plane_changes_extent_and_shape(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            window.close()
-            return
-        door_idx = next((i for i, info in enumerate(window.quantity_infos)
-                         if info.key.plane_pos == 0.25), None)
-        assert door_idx is not None
-        before_shape = window.heatmap.get_array().shape
-        window.quantity_combo.setCurrentIndex(door_idx)
-        _drain_workers(qapp, window.controller._prefetch_workers)
-        qapp.processEvents()
-        after_shape = window.heatmap.get_array().shape
-        # Doorway (y x z) plane differs in width from the side (x x z) plane.
-        assert after_shape != before_shape
-        assert window.view_grid.active_view()._extent[0] < 0  # y spans negative
+        assert len(soot) == 1
+        assert soot[0].key.plane_pos == 0.0
         window.close()
 
 
@@ -2224,13 +2208,6 @@ class TestMultiStudyGuestStudy:
             pytest.skip("real dataset not present")
         window = MainWindow(load_study(case_dir))
         assert window.heatmap.get_array().shape == (49, 101)
-        door_idx = next((i for i, info in enumerate(window.quantity_infos)
-                        if info.key.plane_pos == 0.25), None)
-        assert door_idx is not None
-        window.quantity_combo.setCurrentIndex(door_idx)
-        _drain_workers(qapp, window.controller._prefetch_workers)
-        qapp.processEvents()
-        assert window.heatmap.get_array().shape == (49, 31)
         window.close()
 
 

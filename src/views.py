@@ -11,11 +11,13 @@ import re
 from typing import Protocol
 
 import matplotlib as mpl
+import matplotlib.patheffects as path_effects
+import matplotlib.ticker as mticker
 import numpy as np
 from matplotlib.collections import LineCollection
 from PyQt5 import QtCore, QtWidgets
 
-from widgets import MplCanvas
+from widgets import MplCanvas, TimeSeriesStrip
 from config import QUANTITY_DISPLAY, FRAMES_PER_SECOND
 from registry import get_quantity
 from theme import RADIUS
@@ -51,6 +53,31 @@ _VENT_STATE_COLORS = {"open": "#22C55E", "closed": "#94A3B8", "HVAC": "#F59E0B"}
 _ROOM_WALL_LW = 1.4
 _ROOM_DOOR_LW = 2.6
 _ROOM_VENT_LW = 4.0
+
+# Room overlay legibility (colormap expressiveness follow-up): the room
+# boundary/door/vents are static overlays drawn on top of *every*
+# quantity's colormap (inferno, viridis, gray_r, the fds_flow "jet"), so
+# no single fixed line color can stay visible everywhere -- room_walls'
+# white dashes vanish into inferno's pale-yellow flame plume exactly
+# where the fire is, and a green/cyan line would just as easily vanish
+# into viridis's own pale end. Fixed by casing each line in a contrasting
+# stroke via matplotlib.patheffects.withStroke: a dark casing ("#14171F",
+# this app's existing fixed dark overlay color -- see the device-marker
+# legend) drawn *underneath* the artist's own color, so whichever of the
+# two the current background washes out, the other still reads. Never
+# touches the artist's own foreground color -- room_vents keeps its
+# open/closed/HVAC state color, it's just outlined now.
+_ROOM_OUTLINE_CASING = "#14171F"
+
+
+def _cased_line_effect(base_linewidth: float) -> list:
+    """A patheffects stack for a line of `base_linewidth`: a wider dark
+    stroke underneath, then the artist's own color drawn normally on top
+    -- see _ROOM_OUTLINE_CASING above. The casing is deliberately only
+    ~1pt wider on each side (not a heavy outline) so it reads as a thin
+    border, not a different, thicker line."""
+    return [path_effects.withStroke(linewidth=base_linewidth + 2.0, foreground=_ROOM_OUTLINE_CASING),
+            path_effects.Normal()]
 
 # Virtual device marker shapes, one per device kind (Analysis UX +
 # reliability pass): heat_detector (instant threshold) and sprinkler (RTI
@@ -164,6 +191,15 @@ class SliceView:
         self._cinematic_enabled = False
         self._cinema_pipeline: EffectsPipeline = None
         self._last_frame = None
+        # Ceiling-obstruction display mask (colormap expressiveness follow-
+        # up): boolean (n_z, n_x), True where a cell is a dead solid-
+        # interior grid point (schematic.ceiling_obstruction_mask) that
+        # should render as background, not a colored (mis)reading -- color
+        # only, never applied to _last_frame, so hover/isotherms/min-max
+        # keep reporting the true raw value at every cell, masked or not.
+        # None (default, and for every quantity this doesn't apply to)
+        # means "no masking", identical to today's behavior.
+        self._ceiling_mask = None
         # Sub-frame interpolation state: blends _interp_from -> _interp_to
         # over the interval between real show_frame() calls, ticking a
         # timer independent of TimeController's own (data-rate) clock.
@@ -227,23 +263,52 @@ class SliceView:
         self.room_walls = None
         self.room_door = None
         self.room_vents = None
+        # A one-word label on the door segment (colormap expressiveness
+        # follow-up): the door line sits at the room's left wall, with
+        # real exterior domain space beyond it -- unlabeled, that empty
+        # region reads as a rendering gap rather than "outside the room,
+        # on purpose". Empty/no position until set_room_outline() places
+        # it, same "always present, empty by default" convention as the
+        # three artists above.
+        self.room_door_label = None
 
     def widget(self) -> QtWidgets.QWidget:
         return self.canvas
 
     def init_plot(self, first_frame: np.ndarray, cmap: str, interpolation: str,
-                   vmin: float, vmax: float, colorbar_label: str, extent: tuple = None):
+                   vmin: float, vmax: float, colorbar_label: str, extent: tuple = None,
+                   ceiling_mask=None):
         """One-time setup: axes, image artist, colorbar. Call once per
         SliceView instance before show_frame(). `extent`, if given, is
         (x0, x1, z0, z1) in physical meters -- see the class docstring for
-        why this is the load-bearing piece for M2.6's probe/isotherms."""
+        why this is the load-bearing piece for M2.6's probe/isotherms.
+        `ceiling_mask`, if given, is applied to this first frame the same
+        way set_ceiling_mask()/show_frame() apply it to every later one."""
         self._extent = extent
-        self.ax = self.canvas.fig.add_subplot(111)
+        self._ceiling_mask = ceiling_mask
+        # Heatmap + colorbar as two explicit GridSpec columns (live-cell
+        # re-proportioning pass), not the previous add_subplot(111) +
+        # implicit fig.colorbar(fraction=..., pad=...) shrink-the-parent-ax
+        # approach -- that left the colorbar's box (and its tick label
+        # text, which renders *outside* the box) squeezed into whatever
+        # sliver sat between the heatmap's right edge and the figure's own
+        # right=0.95 boundary, clipping tick labels whenever that sliver
+        # was narrower than the label text (confirmed directly: "1.0"/
+        # "0.2"-style labels rendered as bare "1."/"0."). width_ratios and
+        # the left/right margins below are all fractions of the figure, so
+        # the split holds at any window size instead of only looking right
+        # at whatever size this was tuned at -- right=0.83 in particular
+        # reserves real figure width *outside* the colorbar's own box for
+        # its tick labels and rotated unit label to render into.
+        gs = self.canvas.fig.add_gridspec(1, 2, width_ratios=(18, 1), wspace=0.6,
+                                          left=0.03, right=0.83, top=0.97, bottom=0.05)
+        self.ax = self.canvas.fig.add_subplot(gs[0, 0])
+        self._colorbar_ax = self.canvas.fig.add_subplot(gs[0, 1])
         self.ax.set_facecolor(MplCanvas.PLOT_BG)
         imshow_kwargs = dict(cmap=cmap, interpolation=interpolation, aspect="auto")
         if extent is not None:
             imshow_kwargs["extent"] = extent
-        self.heatmap = self.ax.imshow(first_frame, **imshow_kwargs)
+        self.heatmap = self.ax.imshow(self._masked_for_display(first_frame), **imshow_kwargs)
         # Real soot-density smoke overlay (continuous soot-density
         # visualization pass): a second image over the heatmap, initially
         # fully transparent (alpha=0 everywhere) -- same shape/extent as
@@ -303,16 +368,27 @@ class SliceView:
         # Room overlay: empty until set_room_outline() gives it real
         # segments, same "always present, empty by default" convention.
         self.room_walls = LineCollection([], linewidths=_ROOM_WALL_LW, linestyle="--",
-                                         colors="#FFFFFF", zorder=6)
+                                         colors="#FFFFFF", zorder=6,
+                                         path_effects=_cased_line_effect(_ROOM_WALL_LW))
         self.ax.add_collection(self.room_walls)
-        self.room_door = LineCollection([], linewidths=_ROOM_DOOR_LW, colors="#38BDF8", zorder=6)
+        self.room_door = LineCollection([], linewidths=_ROOM_DOOR_LW, colors="#38BDF8", zorder=6,
+                                        path_effects=_cased_line_effect(_ROOM_DOOR_LW))
         self.ax.add_collection(self.room_door)
-        self.room_vents = LineCollection([], linewidths=_ROOM_VENT_LW, zorder=6)
+        self.room_vents = LineCollection([], linewidths=_ROOM_VENT_LW, zorder=6,
+                                         path_effects=_cased_line_effect(_ROOM_VENT_LW))
         self.ax.add_collection(self.room_vents)
+        self.room_door_label = self.ax.text(
+            0, 0, "", fontsize=6, color="#38BDF8", ha="left", va="center", zorder=6,
+            path_effects=_cased_line_effect(1.0))
+        self.room_door_label.set_visible(False)
         self.ax.set_xticks([])
         self.ax.set_yticks([])
-        self.canvas.fig.subplots_adjust(top=0.97, bottom=0.03, left=0.02, right=0.95)
-        self.colorbar = self.canvas.fig.colorbar(self.heatmap, fraction=0.04, pad=0.02)
+        # cax=self._colorbar_ax (not the previous fraction=/pad=, which
+        # implicitly shrinks self.ax to make room) -- the GridSpec above
+        # already reserves this axes' box and the figure margin beyond it,
+        # so the colorbar just draws into the box it's given instead of
+        # renegotiating space with the heatmap every time.
+        self.colorbar = self.canvas.fig.colorbar(self.heatmap, cax=self._colorbar_ax)
         self.colorbar.set_label(colorbar_label)
         self.heatmap.set_clim(vmin=vmin, vmax=vmax)
         self.canvas.capture_background()
@@ -377,7 +453,7 @@ class SliceView:
             # composite on top of each other.
             self._clear_soot_overlay()
         else:
-            display_data = frame
+            display_data = self._masked_for_display(frame)
             if soot_frame is not None and soot_ceiling is not None:
                 self._update_soot_overlay(soot_frame, soot_ceiling)
         self.heatmap.set_data(display_data)
@@ -404,7 +480,7 @@ class SliceView:
         artists = [self.heatmap, self.soot_overlay, self.ember_scatter,
                   *self.device_scatters.values(),
                   self.streamline_collection, self.hover_highlight,
-                  self.room_walls, self.room_door, self.room_vents]
+                  self.room_walls, self.room_door, self.room_vents, self.room_door_label]
         if self.velocity_quiver is not None:
             artists.append(self.velocity_quiver)
         if self.true_vector_quiver is not None:
@@ -423,10 +499,21 @@ class SliceView:
             self.room_walls.set_segments([])
             self.room_door.set_segments([])
             self.room_vents.set_segments([])
+            self.room_door_label.set_visible(False)
             return
         self.room_walls.set_segments([[(x0, z0), (x1, z1)] for x0, z0, x1, z1 in geometry["walls"]])
         dx0, dz0, dx1, dz1 = geometry["door"]
         self.room_door.set_segments([[(dx0, dz0), (dx1, dz1)]])
+        # "Door" (colormap expressiveness follow-up): the door line sits
+        # right where the room's real exterior domain space begins (see
+        # ROOM_X/ROOM_Z in schematic.py) -- named so that empty region
+        # reads as "outside the room" rather than a rendering gap. A small
+        # fixed offset to the right of the line, in the same physical
+        # (meter) units as everything else this method places, keeps it
+        # just inside the room instead of overlapping the door line itself.
+        self.room_door_label.set_position((dx0 + 0.02, (dz0 + dz1) / 2))
+        self.room_door_label.set_text("Door")
+        self.room_door_label.set_visible(True)
         vent_segs, vent_colors = [], []
         for (x0, z0, x1, z1), state in geometry["vents"]:
             vent_segs.append([(x0, z0), (x1, z1)])
@@ -563,6 +650,40 @@ class SliceView:
     def set_colorbar_label(self, text: str) -> None:
         self.colorbar.set_label(text)
         self.canvas.capture_background()
+
+    def set_colorbar_offset(self, offset: float = 0.0) -> None:
+        """Relabel the colorbar's tick numbers as (raw value - offset)
+        without touching the underlying data or clim -- e.g. TEMPERATURE's
+        colorbar reads as rise-above-ambient (0..150) while the heatmap
+        array itself, and every hover/min-max readout that reads it, stay
+        true absolute °C. offset=0 restores plain (untranslated) ticks."""
+        if offset:
+            self.colorbar.ax.yaxis.set_major_formatter(
+                mticker.FuncFormatter(lambda v, pos: f"{v - offset:g}"))
+        else:
+            self.colorbar.ax.yaxis.set_major_formatter(mticker.ScalarFormatter())
+        self.canvas.capture_background()
+
+    def set_ceiling_mask(self, mask) -> None:
+        """Set/clear the ceiling-obstruction display mask (see the
+        _ceiling_mask attribute) -- takes effect on the next show_frame()/
+        init_plot(), doesn't itself force a redraw. `mask` is a boolean
+        (n_z, n_x) array matching this view's current frame shape, or
+        None to disable masking (every quantity this doesn't apply to)."""
+        self._ceiling_mask = mask
+
+    def _masked_for_display(self, frame: np.ndarray) -> np.ndarray:
+        """`frame`, or a copy with _ceiling_mask cells set to NaN for
+        color-mapping only -- imshow renders NaN via the colormap's "bad"
+        color (transparent by default), showing the canvas's own white
+        background through, same as an empty SOOT DENSITY field. Never
+        mutates `frame` itself -- callers keep using the original for
+        _last_frame/hover/isotherms."""
+        if self._ceiling_mask is None or self._ceiling_mask.shape != frame.shape:
+            return frame
+        display = frame.astype(float, copy=True)
+        display[self._ceiling_mask] = np.nan
+        return display
 
     def set_title(self, text: str) -> None:
         self.ax.set_title(text)
@@ -978,6 +1099,14 @@ class DifferenceView:
     def set_title(self, text: str) -> None:
         self._inner.set_title(text)
 
+    def set_ceiling_mask(self, mask) -> None:
+        """Delegates through same as the setters above -- MainWindow's
+        _sync_cell_ceiling_mask is called unconditionally on type change
+        (see GridCell._swap_view), always with None here (_ceiling_mask_for
+        only ever computes a real mask for a "slice" cell), but the method
+        still has to exist so that call doesn't AttributeError."""
+        self._inner.set_ceiling_mask(mask)
+
     def capture_background(self) -> None:
         self._inner.capture_background()
 
@@ -1131,6 +1260,11 @@ class EnsembleView:
 
     def set_title(self, text: str) -> None:
         self._inner.set_title(text)
+
+    def set_ceiling_mask(self, mask) -> None:
+        """See DifferenceView's identical passthrough for why this has to
+        exist even though it's always called with None here."""
+        self._inner.set_ceiling_mask(mask)
 
     def capture_background(self) -> None:
         self._inner.capture_background()
@@ -1401,7 +1535,27 @@ class GridCell(QtWidgets.QWidget):
         self._header_layout = QtWidgets.QHBoxLayout()
         self._header_layout.setSpacing(4)
         self._outer_layout.addLayout(self._header_layout)
-        self._outer_layout.addWidget(self.view.widget(), 1)
+        # Stretch factors (live-cell re-proportioning pass): both the
+        # heatmap and the strip below it have an Expanding vertical size
+        # policy, so QVBoxLayout actually honors these ratios -- 3:1 gives
+        # the strip a real, legible vertical share (title + ticks + x-axis
+        # label + caption all fit) without shrinking the heatmap to a
+        # sliver, and holds at any window size since it's a ratio, not a
+        # pixel count. Only takes effect while the strip is visible; a
+        # hidden widget (TEMPERATURE, which never gets a strip) claims no
+        # layout space regardless of its stretch factor, so the heatmap
+        # alone still fills the whole cell exactly as before.
+        self._outer_layout.addWidget(self.view.widget(), 3)
+        # Time-series strip (colormap expressiveness follow-up): hidden
+        # unless MainWindow's set_timeseries() gives it real data -- only
+        # DYNAMIC PRESSURE/TEMPERATURE RISE on a "slice" cell use it (never
+        # the raw TEMPERATURE heatmap, and never difference/ensemble cells,
+        # which have no single scenario's series to show). Below the
+        # heatmap, not inside SliceView, since it's cell-level UI, not a
+        # PlotView concern -- DifferenceView/EnsembleView never need it.
+        self.timeseries_strip = TimeSeriesStrip(self)
+        self.timeseries_strip.setVisible(False)
+        self._outer_layout.addWidget(self.timeseries_strip, 1)
 
         self._build_slice_header()
         self._restyle()
@@ -1483,7 +1637,13 @@ class GridCell(QtWidgets.QWidget):
         elif cell_type == "ensemble":
             self.view = EnsembleView(self)
         self._install_activation_filter()
-        self._outer_layout.addWidget(self.view.widget(), 1)
+        # insertWidget(1, ...), not addWidget (which appends to the end of
+        # the layout): the timeseries_strip already occupies the slot after
+        # this one from construction, and plain addWidget would put the new
+        # view widget *after* it -- reordering the strip above the heatmap
+        # the first time a cell switches type and back. Same 3:1 stretch
+        # ratio as the constructor's own addWidget call.
+        self._outer_layout.insertWidget(1, self.view.widget(), 3)
 
     # Header widget attribute names per type, dropped in _clear_header so a
     # stale reference to a torn-down widget can't linger (and so

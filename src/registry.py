@@ -53,8 +53,21 @@ class QuantityInfo:
 
 QUANTITY_REGISTRY = {
     "TEMPERATURE": QuantityInfo(
-        "TEMPERATURE", "Temperature", "°C", "fds_fire", AMBIENT_C,
-        slider_min=50, slider_max=1000, slider_default=300,
+        # Colormap expressiveness pass: "inferno" (was "fds_fire") + a
+        # fixed 20-170 °C clim (was 20-300, drifting to whatever the vmax
+        # slider/adaptive logic last set). 170 = AMBIENT_C + 150 °C of
+        # rise -- verified against the real 24-scenario dataset (see
+        # derived_quantities.py's docstring): every scenario's peak is
+        # well above this (382-469 °C absolute), so this deliberately
+        # saturates the flame plume in exchange for spreading the *room's*
+        # ambient-to-hazardous gradient across the visible ramp instead of
+        # crushing it into a sliver below the peak. vmin stays exactly
+        # AMBIENT_C (not renumbered to 0) so this fixed clim reads as
+        # "floored at ambient" without touching any of the other call
+        # sites that already treat this vmin as the real physical ambient
+        # floor (narration's ambient_c, linked-clim's shared floor).
+        "TEMPERATURE", "Temperature", "°C", "inferno", AMBIENT_C,
+        slider_min=50, slider_max=1000, slider_default=int(AMBIENT_C + 150),
         hazard_levels=(60, 100, 300), kind="slice2d",
         interpretation="Gas temperature; drives buoyancy, the smoke layer, and the "
                        "convected-heat hazard (60/100/300 °C bands)."),
@@ -65,8 +78,18 @@ QUANTITY_REGISTRY = {
         interpretation="Speed magnitude |v| of the flow; direction is not stored "
                        "(the in-plane U/W components are gated)."),
     "SOOT DENSITY": QuantityInfo(
+        # Fixed range (colormap expressiveness pass): 0-20000 mg/m3, tuned
+        # to the real 24-scenario dataset's measured max-over-run (~19289
+        # mg/m3 at the default y=0 plane -- verified directly, not
+        # assumed) rather than the old adaptive per-scenario percentile
+        # floor/ceiling (main_window._soot_display_range_for, removed) so
+        # the same color means the same concentration in every scenario
+        # and every frame, not just within one scenario's own playback.
+        # vmin=0 (not a data-driven nonzero floor) so an empty/near-zero
+        # field renders clean white under "gray_r", not a data-dependent
+        # partial shade.
         "SOOT DENSITY", "Smoke (soot)", "mg/m³", "gray_r", 0.0,
-        slider_min=100, slider_max=10000, slider_default=3000,
+        slider_min=100, slider_max=25000, slider_default=20000,
         hazard_levels=(), kind="volume",
         interpretation="Soot mass concentration from the volumetric field; a proxy "
                        "for smoke obscuration."),
@@ -79,8 +102,46 @@ QUANTITY_REGISTRY = {
         interpretation="Temperature above ambient (T − 20 °C); isolates the fire's "
                        "contribution. Derived from TEMPERATURE."),
     "DYNAMIC PRESSURE": QuantityInfo(
-        "DYNAMIC PRESSURE", "Dynamic pressure", "Pa", "fds_flow", 0.0,
-        slider_min=1, slider_max=50, slider_default=10,
+        # "viridis" (was "fds_flow", VELOCITY's own colormap -- the two
+        # were previously indistinguishable in the View menu).
+        #
+        # slider_default=1, not the dataset-wide max-over-run (~9.4 Pa,
+        # HVAC-forced scenarios): this quantity is genuinely bimodal
+        # across the 24-scenario dataset (verified directly, all
+        # scenarios, whole run) -- 16/24 scenarios (VOD open/closed,
+        # natural ventilation) top out at 0.57-0.69 Pa, while only 8/24
+        # (VOD=HVAC) reach 6-9.4 Pa, with nothing in between. A ceiling
+        # picked from the dataset max (10, the first calibration here)
+        # crushes every natural-ventilation frame -- the common case --
+        # into under 7% of the ramp, which is worse than the adaptive
+        # per-scenario ceiling this replaced. 1 Pa puts a natural-
+        # ventilation scenario's real peak at ~60-70% of the ramp instead,
+        # at the cost of an HVAC scenario saturating to the top color for
+        # most of its run -- the same "sacrifice the rare extreme for
+        # common-case legibility" trade-off already made for TEMPERATURE.
+        # 1 is also the finest step this quantity's slider can express: it
+        # moves in whole Pa (slider_min=1, no sub-1 granularity), so this
+        # is the lowest fixed default actually reachable without a wider
+        # slider-scale change (out of scope here). A user comparing an
+        # HVAC scenario can still drag the slider up to slider_max.
+        #
+        # An HVAC-scenario frame pinned to the top color is DELIBERATE,
+        # not a bug to "fix" by raising this default back toward the
+        # dataset max -- doing that just re-crushes the 16/24 natural-
+        # ventilation scenarios this default exists for. The slider is the
+        # intended escape hatch for HVAC-detail inspection, by choice, not
+        # by omission: a per-ventilation-class default (detect VOD=HVAC
+        # from the scenario manifest and switch the ceiling to ~10 Pa for
+        # those cases -- same 3 call sites in main_window.py this
+        # replaced: _apply_quantity_display_defaults/_init_cell_view/
+        # _redraw_cell_now) was considered and deliberately deferred: it
+        # reintroduces a conditional ceiling of the same shape just
+        # removed (coarser, keyed on a study-specific factor instead of
+        # computed live) to solve a problem the slider already solves
+        # visibly and on demand. Build it if/when the HVAC-detail-in-the-
+        # default-view workflow actually comes up -- not preemptively.
+        "DYNAMIC PRESSURE", "Dynamic pressure", "Pa", "viridis", 0.0,
+        slider_min=1, slider_max=50, slider_default=1,
         hazard_levels=(), kind="derived",
         interpretation="Flow kinetic pressure ½ρ|v|² (ρ≈1.2 kg/m³); a scalar proxy "
                        "for flow forcing. Derived from VELOCITY (magnitude)."),

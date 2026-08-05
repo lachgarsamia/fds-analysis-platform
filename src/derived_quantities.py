@@ -57,6 +57,39 @@ def source_quantity(name: str):
 MIN_DYNAMIC_PRESSURE_CEILING_PA = 0.05
 
 
+def peak_series(field: np.ndarray) -> np.ndarray:
+    """Per-frame max over the whole field -- (n_times,) from a
+    (n_times, n_z, n_x) array. Used for the dynamic-pressure time-series
+    strip (colormap expressiveness follow-up): the story of this quantity
+    is temporal (how hard is the flow being driven right now, relative to
+    the rest of this run), not spatial, so a per-frame reduction is a
+    better fit than the heatmap alone."""
+    return field.reshape(field.shape[0], -1).max(axis=1)
+
+
+def hazard_fraction_series(temperature_field: np.ndarray, thresholds,
+                            room_mask: np.ndarray = None) -> list:
+    """Per-frame fraction of cells exceeding each threshold in `thresholds`
+    (e.g. the 60/100/300 degC hazard bands already used for the isotherm
+    overlay/hazard narration elsewhere) -- one (n_times,) array per
+    threshold, same order as `thresholds`. `room_mask` restricts the
+    denominator to the room's own interior (schematic.ROOM_X/ROOM_Z), not
+    the wider simulated domain around it, which never heats up and would
+    otherwise dilute every fraction toward zero. temperature_field is
+    (n_times, n_z, n_x); room_mask, if given, is (n_z, n_x) boolean.
+
+    Deliberately a *fraction of area*, not the frame's peak temperature:
+    investigated directly against this dataset (candle-fire scenarios) --
+    the single hottest cell reaches ~90% of its eventual peak within the
+    first 8-60s of a 120s run and then just oscillates at that level, so a
+    peak-temperature line would read as flat/saturated for most of the
+    run. The hazard-covered *area* keeps producing real, moving signal
+    across the whole run instead (see main_window.py's time-series-strip
+    wiring for the actual measured ranges)."""
+    data = temperature_field if room_mask is None else temperature_field[:, room_mask]
+    return [np.mean(data > t, axis=1) for t in thresholds]
+
+
 def display_ceiling(data, percentile: float = 99.0, floor: float = MIN_DYNAMIC_PRESSURE_CEILING_PA) -> float:
     """A data-driven display-scale ceiling for one scenario's whole run of
     a derived quantity (all frames) -- percentile (not the bare max) so one

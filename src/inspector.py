@@ -161,6 +161,7 @@ class InspectorPanel(QtWidgets.QWidget):
 
         self.range_label = QtWidgets.QLabel("—")
         self.range_label.setProperty("role", "value")
+        self.range_label.setWordWrap(True)
         layout.addWidget(self.range_label)
 
         # Difference cells only (A-B) -- hidden/blank for a plain slice

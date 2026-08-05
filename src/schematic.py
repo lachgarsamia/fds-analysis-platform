@@ -24,6 +24,7 @@ Design decisions this module encodes:
 import os
 from typing import Optional
 
+import numpy as np
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 import fds.slice.slice as fds_slice
@@ -191,7 +192,37 @@ _DOMAIN_X = (0.0, 1.0)
 _DOMAIN_Z = (0.0, 0.48)
 ROOM_X = (0.27, 1.0)
 ROOM_Z = (0.0, 0.22)
+# Ceiling &OBST top face (XB=...,0.22,0.24 / Ceiling) -- the slab is
+# ROOM_Z[1]=0.22 (bottom, the real wall) to _OBST_Z_TOP=0.24 (top, where
+# real exterior gas resumes). TEMPERATURE/VELOCITY read exactly ambient/
+# exactly 0 (flat, zero variation) at the one grid row strictly inside
+# that slab (z=0.23) wherever it's solid -- a dead solid-interior grid
+# point the gas-phase solver never touches, not real gas data or an
+# overlay bug. Under an open VOD/VOC opening the same row instead varies
+# smoothly with its real neighbors, since there's genuinely no solid
+# there (confirmed directly, colormap expressiveness follow-up).
+#
+# Drawn as its true thickness on the heatmap: room_overlay_geometry's
+# `walls` list has a dashed line at both ROOM_Z[1]=0.22 and _OBST_Z_TOP=
+# 0.24, so the dead z=0.23 row sits visibly between two boundary lines
+# instead of behind one unexplained offset line. That geometry alone
+# isn't enough to make the row self-explanatory, though -- checked
+# directly by rendering VELOCITY/DYNAMIC PRESSURE with the mask disabled:
+# the dead cell's exact 0 sits in the same low-colormap range as the real,
+# genuinely-near-zero calm air immediately above/below it (e.g. real
+# VELOCITY of 0.007-0.13 m/s right next to the dead exact-0.0 row), so
+# bracketing lines or not, it reads as plausible real data, not obviously
+# "inside the wall." So it's still masked to background -- see
+# ceiling_obstruction_mask() -- with the two lines left in place as the
+# honest boundary of what's being masked.
+_OBST_Z_TOP = 0.24
 _CANDLE_X = (0.84, 0.96)      # candle burner x-band
+# Vent x-ranges, shared by room_overlay_geometry (the drawn tick marks)
+# and ceiling_obstruction_mask (which of these openings to leave unmasked)
+# -- one source, so the two can't drift apart. From the real &HOLE lines,
+# see room_overlay_geometry's docstring.
+_VOD_X = (0.32, 0.40)
+_VOC_X = (0.86, 0.94)
 _DOMAIN_ASPECT = (_DOMAIN_Z[1] - _DOMAIN_Z[0]) / (_DOMAIN_X[1] - _DOMAIN_X[0])
 
 
@@ -221,18 +252,65 @@ def room_overlay_geometry(door: int, vod: int, voc: int) -> dict:
     walls = [
         (x0, z0, x1, z0),             # floor
         (x1, z0, x1, z1),             # right wall
-        (x0, z1, x1, z1),             # ceiling
+        (x0, z1, x1, z1),             # ceiling (slab underside, z=ROOM_Z[1] -- the real wall)
+        # Ceiling &OBST slab top face (z=_OBST_Z_TOP), parallel to the line
+        # above -- draws the slab's true ~2cm thickness instead of a single
+        # line, so the dead solid-interior grid row between the two (see
+        # _OBST_Z_TOP's docstring) reads as "inside the concrete" rather
+        # than an unexplained second, offset boundary line. Static geometry,
+        # same casing/dash style as every other room_walls segment -- no
+        # vent-state coupling (real venting gas exists at both x-vent bands
+        # regardless of z, so this line intentionally doesn't gap there,
+        # matching the ceiling line's own convention of overlaying vent
+        # color on top rather than cutting a hole in the wall segment).
+        (x0, _OBST_Z_TOP, x1, _OBST_Z_TOP),
         (x0, z0, x0, door_bottom),    # left wall, below the door
         (x0, door_top, x0, z1),       # left wall, above the door
     ]
     door_seg = (x0, door_bottom, x0, door_top)
 
     vents = [
-        ((0.32, z1, 0.40, z1), _VOD_STATES.get(vod, "?")),   # vertical opening door
-        ((0.86, z1, 0.94, z1), _VOC_STATES.get(voc, "?")),   # vertical opening candle
+        ((_VOD_X[0], z1, _VOD_X[1], z1), _VOD_STATES.get(vod, "?")),   # vertical opening door
+        ((_VOC_X[0], z1, _VOC_X[1], z1), _VOC_STATES.get(voc, "?")),   # vertical opening candle
     ]
 
     return {"walls": walls, "door": door_seg, "vents": vents}
+
+
+def ceiling_obstruction_mask(vod: int, voc: int, extent, shape) -> np.ndarray:
+    """Boolean (n_z, n_x) mask, True where a TEMPERATURE/VELOCITY-sourced
+    cell sits inside the ceiling &OBST's solid slab (ROOM_Z[1]=0.22 to
+    _OBST_Z_TOP=0.24) and is NOT under a currently-open VOD/VOC vent --
+    i.e. a dead solid-interior grid point (see the comment above ROOM_Z)
+    that should render as background, not a colored (mis)reading. Cells
+    at exactly z=ROOM_Z[1] (the real wall, real gas) or under an open vent
+    (real venting gas) are left unmasked -- False everywhere outside the
+    slab's open interval too. `extent`/`shape` are the same (x0,x1,z0,z1)/
+    (n_z,n_x) convention as SliceView's own extent (row 0 = z1/top)."""
+    x0, x1, z0, z1 = extent
+    n_z, n_x = shape
+    xs = np.linspace(x0, x1, n_x)
+    zs = np.linspace(z1, z0, n_z)
+    # A small tolerance, well under the ~0.01 m grid spacing, so a grid
+    # point that's really *on* a boundary (e.g. linspace(0,1,101)[94] ==
+    # 0.9400000000000001, not exactly 0.94) doesn't fall on the wrong side
+    # of it -- confirmed directly: without this, the real last column of
+    # an open VOC vent got flagged as "outside the vent" and would have
+    # been masked despite carrying real venting data.
+    eps = 1e-6
+    in_slab = (zs > ROOM_Z[1] + eps) & (zs < _OBST_Z_TOP - eps)
+    # The ceiling &OBST only exists over the room itself (x>=ROOM_X[0]) --
+    # the exterior corridor (x<ROOM_X[0]) has no ceiling at all, so it's
+    # real, smoothly-varying gas at every z there, not a dead solid cell.
+    # Confirmed directly: without this, the corridor's real data at z=0.23
+    # (e.g. ~21-22.4 degC, clearly varying) was being masked too.
+    in_room_x = xs >= ROOM_X[0] - eps
+    open_vent_x = np.zeros(n_x, dtype=bool)
+    if _VOD_STATES.get(vod) == "open":
+        open_vent_x |= (xs >= _VOD_X[0] - eps) & (xs <= _VOD_X[1] + eps)
+    if _VOC_STATES.get(voc) == "open":
+        open_vent_x |= (xs >= _VOC_X[0] - eps) & (xs <= _VOC_X[1] + eps)
+    return in_slab[:, None] & in_room_x[None, :] & ~open_vent_x[None, :]
 
 
 class SchematicWidget(QtWidgets.QWidget):

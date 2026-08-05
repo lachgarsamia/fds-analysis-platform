@@ -26,13 +26,14 @@ import numpy as np
 from PyQt5 import QtCore, QtGui, QtWidgets
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
-from config import DEFAULT_CANDLES, DEFAULT_DOOR, DEFAULT_VOD, DEFAULT_VOC, QUANTITY_DISPLAY, ISOTHERM_LEVELS
+from config import DEFAULT_CANDLES, DEFAULT_DOOR, DEFAULT_VOD, DEFAULT_VOC, QUANTITY_DISPLAY, ISOTHERM_LEVELS, AMBIENT_C
 from theme import THEMES, apply_card_shadow, build_qss
 from widgets import ToggleGroup, CollapsibleSection, TimelineWidget
 from simulation_controller import SimulationController
 from time_controller import TimeController
 from data_provider import SimulationData, load_study, DataLoadError
-from schematic import SchematicWidget, resolve_room_extent, _VOD_STATES, _VOC_STATES, room_overlay_geometry
+from schematic import (SchematicWidget, resolve_room_extent, _VOD_STATES, _VOC_STATES,
+                       room_overlay_geometry, ceiling_obstruction_mask, ROOM_X, ROOM_Z)
 from controls.candle_card import CandleCard
 from controls.door_widget import DoorWidget
 from controls.vent_widget import VentWidget
@@ -89,7 +90,7 @@ from velocity_panel import VelocityPanel
 from figure_export import save_figure
 from report_builder import build_publication_manifest
 import smoke_density
-import derived_quantities
+from derived_quantities import peak_series, hazard_fraction_series
 import session_store
 from evidence_notebook_panel import EvidenceNotebookDock
 from evidence_notebook import EvidenceNotebook
@@ -110,10 +111,43 @@ logger = logging.getLogger(__name__)
 ORG_NAME = "FZJuelich"
 APP_NAME = "FDSSLCFVisualizer"
 
-# Live-polish follow-up ("only see a blue heatmap"): DYNAMIC PRESSURE needs
-# the same data-driven display ceiling as SOOT_QUANTITY -- see
-# _dynamic_pressure_ceiling_for/derived_quantities.display_ceiling.
-DYNAMIC_PRESSURE_QUANTITY = "DYNAMIC PRESSURE"
+# Time-series strips (colormap expressiveness follow-up): DYNAMIC PRESSURE
+# and TEMPERATURE RISE keep their heatmap but gain a per-frame reduction
+# strip underneath, since their real story is temporal, not spatial (see
+# derived_quantities.peak_series/hazard_fraction_series). Fixed y-ranges,
+# measured directly against the real dataset (not the two-scenario sample
+# Phase 1 named alone -- cross-checked against all 24 scenarios so the
+# range isn't set by an unrepresentative pair):
+#   DYNAMIC PRESSURE peak-per-frame: natural ventilation ~0.57-0.69 Pa,
+#   HVAC-forced ~6-9.4 Pa across the full dataset -- 9.5 Pa covers both
+#   regimes on one axis (a line, unlike a heatmap color, stays legible at
+#   either end of a wide range).
+_DP_STRIP_RANGE = (0.0, 9.5)
+#   Hazard-fraction (room-area above 60/100/300 degC): full-dataset max is
+#   ~20.7%/6.5%/0.7% respectively (the two Phase-1-named scenarios alone
+#   only reach ~6.1%/2.5%/0.35%, which would have under-ranged the axis
+#   for more severe scenarios) -- one shared axis at 22% fits the worst
+#   case; the 300 degC line reads as small/flat for most scenarios by
+#   design (that band covers very little area for these candle fires --
+#   see hazard_fraction_series' docstring for why fraction, not peak
+#   temperature, is plotted at all).
+_HAZARD_FRACTION_RANGE = (0.0, 0.22)
+_HAZARD_THRESHOLDS_C = (60.0, 100.0, 300.0)
+_HAZARD_COLORS = ("#F59E0B", "#E8622C", "#DC2626")  # amber -> orange -> red, escalating severity
+
+# Static strip labels (live-cell re-proportioning pass): title/y-axis/
+# caption text for TimeSeriesStrip, alongside the ranges above -- kept next
+# to them since both describe the same two strips. band_labels pairs each
+# _HAZARD_COLORS entry with its threshold, in the same order
+# hazard_fraction_series(_HAZARD_THRESHOLDS_C) returns its series.
+_DP_STRIP_TITLE = "Peak dynamic pressure over time"
+_DP_STRIP_Y_LABEL = "Pressure (Pa)"   # "peak dynamic" already said by the title above
+_DP_STRIP_CAPTION = "Peak dynamic pressure across the whole room, each frame."
+_HAZARD_STRIP_TITLE = "Room fraction over hazard bands"
+_HAZARD_STRIP_Y_LABEL = "Area fraction"   # "room ... threshold" already said by the title above
+_HAZARD_STRIP_CAPTION = "Fraction of room floor area exceeding each temperature threshold."
+_HAZARD_BAND_LABELS = tuple(
+    (color, f"{t:g}°C") for color, t in zip(_HAZARD_COLORS, _HAZARD_THRESHOLDS_C))
 
 # Compare page story presets (FireLab roadmap Phase 4, pages/compare.py):
 # each key resolves to two scenarios differing in exactly one factor
@@ -1688,6 +1722,24 @@ class MainWindow(QtWidgets.QMainWindow):
                 "slider_min": q.slider_min, "slider_max": q.slider_max,
                 "slider_default": q.slider_default}
 
+    def _colorbar_label_for(self, quantity: str, display: dict) -> str:
+        """Colorbar title text for `quantity` -- TEMPERATURE's colorbar
+        reads as rise-above-ambient (colormap expressiveness pass, see
+        _colorbar_offset_for), so its label says so explicitly rather than
+        the plain "Temperature (°C)" every other call site still shows
+        (combo box, sliders, Quantities panel -- those describe the raw
+        absolute-temperature quantity itself, unaffected by this)."""
+        if quantity == "TEMPERATURE":
+            return f"Temperature rise above ambient ({display['unit']})"
+        return f"{display['label']} ({display['unit']})"
+
+    def _colorbar_offset_for(self, quantity: str) -> float:
+        """The colorbar tick offset for `quantity` -- see
+        SliceView.set_colorbar_offset. Only TEMPERATURE's fixed clim is
+        deliberately anchored away from 0 (at AMBIENT_C); every other
+        quantity's colorbar shows its clim's raw numbers unchanged."""
+        return AMBIENT_C if quantity == "TEMPERATURE" else 0.0
+
     def _computed_quantity_infos(self) -> list:
         """SliceInfo entries for calculated/derived quantities whose inputs are
         available, so they appear in the Live Viewer combo alongside native
@@ -1825,10 +1877,10 @@ class MainWindow(QtWidgets.QMainWindow):
         actually offers, restricted to the slice plane the app has always
         rendered (DEFAULT_SLICE_KEY's direction/offset) so the combo box
         only ever changes *what* is shown, not *where* -- plus, when
-        volumetric `.s3d` SOOT DENSITY data is present (M2.2), one or more
-        smoke planes (a side view and a vertical doorway slice), which
-        *do* change where by design. Demo mode has no real .smv to
-        inspect, so it falls back to a single TEMPERATURE entry."""
+        volumetric `.s3d` SOOT DENSITY data is present (M2.2), a smoke
+        plane (the side view on the app's usual y=0 plane), which *does*
+        change where by design. Demo mode has no real .smv to inspect, so
+        it falls back to a single TEMPERATURE entry."""
         if self.sim_data.manifest:
             try:
                 path = self.sim_data.manifest[0].path
@@ -1845,14 +1897,14 @@ class MainWindow(QtWidgets.QMainWindow):
         return [SliceInfo(DEFAULT_SLICE_KEY, 'temp', QUANTITY_DISPLAY[DEFAULT_SLICE_KEY.quantity]['unit'])]
 
     # SOOT planes surfaced in the quantity combo when `.s3d` data exists
-    # (M2.2 any-plane slicing): a side view on the app's usual y=0 plane,
-    # and a vertical slice through the doorway (x=0.25 m mesh boundary,
-    # the roadmap's named demo case). Each is a distinct SliceKey carrying
-    # its physical plane_pos, so it flows through the store/extent/probe/
-    # isotherm machinery exactly like any other quantity.
+    # (M2.2 any-plane slicing): a side view on the app's usual y=0 plane.
+    # A distinct SliceKey carrying its physical plane_pos, so it flows
+    # through the store/extent/probe/isotherm machinery exactly like any
+    # other quantity. (The x=0.25 m doorway plane that used to live here
+    # too was removed by request -- discarded, not gated/hidden -- so
+    # don't re-add it speculatively.)
     _SOOT_PLANES = (
         (SliceKey(SOOT_QUANTITY, AXIS_TO_DIRECTION['y'], 0, 0.0), 'Smoke — side view (y = 0)'),
-        (SliceKey(SOOT_QUANTITY, AXIS_TO_DIRECTION['x'], 0, 0.25), 'Smoke — doorway (x = 0.25 m)'),
     )
 
     def _discover_soot_planes(self, scenario_path: str) -> list:
@@ -1881,8 +1933,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _quantity_tooltip(info) -> str:
         """Per-item dropdown tooltip: the registry's own plain-language
         "interpretation" (the same text quantities_panel.py already shows),
-        reused here so a technical label like "Dynamic pressure" or a
-        coordinate-heavy one like "Smoke — doorway (x = 0.25 m)" doesn't
+        reused here so a technical label like "Dynamic pressure" doesn't
         require visiting that separate panel just to know what it means."""
         from registry import get_quantity
         q = get_quantity(info.key.quantity)
@@ -1899,12 +1950,13 @@ class MainWindow(QtWidgets.QMainWindow):
         reads self.current_quantity_key -- already computes the correct
         vmin/unit for the new quantity.
 
-        SOOT DENSITY (Analysis final-polish follow-up, "smoke view looks
-        weird"): the slider default seeds from smoke_density.
-        soot_display_range's data-driven ceiling instead of the registry's
-        fixed 3000 -- see _soot_display_range_for's docstring for why a
-        fixed scale wastes almost its whole range on empty (zero-soot)
-        space for this quantity specifically."""
+        Colormap expressiveness pass: every quantity's slider now seeds
+        from its one fixed registry default (same as TEMPERATURE/VELOCITY
+        always did) -- SOOT DENSITY and DYNAMIC PRESSURE no longer seed
+        from a per-scenario data-driven ceiling (removed; see registry.py's
+        SOOT DENSITY/DYNAMIC PRESSURE entries for the fixed values chosen
+        to replace it), so the same color means the same value in every
+        scenario, not just within one scenario's own playback."""
         display = self._display_for(quantity)
         self.current_colormap = display['cmap']
         self.settings.setValue("colormap", display['cmap'])
@@ -1913,22 +1965,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.view_grid.active_view().set_cmap(display['cmap'])
 
         slider_default = display['slider_default']
-        if quantity == SOOT_QUANTITY:
-            _floor, ceiling = self._soot_display_range_for(
-                self.controller.current_case_index(), self.current_quantity_key)
-            # QSlider.setValue() is int-only; soot_display_range's ceiling
-            # is a float (a percentile) -- round, don't truncate, and clamp
-            # into the slider's own [slider_min, slider_max] range so a
-            # ceiling outside that range (e.g. a very smoky scenario) can't
-            # raise a Qt range error either.
-            slider_default = max(display['slider_min'],
-                                 min(display['slider_max'], round(ceiling)))
-        elif quantity == DYNAMIC_PRESSURE_QUANTITY:
-            ceiling = self._dynamic_pressure_ceiling_for(
-                self.controller.current_case_index(), self.current_quantity_key)
-            slider_default = max(display['slider_min'],
-                                 min(display['slider_max'], round(ceiling)))
-
         self.temp_slider.setRange(display['slider_min'], display['slider_max'])
         self.temp_slider.setAccessibleName(
             f"Maximum {display['label'].lower()} scale, {display['unit']}")
@@ -1936,7 +1972,8 @@ class MainWindow(QtWidgets.QMainWindow):
             f"Adjust the maximum {display['label'].lower()} shown on the color scale")
         self.temp_slider.setValue(slider_default)
 
-        self.view_grid.active_view().set_colorbar_label(f"{display['label']} ({display['unit']})")
+        self.view_grid.active_view().set_colorbar_label(self._colorbar_label_for(quantity, display))
+        self.view_grid.active_view().set_colorbar_offset(self._colorbar_offset_for(quantity))
         self._apply_contour_overlay_state(self.view_grid.active_cell())  # levels are quantity-specific
         self._apply_link_clim()
 
@@ -1996,6 +2033,110 @@ class MainWindow(QtWidgets.QMainWindow):
             return None
         return room_overlay_geometry(entry.door, entry.vod, entry.voc)
 
+    def _ceiling_mask_for(self, cell):
+        """Boolean (n_z, n_x) ceiling-obstruction display mask (schematic.
+        ceiling_obstruction_mask) for `cell`'s current (scenario,
+        quantity), or None if this quantity doesn't apply -- only
+        TEMPERATURE/VELOCITY and their derived quantities (DYNAMIC
+        PRESSURE, TEMPERATURE RISE) on a "slice" cell's y-normal plane
+        read through the .sf grid the mask describes; SOOT DENSITY's own
+        volumetric grid was never checked against the same "dead solid
+        cell" question, so it's left alone. Cached per (scenario,
+        direction, offset) -- vod/voc are fixed for a scenario, so this
+        never needs recomputing per frame, same convention as
+        _soot_ceiling_cache."""
+        key = cell.quantity_key
+        if (cell.cell_type != "slice" or key is None or key.direction != 1
+                or key.quantity not in ("TEMPERATURE", "VELOCITY", "DYNAMIC PRESSURE", "TEMPERATURE RISE")):
+            return None
+        entry = next((e for e in (self.sim_data.manifest or []) if e.case_index == cell.case_index), None)
+        if entry is None:
+            return None
+        extent = self._extent_for(cell.case_index, key)
+        if extent is None:
+            return None
+        if not hasattr(self, "_ceiling_mask_cache"):
+            self._ceiling_mask_cache = {}
+        cache_key = (cell.case_index, key.direction, key.offset)
+        if cache_key not in self._ceiling_mask_cache:
+            data = self._field(self._store_for_cell(cell), cell.case_index, key)
+            self._ceiling_mask_cache[cache_key] = ceiling_obstruction_mask(
+                entry.vod, entry.voc, extent, data.shape[1:])
+        return self._ceiling_mask_cache[cache_key]
+
+    def _sync_cell_ceiling_mask(self, cell) -> None:
+        """Push _ceiling_mask_for's result to `cell`'s view -- call
+        whenever a cell's scenario/quantity changes (same call sites as
+        _sync_cell_extent/_sync_cell_timeseries_strip)."""
+        cell.view.set_ceiling_mask(self._ceiling_mask_for(cell))
+
+    @staticmethod
+    def _room_mask_for_extent(extent, shape) -> np.ndarray:
+        """Boolean (n_z, n_x) mask of cells inside the room's own interior
+        (schematic.ROOM_X/ROOM_Z), not the wider simulated domain around
+        it -- see hazard_fraction_series' docstring for why. `extent` is
+        (x0, x1, z0, z1) physical meters (same convention as SliceView's
+        own extent -- row 0 is z1/top, matching origin='upper')."""
+        x0, x1, z0, z1 = extent
+        n_z, n_x = shape
+        xs = np.linspace(x0, x1, n_x)
+        zs = np.linspace(z1, z0, n_z)
+        return (xs[None, :] >= ROOM_X[0]) & (zs[:, None] <= ROOM_Z[1])
+
+    def _timeseries_strip_data(self, cell):
+        """(series_list, colors, y_range, title, y_label, caption,
+        band_labels) for `cell`'s time-series strip, or None if this cell/
+        quantity doesn't get one -- only DYNAMIC PRESSURE and TEMPERATURE
+        RISE on a "slice" cell (never the raw TEMPERATURE heatmap, never a
+        difference/ensemble cell, which has no single scenario's series to
+        show). Computed once per (scenario, quantity) and cached -- same
+        "stable across playback, precomputed at scenario load" convention
+        as _soot_ceiling_cache. band_labels is only non-empty for
+        TEMPERATURE RISE (DYNAMIC PRESSURE is a single line, self-
+        explanatory from its title/y-axis alone)."""
+        quantity = cell.quantity_key.quantity if cell.quantity_key else None
+        if cell.cell_type != "slice" or quantity not in ("DYNAMIC PRESSURE", "TEMPERATURE RISE"):
+            return None
+        store = self._store_for_cell(cell)
+        cache_key = (cell.case_index, cell.quantity_key)
+        if quantity == "DYNAMIC PRESSURE":
+            if not hasattr(self, "_dp_series_cache"):
+                self._dp_series_cache = {}
+            if cache_key not in self._dp_series_cache:
+                data = self._field(store, cell.case_index, cell.quantity_key)
+                self._dp_series_cache[cache_key] = peak_series(data)
+            return ([self._dp_series_cache[cache_key]], ["#38BDF8"], _DP_STRIP_RANGE,
+                    _DP_STRIP_TITLE, _DP_STRIP_Y_LABEL, _DP_STRIP_CAPTION, [])
+        # TEMPERATURE RISE: hazard fraction reads off the raw TEMPERATURE
+        # field (same absolute 60/100/300 degC bands as the isotherm
+        # overlay/hazard narration elsewhere -- not renumbered to rise
+        # terms, so this one strip's thresholds stay recognizable app-wide).
+        if not hasattr(self, "_hazard_fraction_cache"):
+            self._hazard_fraction_cache = {}
+        if cache_key not in self._hazard_fraction_cache:
+            temp_key = SliceKey("TEMPERATURE", cell.quantity_key.direction, cell.quantity_key.offset)
+            temp_data = self._field(store, cell.case_index, temp_key)
+            extent = self._extent_for(cell.case_index, temp_key)
+            mask = self._room_mask_for_extent(extent, temp_data.shape[1:]) if extent else None
+            self._hazard_fraction_cache[cache_key] = hazard_fraction_series(
+                temp_data, _HAZARD_THRESHOLDS_C, mask)
+        return (self._hazard_fraction_cache[cache_key], list(_HAZARD_COLORS), _HAZARD_FRACTION_RANGE,
+                _HAZARD_STRIP_TITLE, _HAZARD_STRIP_Y_LABEL, _HAZARD_STRIP_CAPTION, list(_HAZARD_BAND_LABELS))
+
+    def _sync_cell_timeseries_strip(self, cell) -> None:
+        """Show/refresh `cell`'s time-series strip for its current
+        quantity, or hide it -- call whenever a cell's scenario/quantity
+        changes (same call sites as _sync_cell_extent)."""
+        result = self._timeseries_strip_data(cell)
+        if result is None:
+            cell.timeseries_strip.setVisible(False)
+            return
+        series, colors, y_range, title, y_label, caption, band_labels = result
+        cell.timeseries_strip.set_series(series, colors, y_range, title=title,
+                                         y_label=y_label, caption=caption, band_labels=band_labels)
+        cell.timeseries_strip.set_index(self.time_controller.index)
+        cell.timeseries_strip.setVisible(True)
+
     def _setup_cell_probe_and_isotherms(self, cell):
         """Wire the cursor probe and sync isotherm state (M2.6) -- call
         once per view *instance*, right after its one-time init_plot(),
@@ -2022,7 +2163,14 @@ class MainWindow(QtWidgets.QMainWindow):
             if section is not None:
                 section.set_probe(None, None, None)
             return
-        display = QUANTITY_DISPLAY.get(cell.quantity_key.quantity if cell.quantity_key else None)
+        # _display_for(), not a raw QUANTITY_DISPLAY.get() -- the latter is
+        # missing every derived quantity (TEMPERATURE RISE, DYNAMIC
+        # PRESSURE aren't "real" slice2d/volume kinds -- see
+        # registry.display_dict()), so hovering one of those cells read
+        # units="" instead of that quantity's own unit. _display_for()
+        # always resolves the *cell's own current* quantity, native or
+        # derived, so the readout can never lag behind a quantity switch.
+        display = self._display_for(cell.quantity_key.quantity) if cell.quantity_key else None
         unit = display['unit'] if display else ""
         value_text = f"{value:.1f}{unit}" if value is not None else "—"
         self.statusBar().showMessage(f"x = {x:.3f} m, z = {z:.3f} m, value = {value_text}")
@@ -2110,52 +2258,6 @@ class MainWindow(QtWidgets.QMainWindow):
         idx = min(index, data.shape[0] - 1)
         return data[idx], self._soot_ceiling_cache[cache_key]
 
-    def _dynamic_pressure_ceiling_for(self, case_index: int, key) -> float:
-        """Data-driven display ceiling for DYNAMIC PRESSURE -- see
-        derived_quantities.display_ceiling's docstring for why a fixed
-        registry default doesn't fit this quantity's ~15x scale swing
-        across ventilation modes. Computed once per (scenario, key) via
-        the QuantityProvider (this is a "derived" quantity -- see
-        _is_computed/_field) and cached, same convention as
-        _soot_display_range_for. Falls back to the registry's static
-        slider_default on any fetch failure."""
-        if not hasattr(self, "_dynamic_pressure_ceiling_cache"):
-            self._dynamic_pressure_ceiling_cache = {}
-        cache_key = (case_index, key)
-        if cache_key not in self._dynamic_pressure_ceiling_cache:
-            try:
-                data = self.quantity_provider.get(case_index, key)
-                self._dynamic_pressure_ceiling_cache[cache_key] = derived_quantities.display_ceiling(data)
-            except Exception as e:  # noqa: BLE001 - display range is a nice-to-have, must not crash the view
-                logger.warning("dynamic pressure ceiling: failed to fetch DYNAMIC PRESSURE for case %s: %s",
-                               case_index, e)
-                display = self._display_for(DYNAMIC_PRESSURE_QUANTITY)
-                self._dynamic_pressure_ceiling_cache[cache_key] = display['slider_default']
-        return self._dynamic_pressure_ceiling_cache[cache_key]
-
-    def _soot_display_range_for(self, case_index: int, key) -> tuple:
-        """(vmin, vmax) for displaying SOOT DENSITY as the *primary*
-        heatmap quantity (distinct from _soot_overlay_frame_for_cell's
-        ceiling-only, temperature-overlay use above) -- smoke_density.
-        soot_display_range's data-driven floor/ceiling over the whole run,
-        computed once per (scenario, key) and cached, same reasoning as
-        _soot_ceiling_cache above. Falls back to the registry's static
-        (vmin=0, slider_default) on any fetch failure, so a store error
-        degrades to the old flat scale rather than crashing the view."""
-        if not hasattr(self, "_soot_display_range_cache"):
-            self._soot_display_range_cache = {}
-        cache_key = (case_index, key)
-        if cache_key not in self._soot_display_range_cache:
-            try:
-                data = self.controller.store.get(case_index, key)
-                self._soot_display_range_cache[cache_key] = smoke_density.soot_display_range(data)
-            except Exception as e:  # noqa: BLE001 - display range is a nice-to-have, must not crash the view
-                logger.warning("soot display range: failed to fetch SOOT DENSITY for case %s: %s",
-                               case_index, e)
-                display = self._display_for(SOOT_QUANTITY)
-                self._soot_display_range_cache[cache_key] = (display['vmin'], display['slider_default'])
-        return self._soot_display_range_cache[cache_key]
-
     def _velocity_overlay_frame_for_cell(self, cell, index: int):
         """The VELOCITY frame to overlay on `cell` at timeline `index` --
         only ever called for a "slice" cell showing TEMPERATURE. VELOCITY
@@ -2196,11 +2298,6 @@ class MainWindow(QtWidgets.QMainWindow):
         cmap = self.current_colormap if is_active else display['cmap']
         vmin = display['vmin']
         slider_default = display['slider_default']
-        if cell.quantity_key.quantity == SOOT_QUANTITY:
-            vmin, ceiling = self._soot_display_range_for(cell.case_index, cell.quantity_key)
-            slider_default = ceiling
-        elif cell.quantity_key.quantity == DYNAMIC_PRESSURE_QUANTITY:
-            slider_default = self._dynamic_pressure_ceiling_for(cell.case_index, cell.quantity_key)
         vmax = self.temp_slider.value() if is_active else slider_default
         index = min(self.time_controller.index, data.shape[0] - 1)
         cell.view.init_plot(
@@ -2209,10 +2306,13 @@ class MainWindow(QtWidgets.QMainWindow):
             interpolation=self.current_interpolation,
             vmin=vmin,
             vmax=vmax,
-            colorbar_label=f"{display['label']} ({display['unit']})",
+            colorbar_label=self._colorbar_label_for(cell.quantity_key.quantity, display),
             extent=self._extent_for(cell.case_index, cell.quantity_key),
+            ceiling_mask=self._ceiling_mask_for(cell),
         )
+        cell.view.set_colorbar_offset(self._colorbar_offset_for(cell.quantity_key.quantity))
         cell.view.set_room_outline(self._room_outline_for(cell))
+        self._sync_cell_timeseries_strip(cell)
         self._setup_cell_probe_and_isotherms(cell)
         return data.shape[0]
 
@@ -2505,6 +2605,10 @@ class MainWindow(QtWidgets.QMainWindow):
                     cell.view.show_frame(frame, velocity_frame=velocity_frame, **extra)
                 else:
                     cell.view.show_frame(frame, **extra)
+                # Time-series strip cursor (colormap expressiveness follow-
+                # up): a no-op paint if this cell's strip has no data set
+                # (hidden, or a quantity that doesn't get one).
+                cell.timeseries_strip.set_index(index)
         self.timeline.set_index(index)
         if getattr(self, "analysis_timeline", None) is not None:
             self.analysis_timeline.set_index(index)
@@ -2739,7 +2843,14 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         case_idx = self.controller.current_case_index()
         self.view_grid.active_cell().set_scenario_silently(case_idx)
-        if self.controller.is_cached(case_idx, self.current_quantity_key):
+        # A computed quantity (DYNAMIC PRESSURE, TEMPERATURE RISE) isn't
+        # itself in the store -- store.get()/prefetch() on that literal key
+        # raised "no matching slices found" (this exact scenario: switch a
+        # ventilation toggle while DYNAMIC PRESSURE is displayed for a
+        # not-yet-loaded scenario). Cache-check/prefetch the *source*
+        # quantity instead, same routing _field() already uses to read it.
+        prefetch_key = self._cache_check_key(self.current_quantity_key)
+        if self.controller.is_cached(case_idx, prefetch_key):
             self._pending_load_case = None
             self._pending_load_key = None
             if self._busy:
@@ -2748,10 +2859,19 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         self._pending_load_case = case_idx
-        self._pending_load_key = self.current_quantity_key
+        self._pending_load_key = prefetch_key
         if not self._busy:
             self._begin_busy_state()
-        self.controller.prefetch(case_idx, self.current_quantity_key)
+        self.controller.prefetch(case_idx, prefetch_key)
+
+    def _cache_check_key(self, key):
+        """The SliceKey to actually check/prefetch in the store for `key`
+        -- a computed quantity (kind="derived") isn't itself store-backed
+        (see _field()), so this resolves to its source quantity's key on
+        the same plane instead; any other quantity is returned unchanged."""
+        from derived_quantities import source_quantity
+        src = source_quantity(key.quantity)
+        return SliceKey(src, key.direction, key.offset) if src else key
 
     def _begin_busy_state(self):
         self._busy = True
@@ -2781,6 +2901,8 @@ class MainWindow(QtWidgets.QMainWindow):
         active = self.view_grid.active_cell()
         if active.cell_type == "slice":
             self._sync_cell_extent(active)  # M2.2: a SOOT-plane switch may change the extent
+            self._sync_cell_timeseries_strip(active)
+            self._sync_cell_ceiling_mask(active)
         if not self.time_controller.is_playing():
             self._on_time_changed(self.time_controller.index)
 
@@ -3406,31 +3528,13 @@ class MainWindow(QtWidgets.QMainWindow):
         # either derived quantity.
         data = self._field(store, cell.case_index, cell.quantity_key)
         vmin, vmax = display['vmin'], display['slider_default']
-        if cell.quantity_key.quantity == SOOT_QUANTITY:
-            # `data` is already fetched from this cell's own store (which
-            # may be a PredictionSource override, not self.controller.store
-            # -- see _soot_display_range_for's docstring) -- computed
-            # directly from it rather than re-fetching through that helper.
-            if not hasattr(self, "_soot_display_range_cache"):
-                self._soot_display_range_cache = {}
-            cache_key = (cell.case_index, cell.quantity_key)
-            if cache_key not in self._soot_display_range_cache:
-                self._soot_display_range_cache[cache_key] = smoke_density.soot_display_range(data)
-            vmin, vmax = self._soot_display_range_cache[cache_key]
-        elif cell.quantity_key.quantity == DYNAMIC_PRESSURE_QUANTITY:
-            # Same "use this cell's own already-fetched data" reasoning as
-            # the SOOT DENSITY branch above (a PredictionSource override
-            # may differ from self.quantity_provider).
-            if not hasattr(self, "_dynamic_pressure_ceiling_cache"):
-                self._dynamic_pressure_ceiling_cache = {}
-            cache_key = (cell.case_index, cell.quantity_key)
-            if cache_key not in self._dynamic_pressure_ceiling_cache:
-                self._dynamic_pressure_ceiling_cache[cache_key] = derived_quantities.display_ceiling(data)
-            vmax = self._dynamic_pressure_ceiling_cache[cache_key]
         cell.view.set_cmap(display['cmap'])
         cell.view.set_clim(vmin, vmax)
-        cell.view.set_colorbar_label(f"{display['label']} ({display['unit']})")
+        cell.view.set_colorbar_label(self._colorbar_label_for(cell.quantity_key.quantity, display))
+        cell.view.set_colorbar_offset(self._colorbar_offset_for(cell.quantity_key.quantity))
         self._sync_cell_extent(cell)  # M2.2: a SOOT-plane switch may change the extent
+        self._sync_cell_timeseries_strip(cell)
+        self._sync_cell_ceiling_mask(cell)
         self._apply_contour_overlay_state(cell)  # levels are quantity-specific; quantity may have just changed
         self._apply_cinematic_state(cell)  # cinematic mode is TEMPERATURE-only; quantity may have just changed
         index = min(self.time_controller.index, data.shape[0] - 1)
@@ -3519,6 +3623,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self._render_difference_cell(cell)
         elif new_type == "ensemble" and cell.ensemble_case_indices:
             self._render_ensemble_cell(cell)
+        # Hides the time-series strip/ceiling mask when switching away
+        # from "slice" (or to a fresh, not-yet-picked ensemble) --
+        # _init_cell_view's own call above already covers the "slice"
+        # branch; this is a no-op there and the only place that clears
+        # them for the other two.
+        self._sync_cell_timeseries_strip(cell)
+        self._sync_cell_ceiling_mask(cell)
         self._apply_link_clim()
         if cell is self.view_grid.active_cell():
             self._update_event_markers()  # markers are slice-cell-only (M1.3)
@@ -3623,22 +3734,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_link_clim()
 
     def _on_temp_changed(self, value):
-        display = QUANTITY_DISPLAY.get(self.current_quantity_key.quantity, QUANTITY_DISPLAY[DEFAULT_SLICE_KEY.quantity])
+        # _display_for(), not a raw QUANTITY_DISPLAY.get() -- the latter
+        # falls back to TEMPERATURE's own entry (and its "°C") for any
+        # derived quantity (DYNAMIC PRESSURE, TEMPERATURE RISE), so
+        # dragging the scale slider while one of those was active showed
+        # the wrong unit next to the live value.
+        display = self._display_for(self.current_quantity_key.quantity)
         self.temp_label.setText(f"{value} {display['unit']}")
-        # vmin stays pinned at the quantity's physical floor; only vmax
-        # moves with the slider. This -- like the colormap menu -- edits
-        # the active cell only (M2.2 design decision: other visible cells
-        # keep their own last-set clim/colormap independently unless
-        # "Link color scales" is on). SliceView.set_clim does the full
-        # redraw (not blit) + recapture itself: the colorbar's tick range
-        # depends on clim and needs to actually repaint.
-        # SOOT DENSITY: "physical floor" is a data-driven percentile of the
-        # nonzero population, not 0 -- see _soot_display_range_for. Clamped
-        # so a slider value dragged below that floor can't invert clim.
+        # vmin stays pinned at the quantity's fixed physical floor
+        # (registry.py); only vmax moves with the slider. This -- like the
+        # colormap menu -- edits the active cell only (M2.2 design
+        # decision: other visible cells keep their own last-set clim/
+        # colormap independently unless "Link color scales" is on).
+        # SliceView.set_clim does the full redraw (not blit) + recapture
+        # itself: the colorbar's tick range depends on clim and needs to
+        # actually repaint.
         vmin = display['vmin']
-        if self.current_quantity_key.quantity == SOOT_QUANTITY:
-            vmin, _ceiling = self._soot_display_range_for(
-                self.controller.current_case_index(), self.current_quantity_key)
         vmax = max(value, vmin + 1e-6)
         self.view_grid.active_view().set_clim(vmin, vmax)
         self._apply_link_clim()

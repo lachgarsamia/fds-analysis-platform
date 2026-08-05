@@ -437,3 +437,195 @@ class CollapsibleSection(QtWidgets.QWidget):
 
     def add_row(self, widget: QtWidgets.QWidget):
         self._layout.addWidget(widget)
+
+
+class TimeSeriesStrip(QtWidgets.QWidget):
+    """A small custom-painted per-frame line strip with a moving playback
+    cursor -- the same pattern as inspector.py's Inspector-panel sparkline
+    (peak temperature over time), generalized here for reuse below a grid
+    cell's own heatmap (colormap expressiveness follow-up: DYNAMIC PRESSURE
+    and TEMPERATURE RISE's real story is temporal, not spatial, so they
+    keep their heatmap and gain this strip underneath it).
+
+    Two differences from the Inspector sparkline this generalizes:
+    - Fixed y_range (not auto min/max per scenario) -- so the same height
+      on the strip means the same value across every scenario, matching
+      why the heatmap ranges themselves were fixed.
+    - One or more series, each with its own color, drawn together (for
+      TEMPERATURE RISE's three stacked hazard-fraction lines); a single
+      series works the same as the Inspector sparkline (DYNAMIC PRESSURE).
+
+    Live-cell re-proportioning pass: title/axis-label/caption text turns
+    this from an unlabeled sliver into a small properly-labeled plot.
+    Expanding (not Fixed) vertical size policy so a QVBoxLayout stretch
+    factor (see GridCell) actually gives it real vertical share instead of
+    clamping it to sizeHint(); _plot_rect() below insets the drawn axes box
+    by *fractions* of the widget's own current size, not fixed pixels, so
+    the title/ticks/caption keep their proportions at any window size.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(110)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        self._series: list = []       # [[v0, v1, ...], ...] -- one list per line
+        self._colors: list = []       # one color per line, same order
+        self._y_range = (0.0, 1.0)
+        self._index = 0
+        self._title = ""
+        self._y_label = ""
+        self._x_label = "Time (s)"
+        self._caption = ""
+        self._band_labels: list = []  # [(color, text), ...] legend swatches, e.g. hazard bands
+
+    def set_series(self, series: list, colors: list, y_range: tuple, title: str = "",
+                    y_label: str = "", caption: str = "", band_labels: list = None) -> None:
+        """series: a list of per-frame value lists (all the same length);
+        colors: one hex string per series; y_range: (lo, hi) fixed scale,
+        from Phase 1's measured range -- never recomputed from `series`
+        itself, so a quiet scenario doesn't rescale the axis and read as
+        "just as active" as a severe one. title/y_label/caption: static
+        text describing what this strip shows. band_labels: optional
+        [(color, text), ...] legend entries (e.g. TEMPERATURE RISE's three
+        hazard thresholds), drawn next to the title, one per color already
+        in `colors`."""
+        self._series = [list(s) for s in series]
+        self._colors = list(colors)
+        self._y_range = y_range
+        self._index = 0
+        self._title = title
+        self._y_label = y_label
+        self._caption = caption
+        self._band_labels = list(band_labels) if band_labels else []
+        self.update()
+
+    def set_index(self, index: int) -> None:
+        self._index = index
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        try:
+            self._paint(painter)
+        finally:
+            painter.end()
+
+    def _plot_rect(self) -> QtCore.QRectF:
+        """The inner axes box the series lines are drawn into, inset from
+        the widget's own rect by *fractions* of its current width/height
+        (never fixed pixel counts, aside from a small cap on the y-axis
+        label column so it doesn't eat the plot at very narrow widths) --
+        title row above, x-axis label + caption below, y-axis ticks/label
+        to the left. Keeps the same proportions whether this cell is one
+        of a 1400px single view or a small grid cell."""
+        w, h = float(self.width()), float(self.height())
+        top = h * 0.24
+        bottom = h * 0.32
+        left = min(34.0, w * 0.16)
+        right = w * 0.03
+        return QtCore.QRectF(left, top, max(w - left - right, 1.0), max(h - top - bottom, 1.0))
+
+    def _paint(self, painter: QtGui.QPainter) -> None:
+        if self.width() <= 0 or self.height() <= 0:
+            return
+        fg = QtGui.QColor(plot_fg_color())
+        muted = QtGui.QColor("#94A3B8")
+        plot_rect = self._plot_rect()
+
+        # --- title (+ band legend, same row) --------------------------------
+        title_font = QtGui.QFont(self.font())
+        title_font.setPointSizeF(max(title_font.pointSizeF() * 0.9, 7.0))
+        title_font.setBold(True)
+        painter.setFont(title_font)
+        painter.setPen(fg)
+        title_rect = QtCore.QRectF(plot_rect.left(), 1, plot_rect.width(), plot_rect.top() - 2)
+        painter.drawText(title_rect, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, self._title)
+
+        if self._band_labels:
+            legend_font = QtGui.QFont(self.font())
+            legend_font.setPointSizeF(max(legend_font.pointSizeF() * 0.75, 6.0))
+            painter.setFont(legend_font)
+            metrics = QtGui.QFontMetricsF(legend_font)
+            swatch = metrics.height() * 0.6
+            x = title_rect.right()
+            widths = [metrics.horizontalAdvance(text) for _color, text in self._band_labels]
+            total = sum(widths) + len(self._band_labels) * (swatch + 10) + 4
+            x -= total
+            y_mid = title_rect.center().y()
+            for (color, text), tw in zip(self._band_labels, widths):
+                painter.setPen(QtCore.Qt.NoPen)
+                painter.setBrush(QtGui.QColor(color))
+                painter.drawRect(QtCore.QRectF(x, y_mid - swatch / 2, swatch, swatch))
+                painter.setPen(fg)
+                painter.drawText(QtCore.QRectF(x + swatch + 3, title_rect.top(), tw + 4, title_rect.height()),
+                                  QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, text)
+                x += swatch + 6 + tw + 10
+
+        if not self._series or not self._series[0] or plot_rect.width() <= 0 or plot_rect.height() <= 0:
+            return
+
+        # --- y-axis ticks (min/max of the fixed range) + rotated label -----
+        tick_font = QtGui.QFont(self.font())
+        tick_font.setPointSizeF(max(tick_font.pointSizeF() * 0.75, 6.0))
+        painter.setFont(tick_font)
+        painter.setPen(muted)
+        lo, hi = self._y_range
+        span = max(hi - lo, 1e-9)
+        for value, y in ((hi, plot_rect.top()), (lo, plot_rect.bottom())):
+            label = f"{value:g}"
+            painter.drawText(QtCore.QRectF(0, y - 7, plot_rect.left() - 4, 14),
+                              QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter, label)
+        if self._y_label:
+            painter.save()
+            painter.translate(9, plot_rect.center().y())
+            painter.rotate(-90)
+            metrics = QtGui.QFontMetricsF(tick_font)
+            elided = metrics.elidedText(self._y_label, QtCore.Qt.ElideRight, int(plot_rect.height()))
+            painter.drawText(QtCore.QRectF(-plot_rect.height() / 2, -7, plot_rect.height(), 14),
+                              QtCore.Qt.AlignCenter, elided)
+            painter.restore()
+
+        # --- plot axes box ---------------------------------------------------
+        painter.setPen(QtGui.QPen(muted, 1.0))
+        painter.drawLine(plot_rect.bottomLeft(), plot_rect.bottomRight())
+        painter.drawLine(plot_rect.topLeft(), plot_rect.bottomLeft())
+
+        n = len(self._series[0])
+
+        def point(series: list, i: int) -> QtCore.QPointF:
+            x = plot_rect.left() + (i / max(n - 1, 1)) * plot_rect.width()
+            v = min(max(series[i], lo), hi)  # clip to the fixed range, never extrapolate the axis
+            y = plot_rect.bottom() - ((v - lo) / span) * plot_rect.height()
+            return QtCore.QPointF(x, y)
+
+        for series, color in zip(self._series, self._colors):
+            path = QtGui.QPainterPath()
+            path.moveTo(point(series, 0))
+            for i in range(1, len(series)):
+                path.lineTo(point(series, i))
+            painter.setPen(QtGui.QPen(QtGui.QColor(color), 1.4))
+            painter.drawPath(path)
+
+        # Moving playback cursor, same convention as the Inspector sparkline.
+        idx = min(self._index, n - 1)
+        painter.setPen(QtGui.QPen(muted, 1.0, QtCore.Qt.DashLine))
+        x = plot_rect.left() + (idx / max(n - 1, 1)) * plot_rect.width()
+        painter.drawLine(QtCore.QPointF(x, plot_rect.top()), QtCore.QPointF(x, plot_rect.bottom()))
+
+        # --- x-axis label + static caption, below the axes box -------------
+        label_font = QtGui.QFont(self.font())
+        label_font.setPointSizeF(max(label_font.pointSizeF() * 0.75, 6.0))
+        painter.setFont(label_font)
+        painter.setPen(muted)
+        x_label_rect = QtCore.QRectF(plot_rect.left(), plot_rect.bottom() + 2, plot_rect.width(), 14)
+        painter.drawText(x_label_rect, QtCore.Qt.AlignHCenter | QtCore.Qt.AlignVCenter, self._x_label)
+
+        if self._caption:
+            caption_font = QtGui.QFont(self.font())
+            caption_font.setPointSizeF(max(caption_font.pointSizeF() * 0.7, 6.0))
+            caption_font.setItalic(True)
+            painter.setFont(caption_font)
+            caption_rect = QtCore.QRectF(plot_rect.left(), x_label_rect.bottom(),
+                                          plot_rect.width(), self.height() - x_label_rect.bottom() - 1)
+            painter.drawText(caption_rect, QtCore.Qt.AlignHCenter | QtCore.Qt.TextWordWrap, self._caption)
