@@ -9,7 +9,7 @@ logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
 # as the binary representation of raw data is compiler dependent, this information must be provided by the user
 fds_data_type_integer = "i4" # i4 -> 32 bit integer (native endiannes, probably little-endian)
 fds_data_type_float   = "f4" # f4 -> 32 bit floating point (native endiannes, probably little-endian)
-fds_data_type_char    = "a"  # a  ->  8 bit character
+fds_data_type_char    = "S1"  # S1 ->  8 bit character (numpy 2.x removed the old "a" alias for "S")
 fds_fortran_backward  = True # sets weather the blocks are ended with the size of the block
 
 def getSliceType(name: str, n_size=0):
