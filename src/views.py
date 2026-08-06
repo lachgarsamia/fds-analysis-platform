@@ -1129,8 +1129,8 @@ class DifferenceView:
         self._inner.set_title(text)
 
     def set_ceiling_mask(self, mask) -> None:
-        """Delegates through same as the setters above -- MainWindow's
-        _sync_cell_ceiling_mask is called unconditionally on type change
+        """Delegates through same as the setters above -- cell_sync's
+        sync_ceiling_mask is called unconditionally on type change
         (see GridCell._swap_view), always with None here (_ceiling_mask_for
         only ever computes a real mask for a "slice" cell), but the method
         still has to exist so that call doesn't AttributeError."""

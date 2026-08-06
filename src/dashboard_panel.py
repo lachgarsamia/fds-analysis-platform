@@ -91,8 +91,7 @@ class DashboardPanel(QtWidgets.QWidget):
         layout.addWidget(self.jump_to_peak_button)
 
         self.caption = QtWidgets.QLabel(
-            "Synchronized to the current selection. Hazard is a temperature-only "
-            "partial screen (no CO/CO₂).")
+            "Synchronized to the current selection. " + hz.basis_caption() + ".")
         self.caption.setWordWrap(True)
         self.caption.setProperty("role", "caption")
         layout.addWidget(self.caption)

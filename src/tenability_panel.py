@@ -29,18 +29,18 @@ from widgets import MplCanvas
 from slice_key import DEFAULT_SLICE_KEY, SliceKey
 from quantity_provider import GatedQuantityError
 from analysis_panel_base import populate_scenario_combo
+import hazard_spaces as hz
 import tenability as tn
 
-_DISCLAIMER = (
-    "⚠ Partial hazard screen — convected heat (temperature) only. This dataset has "
-    "no CO/CO₂ output, so this is NOT a full FED (Fractional Effective Dose) analysis. "
-    "Toxic-gas tenability is not assessed."
-)
-
-_FULL_FED_NOTICE = (
-    "✓ Full FED (Fractional Effective Dose): toxic-gas (CO) dose + convected-heat dose "
-    "(ISO 13571 / SFPE Handbook). FED ≥ 1.0 marks incapacitation."
-)
+# Core claim sourced from hazard_spaces.basis_caption() (Analysis roadmap
+# B6) -- previously hand-written here independently of hazard_panel.py's
+# own (differently-worded) disclaimer for the identical partial-vs-full-
+# FED fact. The icon prefix, the explicit "not a full FED analysis"
+# contrast, and the tenability-specific second sentence stay panel-
+# specific; only the shared core sentence is now one source.
+_DISCLAIMER = ("⚠ " + hz.basis_caption() + " -- NOT a full FED (Fractional Effective Dose) "
+               "analysis. Toxic-gas tenability is not assessed.")
+_FULL_FED_NOTICE = "✓ " + hz.basis_caption(co_based=True) + ". FED ≥ 1.0 marks incapacitation."
 
 
 class TenabilityPanel(QtWidgets.QWidget):

@@ -38,6 +38,7 @@ from PyQt5 import QtCore, QtWidgets
 
 from widgets import MplCanvas
 from registry import get_quantity
+import hazard_spaces as hz
 from slice_key import SliceKey, AXIS_TO_DIRECTION, DIRECTION_TO_AXIS
 from timeseries import phys_to_index
 from analysis_panel_base import populate_scenario_combo
@@ -111,6 +112,18 @@ class SpaceTimePanel(QtWidgets.QWidget):
         self.caption.setProperty("role", "caption")
         layout.addWidget(self.caption)
 
+        # Analysis roadmap B6: previously silent about which hazard basis
+        # the quantity choice reflects -- the quantity_combo's own tooltip
+        # above already says Full FED is gated, but not that the Temperature
+        # fallback (what's actually shown, always, on this dataset) is
+        # itself a partial screen. Updated per mode in _reload(), same
+        # shared hazard_spaces.basis_caption() text every other hazard-
+        # rendering panel shows.
+        self.hazard_caption = QtWidgets.QLabel(hz.basis_caption())
+        self.hazard_caption.setWordWrap(True)
+        self.hazard_caption.setProperty("role", "caption")
+        layout.addWidget(self.hazard_caption)
+
         self.status = QtWidgets.QLabel("")
         self.status.setWordWrap(True)
         self.status.setProperty("role", "caption")
@@ -180,6 +193,7 @@ class SpaceTimePanel(QtWidgets.QWidget):
         if case_index is None:
             return
         mode = self._quantity_mode
+        self.hazard_caption.setText(hz.basis_caption(co_based=(mode == "full_fed")))
         ck = (case_index, self._direction, self._offset, mode)
         if ck not in self._cache:
             key = SliceKey("TEMPERATURE", self._direction, self._offset)

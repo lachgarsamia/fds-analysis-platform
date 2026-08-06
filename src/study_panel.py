@@ -59,9 +59,18 @@ from PyQt5 import QtCore, QtWidgets
 from matplotlib.patches import Rectangle
 
 from widgets import MplCanvas
+import hazard_spaces as hz
 import study_analytics as sa
 from analysis_panel_base import populate_scenario_combo
 from manifest import LEVEL_LABELS
+
+# The one response derived from hazard_spaces.classify_series (via
+# summary_stats.py's hazard_duration_s field) -- always the partial screen
+# here (summary_stats.py's own call never passes co_field), unlike
+# Dashboard/Hazard & Tenability which check per-scenario CO availability.
+# Analysis roadmap B6: this response silently used that classification
+# with no disclosure at all before this.
+_HAZARD_RESPONSE_KEY = "hazard_duration_s"
 
 # Rule-of-thumb floor, not a formal significance test (this module reports
 # r and n plainly rather than a p-value): below this many scenarios, a
@@ -110,8 +119,13 @@ class StudyPanel(QtWidgets.QWidget):
         row.addWidget(QtWidgets.QLabel("Response:"))
         self.response_combo = QtWidgets.QComboBox()
         self.response_combo.setAccessibleName("Influence response")
-        for key in sa.RESPONSE_KEYS:
+        for i, key in enumerate(sa.RESPONSE_KEYS):
             self.response_combo.addItem(sa.RESPONSE_LABEL[key], key)
+            if key == _HAZARD_RESPONSE_KEY:
+                # Discoverable on hover even without selecting it (roadmap
+                # B6) -- same shared basis_caption() text every other
+                # hazard-classification-rendering panel shows.
+                self.response_combo.setItemData(i, hz.basis_caption(), QtCore.Qt.ToolTipRole)
         self.response_combo.currentIndexChanged.connect(self._render_influence)
         row.addWidget(self.response_combo)
         row.addStretch(1)
@@ -119,6 +133,15 @@ class StudyPanel(QtWidgets.QWidget):
         self.influence_canvas = MplCanvas(self)
         self.influence_canvas.setAccessibleName("Factor influence")
         iv.addWidget(self.influence_canvas, 1)
+        # Visible (not just hover-discoverable) confirmation when the
+        # hazard-derived response is actually the one being viewed --
+        # shown/hidden by _render_influence() based on the current
+        # selection, same shared-text convention as the tooltip above.
+        self.hazard_caption = QtWidgets.QLabel(hz.basis_caption())
+        self.hazard_caption.setWordWrap(True)
+        self.hazard_caption.setProperty("role", "caption")
+        self.hazard_caption.setVisible(False)
+        iv.addWidget(self.hazard_caption)
         self.tabs.addTab(infl, "Factor influence")
         # --- correlation + outliers (interactive: filterable + drill-down) ---
         corr = QtWidgets.QWidget()
@@ -215,6 +238,7 @@ class StudyPanel(QtWidgets.QWidget):
         fig.clear()
         ax = fig.add_subplot(111)
         response = self.response_combo.currentData() or sa.RESPONSE_KEYS[0]
+        self.hazard_caption.setVisible(response == _HAZARD_RESPONSE_KEY)
         ranking = sa.influence_ranking(self._table, response)
         names = [sa.PARAM_LABELS[p] for p, _v, _s in ranking]
         shares = [s * 100 for _p, _v, s in ranking]

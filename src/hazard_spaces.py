@@ -37,6 +37,18 @@ FULL_FED_BASIS = ("temperature thresholds (60/100/300 °C) plus full FED (Fracti
                   "SFPE Handbook); Untenable once FED >= 1.0 (incapacitation)")
 
 
+def basis_caption(co_based: bool = False) -> str:
+    """One-line, human-readable caption naming which hazard-classification
+    basis is in effect (Analysis roadmap B6) -- "Basis: {BASIS}" or
+    "Basis: {FULL_FED_BASIS}". The one shared source every panel that
+    renders a hazard_spaces-derived classification should read this from,
+    instead of hand-writing its own paraphrase (hazard_panel.py already
+    did exactly this inline -- `"Basis: " + hz.BASIS` -- before this
+    function existed to name that pattern so every other caller can share
+    the identical wording verbatim, not just the same underlying fact)."""
+    return "Basis: " + (FULL_FED_BASIS if co_based else BASIS)
+
+
 def band_thresholds(quantity: str = "TEMPERATURE"):
     """The three class boundaries (warning, critical, untenable)."""
     levels = get_quantity(quantity).hazard_levels

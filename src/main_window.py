@@ -43,6 +43,7 @@ from load_data import SIM_ROOT
 from slice_key import (SliceInfo, SliceKey, DEFAULT_SLICE_KEY, available_slices,
                         SOOT_QUANTITY, AXIS_TO_DIRECTION)
 from views import ViewGrid, DifferenceView, EnsembleView
+from cell_sync import sync_cell, sync_ceiling_mask, sync_timeseries_strip
 from summary_stats import build_summary_index, _read_hrr_csv
 from descriptors import compute_descriptors
 from events import detect_events
@@ -857,9 +858,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.fire_mri_panel = FireMRIPanel(
                 self.controller.store, self.sim_data.manifest,
                 self._quantity_options(), self.sim_data.timesteps_per_second)
-            # Physics query engine (V3-M4).
+            # Physics query engine (V3-M4). Takes the provider, not the raw
+            # store (Analysis roadmap C9) -- same reasoning as
+            # TenabilityPanel just above: a gated quantity then raises
+            # GatedQuantityError cleanly instead of the store attempting a
+            # read for data that was never extracted.
             self.query_panel = QueryPanel(
-                self.controller.store, self.sim_data.manifest, self.sim_data.timesteps_per_second)
+                self.quantity_provider, self.sim_data.manifest, self.sim_data.timesteps_per_second)
             # Physics attention map (V3-M6): heuristic saliency, per frame.
             self.attention_panel = AttentionPanel(
                 self.controller.store, self.sim_data.manifest, self.sim_data.timesteps_per_second)
@@ -1027,6 +1032,8 @@ class MainWindow(QtWidgets.QMainWindow):
             "analysis": AnalysisPage(
                 on_shown=self._on_analysis_page_shown,
                 playback_bar=self._build_analysis_playback_bar(),
+                history_bar=self._build_history_nav_bar(),
+                settings=self.settings,
                 forecasting_content=ForecastingPanel(
                     self.prediction_store, self.controller.store, self.sim_data.manifest),
                 fire_mri_content=self.fire_mri_panel,
@@ -1177,6 +1184,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.history = InvestigationHistory()
         self.selection_bus.changed.connect(self._on_history_changed)
         self.selection_bus.changed.connect(self._on_bus_changed)
+        # The back/forward toolbar buttons (Analysis roadmap A3) are built
+        # earlier, in _build_shell(), before self.history exists yet --
+        # _update_history_buttons() no-ops until it does (see its own
+        # getattr guard). Now that it's real, set their correct (still
+        # disabled -- a fresh history is empty) initial state.
+        self._update_history_buttons()
         # RC polish: switching analysis tabs re-syncs the newly-shown panel to
         # the current selection/time. Phase D: AnalysisPage.tab_shown covers
         # every level a panel can go from hidden to visible at (the outer
@@ -1220,7 +1233,8 @@ class MainWindow(QtWidgets.QMainWindow):
         alone changes every tick and must not flood the log)."""
         if origin is self.history or origin is self:
             return
-        self.history.record(selection)
+        if self.history.record(selection):
+            self._update_history_buttons()
 
     def _history_back(self) -> None:
         history = getattr(self, "history", None)
@@ -1229,6 +1243,7 @@ class MainWindow(QtWidgets.QMainWindow):
         sel = history.back()
         if sel is not None:
             self.selection_bus.set(sel, origin=history)
+            self._update_history_buttons()
 
     def _history_forward(self) -> None:
         history = getattr(self, "history", None)
@@ -1237,6 +1252,27 @@ class MainWindow(QtWidgets.QMainWindow):
         sel = history.forward()
         if sel is not None:
             self.selection_bus.set(sel, origin=history)
+            self._update_history_buttons()
+
+    def _update_history_buttons(self) -> None:
+        """Analysis roadmap A3: refresh the back/forward toolbar buttons'
+        enabled state from InvestigationHistory.can_back()/can_forward() --
+        the exact same state the Alt+Left/Alt+Right shortcuts already read
+        via _history_back/_history_forward, not a separate tracked flag.
+        Called wherever the history's cursor can move (a new entry
+        recorded, or a back()/forward() call) plus once from
+        _build_selection() once self.history itself exists. Safe to call
+        before either the buttons or self.history exist yet (both
+        getattrs no-op)."""
+        history = getattr(self, "history", None)
+        can_back = history.can_back() if history is not None else False
+        can_forward = history.can_forward() if history is not None else False
+        back_button = getattr(self, "history_back_button", None)
+        if back_button is not None:
+            back_button.setEnabled(can_back)
+        forward_button = getattr(self, "history_forward_button", None)
+        if forward_button is not None:
+            forward_button.setEnabled(can_forward)
 
     def _on_bus_changed(self, selection, origin) -> None:
         """React to the shared selection in the Live Viewer: seek playback to
@@ -2048,18 +2084,6 @@ class MainWindow(QtWidgets.QMainWindow):
             return None
         return tuple(extent) if extent is not None else None
 
-    def _sync_cell_extent(self, cell):
-        """Update a cell's plotted extent if its current (case, quantity)
-        lives on a different physical plane than what the view was last
-        drawn with (M2.2 -- SOOT's doorway slice differs from the standard
-        side view). A no-op for every same-plane change (the extents
-        compare equal), so scenario switches and TEMPERATURE/VELOCITY/
-        SOOT-side toggles cost nothing here."""
-        new_extent = self._extent_for(cell.case_index, cell.quantity_key)
-        if new_extent != getattr(cell.view, "_extent", None):
-            cell.view.set_extent(new_extent)
-        cell.view.set_room_outline(self._room_outline_for(cell))
-
     def _room_outline_for(self, cell):
         """The enclosed room's physical geometry (schematic.py's
         room_overlay_geometry -- walls, door gap, vent states, the sidebar
@@ -2109,12 +2133,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self._ceiling_mask_cache[cache_key] = ceiling_obstruction_mask(
                 entry.vod, entry.voc, extent, data.shape[1:])
         return self._ceiling_mask_cache[cache_key]
-
-    def _sync_cell_ceiling_mask(self, cell) -> None:
-        """Push _ceiling_mask_for's result to `cell`'s view -- call
-        whenever a cell's scenario/quantity changes (same call sites as
-        _sync_cell_extent/_sync_cell_timeseries_strip)."""
-        cell.view.set_ceiling_mask(self._ceiling_mask_for(cell))
 
     @staticmethod
     def _room_mask_for_extent(extent, shape) -> np.ndarray:
@@ -2177,20 +2195,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 temp_data, _HAZARD_THRESHOLDS_C, mask)
         return (self._hazard_fraction_cache[cache_key], list(_HAZARD_COLORS), _HAZARD_FRACTION_RANGE,
                 _HAZARD_STRIP_TITLE, _HAZARD_STRIP_Y_LABEL, _HAZARD_STRIP_CAPTION, list(_HAZARD_BAND_LABELS))
-
-    def _sync_cell_timeseries_strip(self, cell) -> None:
-        """Show/refresh `cell`'s time-series strip for its current
-        quantity, or hide it -- call whenever a cell's scenario/quantity
-        changes (same call sites as _sync_cell_extent)."""
-        result = self._timeseries_strip_data(cell)
-        if result is None:
-            cell.timeseries_strip.setVisible(False)
-            return
-        series, colors, y_range, title, y_label, caption, band_labels = result
-        cell.timeseries_strip.set_series(series, colors, y_range, title=title,
-                                         y_label=y_label, caption=caption, band_labels=band_labels)
-        cell.timeseries_strip.set_index(self.time_controller.index)
-        cell.timeseries_strip.setVisible(True)
 
     def _setup_cell_probe_and_isotherms(self, cell):
         """Wire the cursor probe and sync isotherm state (M2.6) -- call
@@ -2367,7 +2371,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         cell.view.set_colorbar_offset(self._colorbar_offset_for(cell.quantity_key.quantity))
         cell.view.set_room_outline(self._room_outline_for(cell))
-        self._sync_cell_timeseries_strip(cell)
+        sync_timeseries_strip(self, cell)
         self._setup_cell_probe_and_isotherms(cell)
         return data.shape[0]
 
@@ -2955,9 +2959,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_event_markers()
         active = self.view_grid.active_cell()
         if active.cell_type == "slice":
-            self._sync_cell_extent(active)  # M2.2: a SOOT-plane switch may change the extent
-            self._sync_cell_timeseries_strip(active)
-            self._sync_cell_ceiling_mask(active)
+            sync_cell(self, active)  # M2.2: a SOOT-plane switch may change the extent
         if not self.time_controller.is_playing():
             self._on_time_changed(self.time_controller.index)
 
@@ -3587,9 +3589,7 @@ class MainWindow(QtWidgets.QMainWindow):
         cell.view.set_clim(vmin, vmax)
         cell.view.set_colorbar_label(self._colorbar_label_for(cell.quantity_key.quantity, display))
         cell.view.set_colorbar_offset(self._colorbar_offset_for(cell.quantity_key.quantity))
-        self._sync_cell_extent(cell)  # M2.2: a SOOT-plane switch may change the extent
-        self._sync_cell_timeseries_strip(cell)
-        self._sync_cell_ceiling_mask(cell)
+        sync_cell(self, cell)  # M2.2: a SOOT-plane switch may change the extent
         self._apply_contour_overlay_state(cell)  # levels are quantity-specific; quantity may have just changed
         self._apply_cinematic_state(cell)  # cinematic mode is TEMPERATURE-only; quantity may have just changed
         index = min(self.time_controller.index, data.shape[0] - 1)
@@ -3683,8 +3683,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # _init_cell_view's own call above already covers the "slice"
         # branch; this is a no-op there and the only place that clears
         # them for the other two.
-        self._sync_cell_timeseries_strip(cell)
-        self._sync_cell_ceiling_mask(cell)
+        sync_timeseries_strip(self, cell)
+        sync_ceiling_mask(self, cell)
         self._apply_link_clim()
         if cell is self.view_grid.active_cell():
             self._update_event_markers()  # markers are slice-cell-only (M1.3)
@@ -4494,6 +4494,56 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.time_controller.is_playing():
             self._toggle_play_pause()
         self._on_seek_requested(0)
+
+    def _build_history_nav_bar(self) -> QtWidgets.QWidget:
+        """Analysis roadmap A3: a visible surface for the existing
+        Investigation History (V6-M4) back/forward, previously reachable
+        only via the Alt+Left/Alt+Right shortcuts (_setup_shortcuts).
+        No new history logic -- both buttons call the exact same
+        _history_back/_history_forward the shortcuts already call, and
+        their enabled state is refreshed by _update_history_buttons()
+        (called from there and from _on_history_changed) rather than
+        tracked independently. Built here, in _build_shell(), before
+        self.history exists yet (_build_selection() runs later) --
+        _update_history_buttons() below no-ops safely until it does, and
+        is called for real once self.history is constructed.
+
+        Parented to self (MainWindow), not left parentless: AnalysisPage
+        only actually places this bar in its layout when it has more than
+        one tab (demo mode and the single-panel/guest-study case both skip
+        it -- see AnalysisPage.__init__'s `if not available` / `elif
+        len(available) == 1` branches). A parentless QWidget with no
+        surviving Python reference gets garbage-collected the moment this
+        method returns, which left self.history_back_button pointing at a
+        deleted C++ object -- the next _update_history_buttons() call (from
+        _build_selection(), unconditional, regardless of demo mode) then
+        crashed with "wrapped C/C++ object ... has been deleted" (caught by
+        the demo-mode test suite). Same fix _build_analytics_panel already
+        documents for its own dock objects: parent to self and hide, so it
+        survives as an inert child even when nothing ever displays it;
+        AnalysisPage's own addWidget() reparents (and shows) it normally
+        whenever it *is* used."""
+        bar = QtWidgets.QWidget(self)
+        bar.hide()
+        row = QtWidgets.QHBoxLayout(bar)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+        self.history_back_button = QtWidgets.QToolButton()
+        self.history_back_button.setText("◀")
+        self.history_back_button.setToolTip("Back (Alt+Left)")
+        self.history_back_button.setAccessibleName("Go back in investigation history")
+        self.history_back_button.setEnabled(False)
+        self.history_back_button.clicked.connect(self._history_back)
+        self.history_forward_button = QtWidgets.QToolButton()
+        self.history_forward_button.setText("▶")
+        self.history_forward_button.setToolTip("Forward (Alt+Right)")
+        self.history_forward_button.setAccessibleName("Go forward in investigation history")
+        self.history_forward_button.setEnabled(False)
+        self.history_forward_button.clicked.connect(self._history_forward)
+        row.addWidget(self.history_back_button)
+        row.addWidget(self.history_forward_button)
+        self._update_history_buttons()
+        return bar
 
     def mouseDoubleClickEvent(self, event):
         # Kept as an explicit opt-in gesture, but no longer forced at startup.

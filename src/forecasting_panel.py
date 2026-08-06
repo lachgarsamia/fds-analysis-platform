@@ -72,8 +72,11 @@ class ForecastingPanel(QtWidgets.QWidget):
         available = prediction_store is not None and prediction_store.is_available
         if not available:
             placeholder = QtWidgets.QLabel(
-                "No trained-model predictions available -- run ml/train.py then "
-                "ml/rollout.py to enable forecasting evaluation here."
+                "No trained-model predictions available -- this needs a local "
+                "pipeline run, not new simulation data. See ml/README.md for "
+                "setup (torch, neuraloperator, scikit-image) and the full "
+                "train.py -> rollout.py steps to enable forecasting evaluation "
+                "here."
             )
             placeholder.setWordWrap(True)
             placeholder.setAlignment(QtCore.Qt.AlignCenter)

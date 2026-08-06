@@ -6,6 +6,19 @@ showing the answer as a navigable Insight and marking it on the field at
 the moment it happens. A question that matches no pattern in the closed
 grammar returns "not understood" rather than a made-up answer.
 
+Reads through QuantityProvider (Analysis roadmap C9), not the raw store
+directly -- same reasoning TenabilityPanel's own construction comment
+already gives for itself ("takes the provider ... so a CO read cleanly
+gates instead of touching the store"). query_engine.py's closed grammar
+only ever emits TEMPERATURE/VELOCITY today (both ungated), so this is
+currently a latent-but-real fix rather than one that changes today's
+observable behavior: if the grammar is ever extended toward a gated
+quantity (CO/smoke toxicity questions once M-SIM lands, U/W-VELOCITY
+component questions), or a query is otherwise driven with an unexpected
+quantity, this panel now raises the same honest GatedQuantityError every
+other panel does instead of the raw store attempting (and likely failing
+ungracefully on) a read for data that was never extracted.
+
 Static/lazy, same Analysis-panel convention.
 """
 
@@ -19,13 +32,14 @@ from registry import get_quantity
 from slice_key import SliceKey
 from insight import InsightList
 from analysis_panel_base import populate_scenario_combo
+from quantity_provider import GatedQuantityError
 import query_engine as qe
 
 
 class QueryPanel(QtWidgets.QWidget):
-    def __init__(self, store, manifest: list, fps: int, parent=None):
+    def __init__(self, quantity_provider, manifest: list, fps: int, parent=None):
         super().__init__(parent)
-        self._store = store
+        self._quantity_provider = quantity_provider
         self._manifest = sorted(manifest, key=lambda e: e.case_index)
         self._fps = max(1, fps)
         self._loaded = False
@@ -114,8 +128,15 @@ class QueryPanel(QtWidgets.QWidget):
             self.results.set_insights([])
             return
         key = SliceKey(query.quantity)
-        data = self._store.get(case_index, key)
-        extent = self._store.get_extent(case_index, key)
+        try:
+            data = self._quantity_provider.get(case_index, key)
+            extent = self._quantity_provider.get_extent(case_index, key)
+        except GatedQuantityError as e:
+            self.answer_label.setText(
+                f"{get_quantity(query.quantity).label} isn't available yet ({e}) -- "
+                "answering this needs data this dataset doesn't have.")
+            self.results.set_insights([])
+            return
         answers = qe.execute(query, data, extent, self._fps)
         self.results.set_insights(answers)
         self.answer_label.setText(answers[0].statement if answers else "No answer.")
@@ -125,8 +146,15 @@ class QueryPanel(QtWidgets.QWidget):
     def _show_answer(self, insight) -> None:
         case_index = self.scenario_combo.currentData()
         key = SliceKey(insight.quantity or "TEMPERATURE")
-        data = np.asarray(self._store.get(case_index, key))
-        extent = self._store.get_extent(case_index, key)
+        try:
+            data = np.asarray(self._quantity_provider.get(case_index, key))
+            extent = self._quantity_provider.get_extent(case_index, key)
+        except GatedQuantityError as e:
+            # Reachable only if an insight ever carries a gated quantity --
+            # _run() already refuses before producing one from this panel's
+            # own query, but the results list can replay any past insight.
+            self.answer_label.setText(f"{get_quantity(key.quantity).label} isn't available yet ({e}).")
+            return
         display = get_quantity(key.quantity)
         idx = insight.frame_index(self._fps)
         idx = min(idx if idx is not None else data.shape[0] - 1, data.shape[0] - 1)
