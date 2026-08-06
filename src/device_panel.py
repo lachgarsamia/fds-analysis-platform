@@ -374,6 +374,19 @@ class DevicePanel(QtWidgets.QWidget):
                     f"{r['heating_rate_C_per_s']:.1f} °C/s{fed_part}")
         if r.get("activated"):
             return f"activated at {r['activation_time_s']:.1f} s"
+        if d.type == "sprinkler" and r.get("link_temperature_C"):
+            # A sprinkler's thermal-lag link can trail the actual gas
+            # temperature by a lot -- "did not activate" alone reads like a
+            # heat detector at the same point should have tripped it too,
+            # when in fact its slow-response link simply never caught up
+            # to a brief heat pulse before the room cooled again (real
+            # sprinkler physics: this is exactly why "quick response"
+            # sprinklers with a much lower RTI exist). Showing how close it
+            # got is the honest way to answer "why didn't this activate"
+            # without pretending it should have.
+            peak_link = max(r["link_temperature_C"])
+            threshold = d.parameters.get("activation_temp_C", 68.0)
+            return f"did not activate (link peaked at {peak_link:.0f} °C, needs {threshold:g} °C)"
         return "did not activate"
 
     def _refresh_list(self) -> None:

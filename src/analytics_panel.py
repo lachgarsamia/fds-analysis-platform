@@ -76,6 +76,15 @@ class AnalyticsPanelDock(QtWidgets.QDockWidget):
 
         self.setWidget(root)
 
+        # Constrained layout (C11 fix): replaces the old fixed-fraction
+        # subplots_adjust(...) margins, which were tuned at one figure size
+        # and clipped the y-axis label / collided the x-axis label with the
+        # caption at others. constrained_layout measures each artist's
+        # actual rendered bbox (title, tick labels, axis labels, supxlabel)
+        # and grows margins to fit them -- recomputed on every draw, so it
+        # stays correct across a live resize, not just at the size it was
+        # written against.
+        self.canvas.fig.set_layout_engine("constrained")
         self.ax = self.canvas.fig.add_subplot(111)
         self.ax.set_facecolor(MplCanvas.PLOT_BG)
         if features is None:
@@ -117,7 +126,13 @@ class AnalyticsPanelDock(QtWidgets.QDockWidget):
                 edgecolors="white", linewidths=0.5,
             )
 
-        self.ax.set_title("Ensemble PCA — scenario clustering by fire behavior", fontsize=11, fontweight="bold")
+        # wrap=True (C11 fix): the full title is wider than the axes at
+        # moderate-to-small figure widths (it was clipping on one or both
+        # edges below ~1400px). wrap folds it onto a 2nd line at whatever
+        # width the axes actually has when drawn, instead of a fixed
+        # fontsize that only fit at one size -- also recomputed every draw.
+        self.ax.set_title("Ensemble PCA — scenario clustering by fire behavior",
+                           fontsize=11, fontweight="bold", wrap=True)
         self.ax.set_xlabel(self._axis_label("PC1", variance, 0))
         self.ax.set_ylabel(self._axis_label("PC2", variance, 1))
         self.ax.set_xticks([])
@@ -131,10 +146,14 @@ class AnalyticsPanelDock(QtWidgets.QDockWidget):
             f"{len(case_indices)} scenarios, {DEFAULT_N_CLUSTERS} clusters — "
             f"{alignment * 100:.0f}% match candle count."
         )
-        self.canvas.fig.text(0.5, 0.01, caption, ha="center", va="bottom",
-                              fontsize=8, style="italic", color="#555555")
+        # supxlabel (C11 fix), not fig.text(0.5, 0.01, ...): a fixed
+        # absolute figure position isn't visible to constrained_layout, so
+        # it never reserved room for it -- at some aspect ratios it landed
+        # right on top of the x-axis label. supxlabel is a layout-managed
+        # figure artist, so constrained_layout stacks it below the x-axis
+        # label with real, size-adapted spacing instead of a guessed offset.
+        self.canvas.fig.supxlabel(caption, fontsize=8, style="italic", color="#555555")
 
-        self.canvas.fig.subplots_adjust(top=0.90, bottom=0.13, left=0.09, right=0.97)
         self.canvas.draw_idle()
 
         self.status_label.setText(

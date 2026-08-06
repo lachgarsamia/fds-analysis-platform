@@ -92,6 +92,10 @@ class AdvancedComparePanel(QtWidgets.QWidget):
         self.semantic_diff_canvas.setAccessibleName("Semantic diff evidence field")
         self.semantic_diff_canvas.setMinimumHeight(150)
         layout.addWidget(self.semantic_diff_canvas, 1)
+        self.semantic_diff_caption = QtWidgets.QLabel("")
+        self.semantic_diff_caption.setWordWrap(True)
+        self.semantic_diff_caption.setProperty("role", "caption")
+        layout.addWidget(self.semantic_diff_caption)
         self._sd_cache: dict = {}
 
         # Add comparison to session report (Analysis-improvement roadmap
@@ -242,6 +246,7 @@ class AdvancedComparePanel(QtWidgets.QWidget):
         else:
             self.semantic_diff_canvas.fig.clear()
             self.semantic_diff_canvas.draw_idle()
+            self.semantic_diff_caption.setText("")
 
     def _show_semantic_evidence(self, insight) -> None:
         """Semantic diff's own evidence render (merged in, Phase A): the
@@ -265,16 +270,34 @@ class AdvancedComparePanel(QtWidgets.QWidget):
         ax = fig.add_subplot(111)
         image = ax.imshow(diff, cmap="RdBu_r", vmin=-vmax, vmax=vmax,
                           aspect="auto", extent=extent if extent else None)
-        ax.set_xticks([]); ax.set_yticks([])
+        if extent is not None:
+            # Real x/z tick labels in meters, not a blank field -- the room's
+            # own physical scale is the only spatial reference this plot has
+            # (unlike the Live Viewer's SliceView, it draws no room outline),
+            # so without it the reader has no way to tell where a hot/cold
+            # patch actually sits.
+            ax.set_xlabel("x (m)", fontsize=8)
+            ax.set_ylabel("z (m)", fontsize=8)
+            ax.tick_params(labelsize=7)
+        else:
+            ax.set_xticks([]); ax.set_yticks([])
         ax.set_title(f"A − B at t = {idx / self._fps:.1f} s", fontsize=9, fontweight="bold")
         cbar = fig.colorbar(image, ax=ax, fraction=0.046, pad=0.02)
         cbar.set_label(f"Δ{display.label} ({display.unit})", fontsize=8)
-        if insight.location is not None and extent is not None:
+        has_marker = insight.location is not None and extent is not None
+        if has_marker:
             ax.plot(insight.location[0], insight.location[1], "o",
                     markersize=12, markerfacecolor="none", markeredgecolor="#00E5FF",
                     markeredgewidth=2)
-        fig.subplots_adjust(top=0.92, bottom=0.03, left=0.02, right=0.95)
+        fig.subplots_adjust(top=0.92, bottom=0.15, left=0.1, right=0.95)
         self.semantic_diff_canvas.draw_idle()
+
+        marker_sentence = (" The cyan circle marks the location this row's evidence "
+                           "was found at." if has_marker else "")
+        self.semantic_diff_caption.setText(
+            f"{display.label} difference (A − B) at the moment the selected row's "
+            f"evidence occurs, ± {vmax:.0f} {display.unit}. Red = A reads higher, "
+            f"blue = B reads higher, white = no difference.{marker_sentence}")
 
     def _add_to_session_report(self) -> None:
         """Pin the current A/B comparison into the active session report

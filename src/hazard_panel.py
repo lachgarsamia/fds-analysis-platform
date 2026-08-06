@@ -61,7 +61,7 @@ class HazardPanel(QtWidgets.QWidget):
         header.addWidget(self.scenario_combo)
         layout.addLayout(header)
 
-        self.caption = QtWidgets.QLabel("Basis: " + hz.BASIS + ". Flashover is an "
+        self.caption = QtWidgets.QLabel(hz.basis_caption() + ". Flashover is an "
                                         "indicator only (no combustion model).")
         self.caption.setWordWrap(True)
         self.caption.setProperty("role", "caption")
@@ -139,7 +139,7 @@ class HazardPanel(QtWidgets.QWidget):
         self._series = self._cache[case_index]
         self._data = self._series["data"]
         self.caption.setText(
-            "Basis: " + (hz.FULL_FED_BASIS if self._series["has_co"] else hz.BASIS)
+            hz.basis_caption(co_based=self._series["has_co"])
             + ". Flashover is an indicator only (no combustion model).")
         n = self._data.shape[0]
         self.frame_slider.blockSignals(True)
@@ -193,7 +193,17 @@ class HazardPanel(QtWidgets.QWidget):
                        label="flashover indicator")
         ax.set_xlabel("time (s)", fontsize=8)
         ax.set_ylabel("% of cells", fontsize=8)
-        ax.set_ylim(0, 100)
+        # Zoom to where the hazard-class boundary actually moves, not a
+        # fixed 0-100: most runs stay Safe almost the whole time, which
+        # squeezed the entire Warning/Critical/Untenable story into an
+        # unreadable sliver at the very top. floor sits 5 points below the
+        # lowest the Safe curve ever reaches, so the Safe/Warning boundary
+        # -- and everything above it -- is always fully in view; a run
+        # that's hazardous most of the time (Safe's minimum is already
+        # low) naturally gets back the full 0-100 range via the max(0, ...)
+        # floor, rather than a second, disconnected zoom rule.
+        floor = max(0.0, float(fr[:, 0].min()) * 100 - 5.0)
+        ax.set_ylim(floor, 100)
         ax.legend(fontsize=6, loc="upper left", ncol=2)
         ax.tick_params(labelsize=7)
         fig.subplots_adjust(top=0.96, bottom=0.16, left=0.12, right=0.97)
