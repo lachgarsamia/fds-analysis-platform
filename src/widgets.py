@@ -620,7 +620,18 @@ class TimeSeriesStrip(QtWidgets.QWidget):
         lo, hi = self._y_range
         span = max(hi - lo, 1e-9)
         for value, y in ((hi, plot_rect.top()), (lo, plot_rect.bottom())):
-            label = f"{value:g}"
+            # 3 sig figs (matching the live-value readout's .3g above), not
+            # the previous 6 -- the label column is at most 34px
+            # (plot_rect.left()-4, itself capped at 38-4), and a 6-sig-fig
+            # small value (e.g. "-0.0685029") reliably overflows it. Qt
+            # still draws the full right-aligned string in that case, so
+            # the overflow clips off the *left* end -- the sign and leading
+            # "0." -- leaving only tail digits visible (confirmed directly:
+            # "-0.0685029313238155" rendered as "685029" on a real Dynamic
+            # Pressure strip). 3 sig figs is short enough to fit the same
+            # column at the same font size for the value ranges every
+            # quantity's fixed y_range actually uses.
+            label = f"{value:.3g}"
             painter.drawText(QtCore.QRectF(0, y - 7, plot_rect.left() - 4, 14),
                               QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter, label)
         if self._y_label:
