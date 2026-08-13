@@ -71,6 +71,7 @@ from time_window_panel import TimeWindowPanel
 from advanced_compare_panel import AdvancedComparePanel
 from probe_measure_panel import ProbeMeasurePanel
 from spatiotemporal_panel import SpatiotemporalPanel
+from smoke_layer_motion_panel import SmokeLayerMotionPanel
 import manifest as manifest_mod
 from quantities_panel import QuantitiesPanel
 from selection import Selection, SelectionBus
@@ -906,9 +907,25 @@ class MainWindow(QtWidgets.QMainWindow):
             # consolidated. (The disposable rectangle/point "Quick probe"
             # tool was removed in the Analysis final-polish pass -- Devices/
             # Zones/Velocity already cover deliberate measurement.)
+            #
+            # velocity=None (not self.velocity_panel), by direct product
+            # decision: this dataset has zero U/V/W-VELOCITY data (the M-SIM
+            # gate), so the whole tab was, today, only ever the gated
+            # explanation text -- no quiver, no streamlines, no probe ever
+            # actually computes a reading (VelocityPanel._ensure_field
+            # always hits GatedQuantityError here). ProbeMeasurePanel
+            # already skips any child passed as None (see its own
+            # docstring), so this is the same "only supplied surfaces get a
+            # tab" convention every other optional tab already follows --
+            # not a special case. self.velocity_panel itself is still built
+            # below and still wired (session save/restore, bind_to_bus,
+            # context.py/graph_panel.py's defensive getattr reads) -- only
+            # its tab is hidden; nothing reads it expecting a UI surface to
+            # exist, so this is safe to leave unconstructed-from-the-UI's
+            # perspective without touching those call sites.
             self.probe_measure_panel = ProbeMeasurePanel(
                 devices=self.device_panel, zones=self.zone_panel,
-                velocity=self.velocity_panel)
+                velocity=None)
             # Advanced comparison (V4-M8): temporal / spatial / physics axes.
             # Needs two scenarios to compare (like the semantic diff).
             self.advanced_compare_panel = (
@@ -941,6 +958,15 @@ class MainWindow(QtWidgets.QMainWindow):
             # store) so an unavailable X/Z-normal plane raises
             # GatedQuantityError instead of a raw disk read.
             self.spacetime_panel = SpaceTimePanel(
+                self.quantity_provider, self.sim_data.manifest,
+                self.sim_data.timesteps_per_second)
+            # Smoke-layer motion (Analysis roadmap follow-up): a position-
+            # velocity teaching widget over the one FireScope quantity
+            # that's literally kinematic -- smoke-layer height and its
+            # time-derivative. Takes the provider like SpaceTimePanel just
+            # above, though TEMPERATURE itself is never gated; this is
+            # purely a new view over layer_height.py's existing series.
+            self.smoke_layer_motion_panel = SmokeLayerMotionPanel(
                 self.quantity_provider, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
             self.narrative_panel = NarrativePanel(
@@ -1011,6 +1037,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.hazard_tenability_panel = None
             self.dashboard_panel = None
             self.spacetime_panel = None
+            self.smoke_layer_motion_panel = None
             self.narrative_panel = None
             self.graph_panel = None
 
@@ -1047,6 +1074,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 hazard_tenability_content=self.hazard_tenability_panel,
                 dashboard_content=self.dashboard_panel,
                 spacetime_content=self.spacetime_panel,
+                smoke_layer_motion_content=self.smoke_layer_motion_panel,
                 narrative_content=self.narrative_panel,
                 graph_content=self.graph_panel,
                 quantities_content=self.quantities_panel,
@@ -1130,7 +1158,8 @@ class MainWindow(QtWidgets.QMainWindow):
                      "energy_panel", "forecasting_panel", "quantities_panel",
                      "advanced_compare_panel", "study_panel",
                      "hazard_panel", "spacetime_panel", "narrative_panel",
-                     "device_panel", "velocity_panel", "dashboard_panel"):
+                     "device_panel", "velocity_panel", "dashboard_panel",
+                     "smoke_layer_motion_panel"):
             panel = getattr(self, attr, None)
             if panel is not None:
                 bind_to_bus(panel, self.selection_bus, fps)

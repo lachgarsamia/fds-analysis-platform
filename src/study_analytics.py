@@ -27,6 +27,21 @@ PARAMS = ("candles", "door", "vod", "voc")
 PARAM_LABELS = {"candles": "Candles", "door": "Door", "vod": "VOD", "voc": "VOC"}
 
 # (summary attribute, label, unit)
+#
+# The four arrival-time-at-threshold responses (100/300/600 degC + the
+# tenability onset) were removed from this list by direct product decision
+# -- untenable for the current UI/flow, not something this module argues
+# for or against. One of the four is also empirically dead on this dataset,
+# not just a UI judgment call: time_to_600c_s is None for all 24 scenarios
+# (verified directly against real data) because every scenario's peak tops
+# out at 382-469 degC (see registry.py's TEMPERATURE entry) -- it never had
+# a real value to show. The other three (100/300 degC, tenability onset) DO
+# have a real value for every scenario; they were removed as part of the
+# same cluster rather than left as a partial, inconsistent-looking set.
+# ScenarioSummary/summary_stats.py still computes all four fields --
+# they're real elsewhere (browser.py's experiment table, report_builder.py,
+# auto_summary.py's narrative text, semantic_diff.py) -- only this
+# module's Study/Sensitivity response list drops them.
 RESPONSE_FIELDS = [
     ("max_temp_c", "Peak T", "°C"),
     ("mean_upper_temp_c", "Mean upper T", "°C"),
@@ -36,10 +51,6 @@ RESPONSE_FIELDS = [
     ("time_to_peak_hrr_s", "Time to peak HRR", "s"),
     ("layer_min_height_m", "Layer min height", "m"),
     ("smoke_descent_rate_m_s", "Smoke descent rate", "m/s"),
-    ("time_to_100c_s", "t→100°C (arrival)", "s"),
-    ("time_to_300c_s", "t→300°C (arrival)", "s"),
-    ("time_to_600c_s", "t→600°C (arrival)", "s"),
-    ("time_to_untenable_s", "t untenable (onset)", "s"),
     ("hazard_duration_s", "Hazard duration (Critical+)", "s"),
     ("peak_heat_fed", "Peak heat FED", ""),
 ]

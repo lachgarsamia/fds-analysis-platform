@@ -2957,16 +2957,19 @@ class TestNamedSessions:
         Communication) was removed -- session_store.py and main_window's
         own _on_session_save/_on_session_load (tested directly below,
         independent of any UI) stay, since they're genuine session-
-        management capability, not the tab itself."""
+        management capability, not the tab itself.
+
+        Reference & Communication itself (Quantities/Graph/Ask) was later
+        removed entirely by a further product decision -- there's no
+        group left to check "Sessions" isn't nested inside, so this now
+        just confirms that removal is real (no such tab anywhere) and
+        that session management is unaffected."""
         window = MainWindow(load_simulation_data())
         assert not hasattr(window, "sessions_panel")
         if window.sim_data.manifest:
             labels = [window.pages["analysis"].tabs.tabText(i)
                      for i in range(window.pages["analysis"].tabs.count())]
-            group = window.pages["analysis"].tabs.widget(
-                labels.index("Reference & Communication"))
-            inner_labels = [group.tabText(i) for i in range(group.count())]
-            assert "Sessions" not in inner_labels
+            assert "Reference & Communication" not in labels
         window.close()
 
     def test_save_then_reopen_restores_state_exactly(self, qapp, tmp_path):
@@ -3128,26 +3131,38 @@ class TestProbeMeasurePanel:
     """Analysis section consolidation Phase 4 (Analysis final-polish pass:
     the disposable "Quick probe" mode was removed -- Devices/Zones/
     Velocity already cover deliberate measurement more purposefully; see
-    probe_measure_panel.py's docstring): Devices, Zones, and Velocity are
-    three modes of one "Spatial Probes" workspace -- each child's own
-    construction/store access/lazy-load/bus wiring is unchanged, only the
-    tab-level presentation is consolidated."""
+    probe_measure_panel.py's docstring): Devices and Zones are two modes
+    of one "Spatial Probes" workspace -- each child's own construction/
+    store access/lazy-load/bus wiring is unchanged, only the tab-level
+    presentation is consolidated.
 
-    def test_wrapper_holds_all_three_children_as_tabs(self, qapp):
+    Velocity was a third mode until a later product decision removed its
+    tab (main_window.py passes velocity=None to ProbeMeasurePanel now):
+    this dataset has zero U/V/W-VELOCITY data (the M-SIM gate), so the
+    tab was, in practice, only ever the static gated-explanation text --
+    no quiver, no streamlines, no probe ever actually computed a reading.
+    window.velocity_panel is still built and still wired elsewhere
+    (session save/restore, bind_to_bus, context.py/graph_panel.py's
+    defensive reads) -- only its tab is hidden."""
+
+    def test_wrapper_holds_devices_and_zones_as_tabs_not_velocity(self, qapp):
         window = MainWindow(load_simulation_data())
         if window.probe_measure_panel is None:
             window.close()
             return
         wrapper = window.probe_measure_panel
         labels = [wrapper.tabs.tabText(i) for i in range(wrapper.tabs.count())]
-        assert labels == ["Devices", "Zones", "Velocity"]
+        assert labels == ["Devices", "Zones"]
         assert wrapper.tabs.widget(0) is window.device_panel
         assert wrapper.tabs.widget(1) is window.zone_panel
-        assert wrapper.tabs.widget(2) is window.velocity_panel
         assert not hasattr(window, "measurement_panel")
+        # velocity_panel still exists as an object (other code reads it
+        # defensively) -- it's just not one of the wrapper's tabs.
+        assert window.velocity_panel is not None
+        assert wrapper.velocity_widget is None
         window.close()
 
-    def test_showing_wrapper_loads_all_children_not_just_visible_one(self, qapp):
+    def test_showing_wrapper_loads_devices_and_zones_not_just_visible_one(self, qapp):
         window = MainWindow(load_simulation_data())
         if window.probe_measure_panel is None:
             window.close()
@@ -3158,7 +3173,6 @@ class TestProbeMeasurePanel:
         QtWidgets.QApplication.processEvents()
         assert window.device_panel._loaded
         assert window.zone_panel._loaded
-        assert window.velocity_panel._loaded
         window.close()
 
     def test_show_tab_reveals_a_specific_child_three_levels_deep(self, qapp):
@@ -4086,9 +4100,18 @@ class TestAnalysisPlayback:
         assert window.height_panel.frame_slider.value() == 160       # resend catches up
         window.close()
 
-    def test_factor_influence_covers_arrival_times(self, qapp):
+    def test_factor_influence_excludes_arrival_time_responses(self, qapp):
+        """The four arrival-time-at-threshold responses (100/300/600 degC
+        + tenability onset) were removed from the Study/Sensitivity
+        response list by direct product decision -- untenable for the
+        current UI/flow (study_analytics.py's own comment on
+        RESPONSE_FIELDS has the detail, incl. time_to_600c_s being
+        empirically undefined for every scenario in this dataset).
+        ScenarioSummary itself still computes all four -- this only
+        guards against them silently reappearing in the response combo."""
         import study_analytics as sa
-        assert "time_to_300c_s" in sa.RESPONSE_KEYS and "time_to_600c_s" in sa.RESPONSE_KEYS
+        excluded = {"time_to_100c_s", "time_to_300c_s", "time_to_600c_s", "time_to_untenable_s"}
+        assert not (excluded & set(sa.RESPONSE_KEYS))
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if window.study_panel is not None:
@@ -5046,11 +5069,17 @@ class TestAskTabDirect:
     outright -- it didn't provide enough value for a research-focused
     application. QueryPanel (the deterministic physics-query grammar,
     previously reachable only as a secondary mode inside the removed
-    Assistant wrapper) is restored to its own direct "Ask" tab under
+    Assistant wrapper) was restored to its own direct "Ask" tab under
     Reference & Communication; its own functionality is unchanged and
-    fully covered by TestQueryPanel above."""
+    fully covered by TestQueryPanel above.
 
-    def test_query_panel_is_reachable_as_its_own_tab_not_wrapped(self, qapp):
+    Reference & Communication itself (Quantities/Graph/Ask) was later
+    removed entirely by a further product decision (pages/analysis.py's
+    _GROUPS no longer lists it) -- window.query_panel is still built and
+    still fully functional when driven directly (not touched by this
+    removal), it's just no longer reachable via any Analysis tab."""
+
+    def test_query_panel_still_works_but_is_no_longer_a_reachable_tab(self, qapp):
         window = MainWindow(load_simulation_data())
         if window.query_panel is None:
             window.close()
@@ -5059,9 +5088,17 @@ class TestAskTabDirect:
         assert not hasattr(window, "assistant_query_panel")
         window.show()
         window._navigate_to("analysis")
-        window.pages["analysis"].show_tab(window.query_panel)
+        # show_tab can no longer find it -- Ask isn't in any tab tree any
+        # more -- so this drives ensure_loaded() directly, the same way
+        # main_window.py's other still-constructed-but-unshown panels
+        # (e.g. velocity_panel) are exercised without a UI path to them.
+        window.query_panel.ensure_loaded()
         QtWidgets.QApplication.processEvents()
         assert window.query_panel._loaded
+        leaf_names = [name for name, _w in
+                      window.pages["analysis"]._collect_leaves(window.pages["analysis"].tabs)]
+        assert not any(n.endswith("Ask") or n.endswith("Graph") or n.endswith("Quantities")
+                      for n in leaf_names)
         window.close()
 
 

@@ -60,27 +60,42 @@ class TestPageLifecycle:
 class TestAnalysisPageGrouping:
     """Analysis section consolidation Phase 1: tabs re-grouped by research
     question (Overview & Interpretation / Compare & Discover / Probe &
-    Measure / Factors & Sensitivity / Spatiotemporal Analysis / Reference &
-    Communication), with Experimental collapsed by default."""
+    Measure / Factors & Sensitivity / Spatiotemporal Analysis), with
+    Experimental collapsed by default. Reference & Communication
+    (Quantities/Graph/Ask) was a sixth group here until a later product
+    decision removed it entirely -- see pages/analysis.py's own comment
+    on _GROUPS. graph_content is still accepted as a constructor param
+    (main_window.py still passes it) but no longer forms any tab, which
+    is exactly what test_only_supplied_panels_form_a_group already
+    covers generically for any unreferenced content -- not re-asserted
+    per-panel here."""
 
     def test_panels_are_grouped_and_experimental_starts_collapsed(self, qapp):
         page = AnalysisPage(
             spatiotemporal_content=QtWidgets.QLabel("Spatiotemporal"),
             study_content=QtWidgets.QLabel("Study"),
             pairwise_content=QtWidgets.QLabel("Pairwise Comparison"),
-            graph_content=QtWidgets.QLabel("Graph"),
             fire_mri_content=QtWidgets.QLabel("Fire MRI"),
             attention_content=QtWidgets.QLabel("Attention"))
-        assert page.tabs.count() == 5
+        assert page.tabs.count() == 4
         group_names = [page.tabs.tabText(i) for i in range(page.tabs.count())]
         assert group_names == ["Compare & Discover", "Factors & Sensitivity",
-                               "Spatiotemporal Analysis", "Reference & Communication",
-                               "Experimental"]
+                               "Spatiotemporal Analysis", "Experimental"]
         experimental = page.tabs.widget(group_names.index("Experimental"))
         assert experimental.tabs.count() == 2   # Fire MRI, Attention
         assert experimental.tabs.isHidden()     # collapsed by default
         experimental.toggle.setChecked(True)
         assert not experimental.tabs.isHidden()
+
+    def test_graph_content_no_longer_forms_a_tab(self, qapp):
+        """Reference & Communication was removed entirely -- graph_content
+        is still a valid constructor param (harmless, main_window.py still
+        passes it), it just never becomes a reachable tab any more."""
+        page = AnalysisPage(
+            study_content=QtWidgets.QLabel("Study"),
+            graph_content=QtWidgets.QLabel("Graph"))
+        group_names = [page.tabs.tabText(i) for i in range(page.tabs.count())]
+        assert group_names == ["Factors & Sensitivity"]
 
     def test_only_supplied_panels_form_a_group(self, qapp):
         """A group with nothing supplied gets no tab at all (same "only
@@ -122,12 +137,12 @@ class TestAnalysisPageGrouping:
         page = AnalysisPage(
             dashboard_content=QtWidgets.QLabel("Dashboard"),
             narrative_content=QtWidgets.QLabel("Narrative"),
-            graph_content=QtWidgets.QLabel("Graph"))
+            study_content=QtWidgets.QLabel("Study"))
         page.tab_shown.connect(lambda: calls.append(1))
         overview_group = page.tabs.widget(0)   # Overview & Interpretation: Dashboard, Narrative
         overview_group.setCurrentIndex(1)      # inner switch, no outer change
         assert len(calls) == 1
-        page.tabs.setCurrentIndex(1)        # outer switch to Reference & Communication
+        page.tabs.setCurrentIndex(1)        # outer switch to Factors & Sensitivity
         assert len(calls) == 2
 
 

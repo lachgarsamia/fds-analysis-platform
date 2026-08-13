@@ -64,17 +64,25 @@ from tour import ANALYSIS_STEPS, ANALYSIS_SETTINGS_KEY, TourOverlay, mark_tour_c
 # - Factors & Sensitivity: "what drives the observed response?"
 # - Spatiotemporal Analysis: "how does a quantity evolve across time
 #   and/or space?"
-# - Reference & Communication: authoring/browsing/reporting tools that
-#   aren't themselves an investigation of the simulation
 # The lower-confidence/exploratory tools (Experimental, collapsed by
 # default) are unchanged from Phase D.
+#
+# Reference & Communication (Quantities/Graph/Ask) was removed entirely by
+# direct product decision. Quantities/Graph/Ask are still constructed in
+# main_window.py and still passed into this page's own
+# quantities_content/graph_content/ask_content parameters (harmless --
+# add_group() below already no-ops when a group's members are all None or,
+# as now, when the group itself is absent from _GROUPS) -- they're just
+# never added to any tab, the same "constructed but not exposed as a UI
+# surface" pattern already used for velocity_panel (see main_window.py's
+# ProbeMeasurePanel construction) and the removed Study response-arrival-
+# time options (study_analytics.py's RESPONSE_FIELDS).
 _GROUPS = [
     ("Overview & Interpretation", ["Dashboard", "Hazard & Tenability", "Narrative"]),
     ("Compare & Discover", ["Pairwise Comparison", "PCA / Clustering"]),
     ("Probe & Measure", ["Spatial Probes"]),
     ("Factors & Sensitivity", ["Study"]),
-    ("Spatiotemporal Analysis", ["Field & Time Explorer", "Space-time"]),
-    ("Reference & Communication", ["Quantities", "Graph", "Ask"]),
+    ("Spatiotemporal Analysis", ["Field & Time Explorer", "Space-time", "Smoke-Layer Motion"]),
 ]
 # Fire MRI, Attention, Why is it hot?, and Forecasting are each individually
 # gated/heuristic/exploratory (per-panel disclaimers already say so) --
@@ -196,6 +204,7 @@ class AnalysisPage(Page):
                  hazard_tenability_content: QtWidgets.QWidget = None,
                  dashboard_content: QtWidgets.QWidget = None,
                  spacetime_content: QtWidgets.QWidget = None,
+                 smoke_layer_motion_content: QtWidgets.QWidget = None,
                  narrative_content: QtWidgets.QWidget = None,
                  graph_content: QtWidgets.QWidget = None,
                  quantities_content: QtWidgets.QWidget = None,
@@ -237,6 +246,7 @@ class AnalysisPage(Page):
             ("Narrative", narrative_content),
             ("Space-time", spacetime_content),
             ("Field & Time Explorer", spatiotemporal_content),
+            ("Smoke-Layer Motion", smoke_layer_motion_content),
             ("Spatial Probes", probe_measure_content),
             ("Graph", graph_content),
             ("Quantities", quantities_content),

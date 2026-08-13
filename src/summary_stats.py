@@ -256,6 +256,24 @@ def compute_scenario_summary(entry, store, fps: int) -> ScenarioSummary:
         # Steepest drop between consecutive frames (m/s, reported as a
         # positive rate) -- how fast the layer fell at its worst moment,
         # complementing the existing "how low did it get" minimum.
+        #
+        # Sign-convention note (smoke-layer-motion cleanup pass): this is
+        # deliberately a positive-only *magnitude*, in spirit
+        # "-min(dH/dt)" over the run, so it slots alongside this table's
+        # other severity-style response fields (peak_hrr_kw,
+        # hazard_duration_s, ...; see study_analytics.py's RESPONSE_FIELDS
+        # and its test asserting >= 0.0) rather than crossing zero. It is
+        # NOT the same signed value smoke_layer_motion_panel.py plots --
+        # that panel's rate is the full signed per-frame series (negative
+        # = descending, positive = rising), which is the real quantity
+        # this scalar summarizes down to one worst-frame number. The two
+        # also use different discretizations (np.diff here vs.
+        # np.gradient there) for unrelated reasons: this wants a single
+        # frame-to-frame worst-case, that panel wants a smooth full-series
+        # curve. Related, not contradictory -- deliberately left unified
+        # only in documentation, not in sign, since study_analytics.py's
+        # callers assume a positive magnitude and changing that would
+        # ripple into an unrelated comparison feature.
         smoke_descent_rate_m_s = (float(-np.min(np.diff(layer_series)) * fps)
                                   if layer_series.size >= 2 else 0.0)
         smoke_descent_rate_m_s = max(0.0, smoke_descent_rate_m_s)

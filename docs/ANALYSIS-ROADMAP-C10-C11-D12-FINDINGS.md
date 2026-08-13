@@ -4,6 +4,11 @@ Companion to `docs/ANALYSIS-ROADMAP-2026-08.md`. Investigate-and-report only,
 per instruction — nothing in this document has been implemented. Each
 section ends with a recommendation; the decision is not made here.
 
+Also tracks later flagged findings from the same session, in the same
+investigate-and-report spirit, even where they didn't originate from the
+original C10/C11/D12 batch (see the Smoke Detector section below, added
+2026-08-11).
+
 ---
 
 ## C10 — Reference & Communication grouping
@@ -216,3 +221,118 @@ sites the same way — is worth doing *before* the next feature adds a fourth
 concern to this trio, not as urgent standalone cleanup. Scope was not
 sized here (no line-level plan was drafted) since this is a mapping report,
 not a proposal.
+
+**Status: done.** Executed later in this session as a contained
+`cell_sync.py` extraction (`sync_cell`/`sync_extent`/`sync_ceiling_mask`/
+`sync_timeseries_strip`), behavior-preserving by construction (every call
+site kept its exact prior subset), verified against the exact two bug
+surfaces named above. Two findings surfaced *by* that extraction remain
+open, listed below rather than folded into the extraction itself.
+
+---
+
+## Open findings carried forward (undecided as of 2026-08-11)
+
+Short-form list of everything from this document, plus later investigate-
+and-report passes, that's still a decision rather than a closed item.
+
+1. **C10 — Graph is misfiled** in Reference & Communication (it's bus-
+   connected and history-recorded, contradicting that group's "not itself
+   an investigation" charter; Quantities+Ask do fit). Small, optional,
+   fold-in-when-nearby — not urgent. See the C10 section above.
+2. **`_on_cell_type_changed`'s missing extent leg.** The D12 extraction's
+   `sync_cell()` seam made this visible rather than fixing it: that one
+   call site still calls only `sync_timeseries_strip`/`sync_ceiling_mask`
+   directly, never `sync_extent`, exactly matching its pre-extraction
+   behavior (`cell_sync.py`, `main_window.py`'s `_on_cell_type_changed`).
+   Undecided: document as correct-by-design, or add the leg. One line
+   either way.
+3. **The difference/ensemble inline extent duplication.** `_render_difference_cell`/
+   `_render_ensemble_cell` (`main_window.py`) each re-implement the same
+   "extent may have changed, update if so" check inline rather than
+   routing through `cell_sync.sync_extent` — a 5th/6th copy of that
+   check, outside the four sites the D12 extraction covers. Small
+   follow-up, deliberately not folded into that extraction.
+4. **The sprinkler-physics finding.** A heat detector and a sprinkler at
+   the same point can legitimately disagree (verified on case 17: heat
+   detector trips at 0.5 s, sprinkler's RTI-modeled link never crosses
+   68 °C because the fire is too short-lived for its thermal lag to catch
+   up) — real behavior, not a bug, but worth a code comment on
+   `devices.py`'s `compute_sprinkler` so the next person doesn't
+   re-investigate "detector fired, sprinkler didn't, is this a bug?" from
+   scratch. (The UI side of this is already done — `device_panel.py`'s
+   "did not activate (link peaked at N °C, needs M °C)" message.)
+
+---
+
+## Smoke Detector — feasibility investigation (2026-08-11, investigate-only)
+
+**Question:** is a defensible smoke-detector model achievable from this
+app's real data, at the same rigor bar the sprinkler's RTI model clears?
+
+**Verdict: not currently defensible** — the conversion formula is real
+and citable, but this dataset's `SOOT DENSITY` field can't support a
+trustworthy point-detector threshold. The current "smoke detection isn't
+modeled" state is more honest than any threshold buildable today.
+
+### What real smoke detectors sense vs. what exists here
+
+Photoelectric (optical) detectors respond to light obscuration, which
+*does* have a standard, citable relationship to soot mass concentration:
+the mass extinction coefficient (`K = Kₘ · ρ_soot`, Beer-Lambert), Kₘ ≈
+8700 m²/kg for flaming combustion — the same relation FDS itself uses
+internally for its own `VISIBILITY` output (Jin's correlation, FDS
+Technical Reference Guide). Ionization detectors respond to particle
+number/size, not mass concentration — no clean formula exists for those,
+so "smoke detector" here would only ever mean "photoelectric." The exact
+UL 217/NFPA 72 trip-threshold percentage was not verified against the
+actual standard text — flagged as needing that check before ever being
+cited as authoritative, not stated as fact here.
+
+### What's already in the codebase
+
+Grepped for `extinction`/`obscuration`/`visibility`/`jin`/mass-extinction
+patterns across `src/`: **nothing exists** beyond the one-line registry
+interpretation text ("a proxy for smoke obscuration") and the empty,
+gated `VISIBILITY` registry entry. `docs/msim-preparation.md` scopes
+`VISIBILITY` as needing a *new* `&SLCF QUANTITY='VISIBILITY'` line (i.e.
+computed by FDS itself, gated on M-SIM) — it does not consider deriving
+it client-side from the `SOOT DENSITY` already on disk via the same
+formula, which is mathematically possible without new simulation output.
+Noted, not acted on — a real scope decision, not a mechanical fix.
+
+### What the real data actually supports (re-verified directly, not assumed)
+
+Checked `SOOT DENSITY` at the real room ceiling (z≈0.22 m, `schematic.ROOM_Z[1]`
+— corrected after an initial wrong check at the domain's top edge, z=0.48,
+which is empty buffer air above the solid ceiling slab, not room space) on
+real scenarios (case 3, case 17):
+
+- At a single plausible detector point (x=0.35 m, ceiling z=0.22 m, away
+  from the candle): **exactly zero for the entire 120 s run, both
+  scenarios.**
+- Widened to a ceiling band across the room (x 0.27–0.8 m, still away
+  from the immediate plume): only **16.1%** (case 3) / **5.1%** (case 17)
+  of cell-time samples are ever nonzero at all, and where present it's
+  sharply patchy between adjacent grid cells (0 to several thousand mg/m³
+  one cell apart).
+
+A heat detector/sprinkler reads TEMPERATURE — smooth and reliable
+anywhere in the room. A soot-based smoke-detector threshold would be a
+placement lottery: move the virtual device one grid cell and it could
+flip from real signal to permanently dead for the whole run. That's the
+disqualifier, independent of whether the conversion formula is legitimate
+(it is).
+
+### Recommendation
+
+Do not build. If ever revisited, the smallest honest version would need:
+Kₘ documented as a modeling choice (flaming vs. smoldering soot have
+different cited values — same "domain expert must set this" flag
+`msim-preparation.md` already puts on `CO_YIELD`), a UL/NFPA-verified
+threshold, and a `reduced_model`-style disclosure caption every time it
+renders. Not recommended even then — unlike the sprinkler's reduced-model
+fallback (degrades to a documented worst-case assumption), this one's
+failure mode is a device that silently never fires depending on exact
+grid placement, which is a worse trap for a user than not modeling it at
+all. No code changes made for this investigation.
