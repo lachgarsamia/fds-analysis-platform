@@ -15,14 +15,14 @@ for i in range(0,len(candle)):
         for k in range(0,len(vertical_opening_1)):
             for l in range(0,len(vertical_opening_2)):
                 os.chdir(parent_path)
-                working_folder = os.path.join(parent_path,"c{}_d{}_vod{}_voc{}".format(i,j,k,l))
+                working_folder = os.path.join(parent_path,"c{}_d{}_vod{}_voc{}".format(candle[i],j,k,l))
                 os.mkdir(working_folder)
 
                 if vertical_opening_1[k] == "open":
                     with open('template.fds', 'r') as file :
                         template = file.read()
                     file.close()
-                    template = template.replace('###VOD###', "&HOLE XB = 0.32,0.40, -0.03,0.03, 0.21,0.25, / vertical opening door".format(i,j,k,l))
+                    template = template.replace('###VOD###', "&HOLE XB = 0.32,0.40, -0.03,0.03, 0.21,0.25, / vertical opening door".format(candle[i],j,k,l))
                 elif vertical_opening_1[k] == "closed":
                     with open('template.fds', 'r') as file :
                         template = file.read()
@@ -35,7 +35,7 @@ for i in range(0,len(candle)):
 
                 template = template.replace('###TIME###', "{}".format(time))
 
-                template = template.replace('###CHID###', "c{}_d{}_vod{}_voc{}".format(i,j,k,l))
+                template = template.replace('###CHID###', "c{}_d{}_vod{}_voc{}".format(candle[i],j,k,l))
                 template = template.replace('###TITLE###', "Candle(s):{}; Door width:{}; Vertical opening door:{}; Vertical opening candle:{}".format(candle[i],door[j],vertical_opening_1[k],vertical_opening_2[l]))
 
                 if candle[i] == 1:
@@ -54,7 +54,7 @@ for i in range(0,len(candle)):
                     template = template.replace('###VOC###', "")
 
 
-                file_name = "c{}_d{}_vod{}_voc{}.fds".format(i,j,k,l)
+                file_name = "c{}_d{}_vod{}_voc{}.fds".format(candle[i],j,k,l)
                 fds_file = open('{}'.format(os.path.join(working_folder, file_name)), 'w+')
                 fds_file.write(template)
                 fds_file.close()
