@@ -336,3 +336,18 @@ fallback (degrades to a documented worst-case assumption), this one's
 failure mode is a device that silently never fires depending on exact
 grid placement, which is a worse trap for a user than not modeling it at
 all. No code changes made for this investigation.
+
+### Closing note (2026-08-14)
+
+A working prototype (`devices.py::compute_smoke_detector`, Beer-Lambert
+obscuration, Kₘ=8700 m²/kg, a UL/NFPA-sourced 2.5 %/ft nominal photoelectric
+threshold — the exact verification gap this doc originally flagged) was
+built and tested against real case data. It **confirmed rather than
+overturned** the verdict above: the resulting ~9.5 mg/m³ activation
+threshold sits roughly three orders of magnitude below this dataset's real
+nonzero soot values (bimodal — exactly 0, or already several thousand
+mg/m³), so the model produces instant-trip-or-never-trip behavior at a
+given point, not a graded response, with the same real grid-placement
+sensitivity described above. Final decision: not shipped. "Smoke detection
+isn't modeled" remains the honest state; no smoke-detector code is present
+in the app.
