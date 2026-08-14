@@ -18,6 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "fdsreader==1.11.7",
 ]
 
 # Headless CLI (V2 roadmap M3.4): `fdsvis-cli stats|export|report|session-render`.
