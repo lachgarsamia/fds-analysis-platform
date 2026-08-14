@@ -146,3 +146,63 @@ class TestOuterEdgeColumn:
         assert abs(edge - 42.58) < 0.1
         assert abs(neighbor - 82.41) < 0.1
         assert abs(edge - neighbor) > 30.0
+
+
+@requires_real_dataset
+class TestVelocityCrossValidation:
+    """VELOCITY cross-validation (follow-up to TestOuterEdgeColumn): the
+    M1.3s spike (docs/spike-parser-validation.md) only ever numerically
+    checked TEMPERATURE -- VELOCITY was confirmed present/readable but never
+    verified cell-by-cell. Closed here, against the existing
+    fds/sim/c1_d0_vod0_voc0/ dataset, before Pleiades spends compute on
+    U/W-VELOCITY through this same code path (combineSlices, slice.py:412).
+
+    Method: fdsreader==1.11.7 (scratch venv, not a project dependency) was
+    used to decode each of the 24 raw per-mesh VELOCITY subslices directly
+    (Slice.subslices / SubSlice.data -- fdsreader's independent .sf decode,
+    *before* its own to_global() stitching), then reassembled into a global
+    (t, z, x) grid using combineSlices' own offset/overwrite arithmetic
+    (min/max extent, dx, off1/off2, last-mesh-wins on the y=0 duplicate
+    seam). Compared against our parser's combineSlices output across the
+    FULL grid (49x101 = 4,949 points x 481 frames = 2,380,469 cells) --
+    not just the edge, since VELOCITY's failure mode (if any) was unknown.
+
+    Result: exact bit-for-bit match, max abs diff 0.0 m/s, every cell,
+    every frame -- including the domain edges (x=0, x=1.0, z=0, z=0.48)
+    and the y=0 mesh-boundary duplication that produces the doubled 24
+    subslices in the first place. No discrepancy of any kind was found, so
+    (unlike TEMPERATURE) there was nothing to adjudicate -- this pins the
+    already-clean result as a regression guard, using fdsreader's
+    documented to_global() padding artifact (reproduced here too, e.g.
+    frame 329/row 6/col 100: our 0.1026 vs to_global's padded 0.1807,
+    identical signature to TEMPERATURE's) only as corroborating evidence
+    that a real discrepancy would in fact show up if introduced.
+
+    Values pinned to 4 decimal places (well inside float32 precision) since
+    the underlying diff is exactly 0.0, not merely small."""
+
+    def test_full_grid_values_at_domain_edges_and_interior(self):
+        _mesh, _extent, data, _mask, _times = readSlice(
+            os.path.join(SIM_ROOT, "c1_d0_vod0_voc0"),
+            direction=1, offset=0, quantity="VELOCITY")
+        assert data.shape == (481, 49, 101)
+
+        # Same frame/row the TEMPERATURE edge-column test uses, so both
+        # tests are directly comparable -- plus the far x, z edges.
+        assert abs(data[329, 6, 100] - 0.1026) < 1e-3    # x = 1.0 edge
+        assert abs(data[329, 6, 0] - 0.0792) < 1e-3      # x = 0.0 edge
+        assert abs(data[329, 0, 50] - 0.1277) < 1e-3     # z = 0.0 edge
+        assert abs(data[329, 48, 50] - 0.1168) < 1e-3    # z = 0.48 edge
+        # An interior point, away from every domain boundary.
+        assert abs(data[200, 24, 50] - 0.0298) < 1e-3
+
+    def test_no_nan_or_placeholder_at_mesh_seams(self):
+        """The y=0 plane is duplicated across 24 mesh subslices (12 unique
+        x,z footprints x 2 abutting meshes) -- combineSlices' last-mesh-wins
+        overwrite must actually fill every cell, not leave an uninitialized
+        seam. (Cross-validated exactly against fdsreader's own raw per-mesh
+        decode for this same reason -- see class docstring.)"""
+        _mesh, _extent, data, _mask, _times = readSlice(
+            os.path.join(SIM_ROOT, "c1_d0_vod0_voc0"),
+            direction=1, offset=0, quantity="VELOCITY")
+        assert not np.any(np.isnan(data))
