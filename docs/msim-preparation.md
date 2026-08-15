@@ -8,14 +8,14 @@ A one-time re-run of the 24-scenario candle study on the FZJ cluster (`fds/start
 
 ## 2. The gate (why this is NO-GO now)
 
-The V2 roadmap (§6 M3.5) states the gate condition is **"met once M0.1 closes"**, and the V1 roadmap (§0) states **"editing `fds/template.fds` does not begin until parser validation is confirmed solid — not merely until cluster access exists."** Two independent blockers, both currently unsatisfied:
+The V2 roadmap (§6 M3.5) states the gate condition is **"met once M0.1 closes"**, and the V1 roadmap (§0) states **"editing `fds/template.fds` does not begin until parser validation is confirmed solid — not merely until cluster access exists."** Two independent blockers were originally identified; only one remains unsatisfied:
 
 | Blocker | State | Evidence |
 |---|---|---|
-| **M0.1 edge-column adjudication** (Phase 0) | **OPEN** — Phase 0 was skipped | `docs/spike-parser-validation.md` §3: an isolated outer-edge-column discrepancy vs `fdsreader` was found, characterized, and filed, but not adjudicated (needs FDS binary-format docs or a Smokeview check). The `.sf`/`.s3d` parsers are otherwise well-validated (interior <4 °C, per-frame max exact; `.s3d` matches `fdsreader` exactly after the M2.2 Fortran-order fix). |
+| **M0.1 edge-column adjudication** (Phase 0) | **CLOSED** | `docs/spike-parser-validation.md` §3.1 (commit `83f7e96`): adjudicated in favour of our parser, using fdsreader's own raw per-mesh subslice, and pinned as a regression test, `tests/test_slice_parser.py::TestOuterEdgeColumn`. The `.sf`/`.s3d` parsers are otherwise well-validated (interior <4 °C, per-frame max exact; `.s3d` matches `fdsreader` exactly after the M2.2 Fortran-order fix). VELOCITY was subsequently cross-validated full-grid against `fdsreader` as well (`TestVelocityCrossValidation`), zero discrepancy found. |
 | **Cluster access** | **UNAVAILABLE** here | No SLURM/FDS in this environment; `start_job.batch` targets FZJ `slfire`. |
 
-**The gate rationale is scientific, not bureaucratic:** M-SIM produces *new* simulation output; the parser must be trusted on it before that output is trusted, and the one open parser question (edge column) touches exactly the domain-boundary cells a re-run would newly populate. Closing M0.1 first is what makes the new output trustworthy.
+**The gate rationale is scientific, not bureaucratic:** M-SIM produces *new* simulation output; the parser must be trusted on it before that output is trusted, and the parser question M0.1 raised (edge column) touched exactly the domain-boundary cells a re-run would newly populate. Closing M0.1 first is what makes the new output trustworthy.
 
 **Ungated exception (per V1 §0):** `sim.0` — re-running the *existing, unedited* templates on the cluster as a baseline — does not depend on M0.1 and may run whenever cluster access is secured. It just reproduces the current output; it is a cluster smoke-test, not the feature-unblocking run.
 
@@ -59,7 +59,7 @@ For a y-normal (PBY) slice, **U (x) and W (z) are the two in-plane components** 
 
 ## 6. Decision
 
-**NO-GO to execute or to edit `fds/template.fds` now** — the gate (M0.1 closed) is not met and no cluster is available. Everything needed to execute the instant both conditions hold is specified above; nothing further can be done in this environment without violating the gate or fabricating output.
+**NO-GO to execute or to edit `fds/template.fds` now** — M0.1 is closed (see §2), but no cluster is available. Everything needed to execute the instant cluster access is secured is specified above; nothing further can be done in this environment without violating the gate or fabricating output.
 
 ## 7. Registered-but-gated quantities (V4-M11)
 
