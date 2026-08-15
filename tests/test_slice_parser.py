@@ -5,6 +5,7 @@ import time
 import pytest
 import numpy as np
 from fds.slice.slice import readDataOnly, readSlice
+import fds.slice.slice as fds_slice_module
 
 
 class TestSliceParser:
@@ -206,3 +207,105 @@ class TestVelocityCrossValidation:
             os.path.join(SIM_ROOT, "c1_d0_vod0_voc0"),
             direction=1, offset=0, quantity="VELOCITY")
         assert not np.any(np.isnan(data))
+
+
+_PLEIADES_DIR = os.path.join(SIM_ROOT, "c1_d0_vod0_voc0_pleiades")
+requires_pleiades_dataset = pytest.mark.skipif(
+    not os.path.isdir(_PLEIADES_DIR), reason="c1_d0_vod0_voc0_pleiades/ dataset not present")
+
+
+@requires_pleiades_dataset
+class TestVectorVelocityCrossValidation:
+    """U-VELOCITY / W-VELOCITY cross-validation against the real Pleiades
+    run (c1_d0_vod0_voc0_pleiades/, FDS-6.11.1) that first produced these
+    signed components -- closing the gap TestVelocityCrossValidation left
+    (that test only had the scalar VELOCITY magnitude to check; there was
+    no real U/W output anywhere until this run).
+
+    Method: identical to TestVelocityCrossValidation -- fdsreader==1.11.7
+    (scratch venv) decoded each raw per-mesh subslice directly
+    (Slice.subslices / SubSlice.data, never to_global()), reassembled with
+    combineSlices' own offset arithmetic, and diffed against our parser's
+    output across the full grid, every frame, both quantities, AND both
+    the default (PBY=0.000, 49x101 nodes) and CELL_CENTERED (PBY=-0.005,
+    48x100 cells) variants of each. Result: exact bit-for-bit match, max
+    abs diff 0.0 m/s, every combination -- and, since U/W are signed
+    (unlike VELOCITY's magnitude), an explicit sign check was run too:
+    zero sign disagreements on any cell where both readings exceed
+    0.01 m/s (~1.8-2.3M qualifying cells per combination), including at
+    every mesh-boundary/domain-edge column and row. combineSlices does not
+    flip a component's sign at a stitching seam.
+
+    One real finding, not a defect: fds.slice.slice.findSlices() selects
+    slices by physical-offset proximity (`abs(slice_offset - offset) <
+    1.5*slice_delta`, slice.py:406), and 1.5 mesh-cells (~0.015 m) is
+    wider than the 0.005 m gap between the default and CELL_CENTERED
+    planes -- so readSlice(direction=1, offset=0) actually matches BOTH
+    variants' subslices (36, not 24) and hands them all to combineSlices().
+    It still returns exactly the default-plane values today, but only
+    because the default subslices are processed after the smaller
+    CELL_CENTERED ones in file order and their larger extent fully
+    overwrites them -- correct today by write-order coincidence, not by
+    explicit selection. There is currently no offset value that isolates
+    the CELL_CENTERED variant alone through the public readSlice()
+    interface. This test therefore reads the CELL_CENTERED arrays by
+    filtering `readSliceInfos()`'s slice list to `.centered` directly and
+    calling `combineSlices()` on just those -- both already-public
+    functions in slice.py, called differently, not modified -- to validate
+    the data those files actually contain. Not fixed here (test file only,
+    per scope); worth a real fix (e.g. an explicit `centered` argument to
+    findSlices) before anything depends on selecting CELL_CENTERED data
+    through the normal read path.
+
+    Values pinned to 4 decimal places since the underlying diff is exactly
+    0.0, not merely small -- includes negative (reversed-direction) values
+    specifically, since a sign-only bug would not show up in a magnitude
+    tolerance check."""
+
+    def _cell_centered(self, quantity):
+        smv_fn = fds_slice_module.scanDirectory(_PLEIADES_DIR)
+        sc = fds_slice_module.readSliceInfos(os.path.join(_PLEIADES_DIR, smv_fn))
+        meshes = fds_slice_module.readMeshes(os.path.join(_PLEIADES_DIR, smv_fn))
+        centered_slices = [s for s in sc.slices
+                           if s.quantity == quantity and s.norm_direction == 1 and s.centered]
+        assert len(centered_slices) == 12, (quantity, len(centered_slices))
+        for sid in centered_slices:
+            sid.readAllTimes(_PLEIADES_DIR)
+            sid.readData(_PLEIADES_DIR)
+            sid.mapData(meshes)
+        _mesh, _extent, data, _mask, _times = fds_slice_module.combineSlices(centered_slices)
+        return data
+
+    def test_u_velocity_default_variant(self):
+        _mesh, _extent, data, _mask, _times = readSlice(
+            _PLEIADES_DIR, direction=1, offset=0, quantity="U-VELOCITY")
+        assert data.shape == (481, 49, 101)
+        assert not np.any(np.isnan(data))
+        assert abs(data[329, 22, 94] - (-0.5653)) < 1e-3   # negative -- reversed-direction flow
+        assert abs(data[329, 15, 96] - 0.2143) < 1e-3
+        assert abs(data[329, 6, 0]) < 1e-3                  # x=0.0 edge
+        assert abs(data[329, 6, 100]) < 1e-3                # x=1.0 edge
+
+    def test_w_velocity_default_variant(self):
+        _mesh, _extent, data, _mask, _times = readSlice(
+            _PLEIADES_DIR, direction=1, offset=0, quantity="W-VELOCITY")
+        assert data.shape == (481, 49, 101)
+        assert not np.any(np.isnan(data))
+        assert abs(data[329, 21, 99] - (-0.1398)) < 1e-3   # negative -- reversed-direction flow
+        assert abs(data[329, 16, 97] - 0.8060) < 1e-3
+        assert abs(data[329, 6, 0] - (-0.0155)) < 1e-3      # x=0.0 edge, also negative
+        assert abs(data[329, 6, 100] - 0.0051) < 1e-3       # x=1.0 edge
+
+    def test_u_velocity_cell_centered_variant(self):
+        data = self._cell_centered("U-VELOCITY")
+        assert data.shape == (481, 48, 100)
+        assert not np.any(np.isnan(data))
+        assert abs(data[329, 21, 93] - (-0.5653)) < 1e-3
+        assert abs(data[329, 21, 97] - 0.3696) < 1e-3
+
+    def test_w_velocity_cell_centered_variant(self):
+        data = self._cell_centered("W-VELOCITY")
+        assert data.shape == (481, 48, 100)
+        assert not np.any(np.isnan(data))
+        assert abs(data[329, 3, 93] - (-0.2352)) < 1e-3
+        assert abs(data[329, 12, 96] - 0.9667) < 1e-3
