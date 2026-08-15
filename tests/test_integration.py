@@ -4530,8 +4530,14 @@ class TestTrueVelocity:
         just a terse "waiting for rerun" dead end."""
         from velocity_panel import VelocityPanel
         text = VelocityPanel._build_gate_explanation()
-        for name in ("U-VELOCITY", "V-VELOCITY", "W-VELOCITY", "m/s"):
-            assert name in text
+        # U-VELOCITY/W-VELOCITY are ungated (real Pleiades data, cross-validated
+        # -- TestVectorVelocityCrossValidation); the caption is read live from
+        # the registry, so it correctly stops naming them here. V-VELOCITY
+        # (no real output yet) still must appear.
+        assert "V-VELOCITY" in text
+        assert "m/s" in text
+        assert "U-VELOCITY" not in text
+        assert "W-VELOCITY" not in text
         assert "unavailable" in text.lower()
         for use in ("Smoke transport", "Ventilation", "Recirculation", "Plume", "Streamlines"):
             assert use in text
