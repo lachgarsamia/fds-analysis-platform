@@ -126,7 +126,7 @@ class AttentionPanel(QtWidgets.QWidget):
         fig = self.canvas.fig
         fig.clear()
         self._ax = fig.add_subplot(111)
-        self._image = self._ax.imshow(self._series[idx], cmap="inferno", vmin=0.0, vmax=1.0,
+        self._image = self._ax.imshow(self._series[idx], cmap="viridis", vmin=0.0, vmax=1.0,
                                        aspect="auto", extent=self._extent if self._extent else None)
         self._ax.set_xticks([]); self._ax.set_yticks([])
         self._ax.set_title("Where the physics is active", fontsize=9, fontweight="bold")

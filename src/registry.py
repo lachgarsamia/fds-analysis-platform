@@ -53,11 +53,13 @@ class QuantityInfo:
 
 QUANTITY_REGISTRY = {
     "TEMPERATURE": QuantityInfo(
-        # Colormap expressiveness pass: "inferno" (was "fds_fire") + a
-        # fixed 20-170 °C clim (was 20-300, drifting to whatever the vmax
-        # slider/adaptive logic last set). 170 = AMBIENT_C + 150 °C of
-        # rise -- verified against the real 24-scenario dataset (see
-        # derived_quantities.py's docstring): every scenario's peak is
+        # UI overhaul (fixed colormap decision): "viridis" (was "inferno",
+        # before that "fds_fire") -- every quantity colormap is now
+        # standardized on viridis, not chosen per-quantity, so this is no
+        # longer a per-quantity calibration choice. The fixed 20-170 °C
+        # clim is unaffected by this and stays as before. 170 = AMBIENT_C +
+        # 150 °C of rise -- verified against the real 24-scenario dataset
+        # (see derived_quantities.py's docstring): every scenario's peak is
         # well above this (382-469 °C absolute), so this deliberately
         # saturates the flame plume in exchange for spreading the *room's*
         # ambient-to-hazardous gradient across the visible ramp instead of
@@ -66,13 +68,15 @@ QUANTITY_REGISTRY = {
         # "floored at ambient" without touching any of the other call
         # sites that already treat this vmin as the real physical ambient
         # floor (narration's ambient_c, linked-clim's shared floor).
-        "TEMPERATURE", "Temperature", "°C", "inferno", AMBIENT_C,
+        "TEMPERATURE", "Temperature", "°C", "viridis", AMBIENT_C,
         slider_min=50, slider_max=1000, slider_default=int(AMBIENT_C + 150),
         hazard_levels=(60, 100, 300), kind="slice2d",
         interpretation="Gas temperature; drives buoyancy, the smoke layer, and the "
                        "convected-heat hazard (60/100/300 °C bands)."),
     "VELOCITY": QuantityInfo(
-        "VELOCITY", "Air speed", "m/s", "fds_flow", 0.0,
+        # "viridis" (was "fds_flow") -- UI overhaul: standardized on
+        # viridis for every quantity colormap, not a per-quantity choice.
+        "VELOCITY", "Air speed", "m/s", "viridis", 0.0,
         slider_min=1, slider_max=10, slider_default=2,
         hazard_levels=(1.0, 2.0, 3.0), kind="slice2d",
         interpretation="Speed magnitude |v| of the flow; direction is not stored "
@@ -85,7 +89,11 @@ QUANTITY_REGISTRY = {
         # Range observed directly on real data: ambient ~1.195 kg/m3,
         # dropping to ~0.52 kg/m3 in the hot plume (roughly half, as the
         # ideal-gas-law drop with temperature predicts) -- not assumed.
-        "DENSITY", "Gas density", "kg/m³", "coolwarm", 0.0,
+        # "viridis" (UI overhaul: standardized colormap) -- not diverging:
+        # this quantity's range is strictly positive (~0.52-1.195 kg/m3, no
+        # physically meaningful zero-crossing), so unlike U/W/V-VELOCITY or
+        # PRESSURE below it isn't a case for keeping a diverging map.
+        "DENSITY", "Gas density", "kg/m³", "viridis", 0.0,
         slider_min=1, slider_max=2, slider_default=1, kind="slice2d",
         interpretation="Real local gas density; feeds DYNAMIC PRESSURE in place of "
                        "the fixed-air-density assumption on scenarios where it exists."),
@@ -98,9 +106,10 @@ QUANTITY_REGISTRY = {
         # the same color means the same concentration in every scenario
         # and every frame, not just within one scenario's own playback.
         # vmin=0 (not a data-driven nonzero floor) so an empty/near-zero
-        # field renders clean white under "gray_r", not a data-dependent
-        # partial shade.
-        "SOOT DENSITY", "Smoke (soot)", "mg/m³", "gray_r", 0.0,
+        # field renders at viridis's own floor color consistently, not a
+        # data-dependent partial shade. Colormap is "viridis" (was
+        # "gray_r") -- UI overhaul: standardized on viridis.
+        "SOOT DENSITY", "Smoke (soot)", "mg/m³", "viridis", 0.0,
         slider_min=100, slider_max=25000, slider_default=20000,
         hazard_levels=(), kind="volume",
         interpretation="Soot mass concentration from the volumetric field; a proxy "
@@ -108,7 +117,8 @@ QUANTITY_REGISTRY = {
 
     # --- Derived quantities (computable now from the fields above) ----------
     "TEMPERATURE RISE": QuantityInfo(
-        "TEMPERATURE RISE", "Temperature rise (ΔT)", "°C", "fds_fire", 0.0,
+        # "viridis" (was "fds_fire") -- UI overhaul: standardized colormap.
+        "TEMPERATURE RISE", "Temperature rise (ΔT)", "°C", "viridis", 0.0,
         slider_min=10, slider_max=1000, slider_default=280,
         hazard_levels=(40, 80, 280), kind="derived",
         interpretation="Temperature above ambient (T − 20 °C); isolates the fire's "
@@ -159,6 +169,14 @@ QUANTITY_REGISTRY = {
                        "for flow forcing. Derived from VELOCITY (magnitude)."),
 
     # --- Target quantities, gated on the M-SIM re-run -----------------------
+    # U/V/W-VELOCITY and PRESSURE below intentionally keep "coolwarm", NOT
+    # "viridis" (UI overhaul, viridis-everywhere pass): unlike the plain
+    # magnitude/concentration quantities above, these are signed with a
+    # real physical zero-crossing (flow reversing direction; gauge pressure
+    # above/below ambient), the same reasoning that kept the RdBu_r
+    # scenario-diff views and the correlation matrix off viridis -- a
+    # sequential map has no meaningful center, so switching would erase
+    # the sign, not just reskin the color.
     "U-VELOCITY": QuantityInfo(
         "U-VELOCITY", "Velocity U (x-component)", "m/s", "coolwarm", -5.0,
         slider_min=1, slider_max=10, slider_default=5, kind="slice2d",
@@ -176,7 +194,7 @@ QUANTITY_REGISTRY = {
                        "vector field for true 3D flow visualization (V6-M7).",
         gated=True, gate_reason=MSIM_GATE),
     "CARBON MONOXIDE VOLUME FRACTION": QuantityInfo(
-        "CARBON MONOXIDE VOLUME FRACTION", "Carbon monoxide (CO)", "ppm", "inferno", 0.0,
+        "CARBON MONOXIDE VOLUME FRACTION", "Carbon monoxide (CO)", "ppm", "viridis", 0.0,
         slider_min=100, slider_max=12000, slider_default=1200,
         hazard_levels=(1200, 6000), kind="slice2d",
         interpretation="CO volume fraction; unblocks full FED tenability (today's "
@@ -187,19 +205,20 @@ QUANTITY_REGISTRY = {
         interpretation="Gauge pressure perturbation; vent-driving and doorway flow.",
         gated=True, gate_reason=MSIM_GATE),
     "VISIBILITY": QuantityInfo(
-        "VISIBILITY", "Visibility", "m", "gray", 0.0,
+        "VISIBILITY", "Visibility", "m", "viridis", 0.0,
         slider_min=1, slider_max=30, slider_default=10,
         hazard_levels=(3.0, 10.0), kind="slice2d",
         interpretation="Distance to which a sign is visible through smoke; a direct "
                        "egress-tenability metric.", gated=True, gate_reason=MSIM_GATE),
     "HEAT FLUX": QuantityInfo(
-        "HEAT FLUX", "Heat flux", "kW/m²", "fds_fire", 0.0,
+        # "viridis" (was "fds_fire") -- UI overhaul: standardized colormap.
+        "HEAT FLUX", "Heat flux", "kW/m²", "viridis", 0.0,
         slider_min=1, slider_max=100, slider_default=20,
         hazard_levels=(2.5, 10.0), kind="slice2d",
         interpretation="Radiative + convective heat flux to a surface; skin-burn and "
                        "ignition thresholds (2.5 / 10 kW/m²).", gated=True, gate_reason=MSIM_GATE),
     "SOOT MASS FRACTION": QuantityInfo(
-        "SOOT MASS FRACTION", "Soot mass fraction", "—", "gray_r", 0.0,
+        "SOOT MASS FRACTION", "Soot mass fraction", "—", "viridis", 0.0,
         slider_min=1, slider_max=100, slider_default=20, kind="slice2d",
         interpretation="Soot mass per unit gas mass on the read plane; a 2D smoke "
                        "read without the volumetric decode.", gated=True, gate_reason=MSIM_GATE),

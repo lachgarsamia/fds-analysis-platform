@@ -135,7 +135,11 @@ class TenabilityPanel(QtWidgets.QWidget):
         fig = self.canvas.fig
         fig.clear()
         ax = fig.add_subplot(111)
-        cmap = mpl.colormaps["RdYlGn"].copy()
+        # "viridis" (was "RdYlGn") -- UI overhaul: this is a continuous
+        # time-to-untenable field (vmin=0..vmax), not the discrete
+        # Safe/Warning/Critical/Untenable legend (hazard_panel.py, left on
+        # its own categorical ListedColormap per the fixed UI decision).
+        cmap = mpl.colormaps["viridis"].copy()
         cmap.set_bad("#e8e8e8")  # cells that never become untenable/incapacitated
 
         if self._has_co:

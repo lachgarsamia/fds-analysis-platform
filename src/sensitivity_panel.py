@@ -223,7 +223,7 @@ class SensitivityPanel(QtWidgets.QWidget):
             self.surface_canvas.draw_idle()
             return
         xs, ys, z = se.response_surface(self._table, response, fx, fy, settings)
-        im = ax.pcolormesh(xs, ys, z, cmap="inferno", shading="auto")
+        im = ax.pcolormesh(xs, ys, z, cmap="viridis", shading="auto")
         ax.plot(settings[fx], settings[fy], "o", color="#00E5FF", markersize=8,
                 markeredgecolor="white")
         ax.set_xlabel(sa.PARAM_LABELS[fx], fontsize=8)

@@ -33,13 +33,13 @@ def _channel_display(name: str, unit: str, quantity_cmap: str):
     if name == "time_of_peak":
         return "Time of peak (s)", "viridis"
     if name == "cooling_rate":
-        return f"Cooling rate ({unit}/s)", "cividis"
+        return f"Cooling rate ({unit}/s)", "viridis"
     if name == "thermal_dose":
-        return f"Thermal dose ({unit}·s)", "inferno"
+        return f"Thermal dose ({unit}·s)", "viridis"
     if name.startswith("first_crossing_"):
         return f"First arrival > {name.split('_')[-1]} {unit} (s)", "viridis"
     if name.startswith("duration_above_"):
-        return f"Duration above {name.split('_')[-1]} {unit} (s)", "inferno"
+        return f"Duration above {name.split('_')[-1]} {unit} (s)", "viridis"
     return name, "viridis"
 
 

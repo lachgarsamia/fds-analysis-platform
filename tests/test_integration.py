@@ -206,9 +206,10 @@ class TestIntegration:
         window.close()
 
     def test_colormap_menu_includes_inferno(self, qapp):
-        """M1.3.1's stock options (gist_heat/inferno/viridis/cividis) stay
-        available alongside the calibrated fds_fire/fds_flow defaults
-        added by the GUI modernization pass."""
+        """M1.3.1's stock options (gist_heat/inferno/viridis/cividis) and
+        the calibrated fds_fire/fds_flow options stay available in the
+        View > Colormap manual-override menu, even though viridis is now
+        the fixed default for every quantity (UI overhaul, registry.py)."""
         from main_window import COLORMAPS
         cmap_values = [c for _, c in COLORMAPS]
         assert {"gist_heat", "inferno", "viridis", "cividis"}.issubset(set(cmap_values))

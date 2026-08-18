@@ -166,15 +166,18 @@ _COMPARE_PRESETS = {
     "ventilation": {"factor": "vod", "values": (0, 1), "quantity": "TEMPERATURE"},
 }
 
-# Colormap options. Default (gist_heat) confirmed by the M1.3s validation
-# spike (docs/spike-parser-validation.md): already a black-red-orange-yellow-
-# white blackbody/flame progression, kept as-is rather than replaced.
+# Colormap options for the manual View > Colormap override. UI overhaul
+# (fixed colormap decision): every quantity's registry entry (registry.py)
+# is now standardized on "viridis" -- that's the actual default applied
+# whenever the active quantity changes (_apply_quantity_display_defaults),
+# not a choice made here. This menu remains only as a manual per-view
+# override a user can still reach for; it does not add a new default.
 COLORMAPS = [
-    ("Fire (calibrated, default)", "fds_fire"),
-    ("Flow (calibrated, default for air speed)", "fds_flow"),
+    ("Viridis (default, colorblind-safe)", "viridis"),
+    ("Fire (calibrated)", "fds_fire"),
+    ("Flow (calibrated)", "fds_flow"),
     ("Heat (gist_heat)", "gist_heat"),
     ("Inferno", "inferno"),
-    ("Viridis (colorblind-safe)", "viridis"),
     ("Cividis (colorblind-safe)", "cividis"),
 ]
 
@@ -348,7 +351,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.current_theme_name = self.settings.value("theme", "dark")
         self.ui_scale = float(self.settings.value("ui_scale", 1.0))
-        self.current_colormap = self.settings.value("colormap", "gist_heat")
+        self.current_colormap = self.settings.value("colormap", "viridis")
         self.current_interpolation = self.settings.value("interpolation", "bilinear")
         # M2.1: which (quantity, direction, offset) slice the heatmap shows.
         # Set before the control panel/plot are built since both read it.
