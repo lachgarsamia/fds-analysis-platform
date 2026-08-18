@@ -89,6 +89,7 @@ from history import InvestigationHistory
 import field_calculator as field_calculator_mod
 from device_panel import DevicePanel
 from velocity_panel import VelocityPanel
+from streamline_panel import StreamlinePanel
 from figure_export import save_figure
 from report_builder import build_publication_manifest
 import smoke_density
@@ -844,6 +845,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self.velocity_panel = VelocityPanel(
                 self.quantity_provider, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
+            # Velocity streamlines: a second, independent visualization of
+            # the same validated U/W-VELOCITY field via matplotlib's own
+            # streamplot() -- see streamline_panel.py's module docstring
+            # for why this is a separate panel rather than a mode on
+            # VelocityPanel or a registry/SliceView entry. Does not modify
+            # velocity_panel.py or VelocityPanel in any way.
+            self.streamline_panel = StreamlinePanel(
+                self.quantity_provider, self.sim_data.manifest,
+                self.sim_data.timesteps_per_second)
             self.timeseries_panel = TimeSeriesPanel(
                 self.controller.store, self.sim_data.manifest,
                 self._analysis_quantity_options_with_computed(), self.sim_data.timesteps_per_second,
@@ -908,24 +918,23 @@ class MainWindow(QtWidgets.QMainWindow):
             # tool was removed in the Analysis final-polish pass -- Devices/
             # Zones/Velocity already cover deliberate measurement.)
             #
-            # velocity=None (not self.velocity_panel), by direct product
-            # decision: this dataset has zero U/V/W-VELOCITY data (the M-SIM
-            # gate), so the whole tab was, today, only ever the gated
-            # explanation text -- no quiver, no streamlines, no probe ever
-            # actually computes a reading (VelocityPanel._ensure_field
-            # always hits GatedQuantityError here). ProbeMeasurePanel
-            # already skips any child passed as None (see its own
-            # docstring), so this is the same "only supplied surfaces get a
-            # tab" convention every other optional tab already follows --
-            # not a special case. self.velocity_panel itself is still built
-            # below and still wired (session save/restore, bind_to_bus,
-            # context.py/graph_panel.py's defensive getattr reads) -- only
-            # its tab is hidden; nothing reads it expecting a UI surface to
-            # exist, so this is safe to leave unconstructed-from-the-UI's
-            # perspective without touching those call sites.
+            # velocity=self.velocity_panel: restored (velocity vector field
+            # workstream, 2026-08-14) after being hidden earlier as
+            # velocity=None. That hide was correct at the time -- this
+            # dataset had zero U/W-VELOCITY data (the M-SIM gate), so the
+            # whole tab was only ever the gated explanation text, no quiver,
+            # no streamlines, no probe ever computed a reading. U-VELOCITY/
+            # W-VELOCITY are now ungated with real, cross-validated data
+            # (registry.py; docs/msim-preparation.md), and this exact panel
+            # was independently verified end to end against it (a real probe
+            # placement rendered 338 quiver arrows with coherent flow
+            # structure) -- the condition that justified hiding it no longer
+            # holds, so it goes back through the same "only supplied
+            # surfaces get a tab" convention every other optional tab
+            # already follows.
             self.probe_measure_panel = ProbeMeasurePanel(
                 devices=self.device_panel, zones=self.zone_panel,
-                velocity=None)
+                velocity=self.velocity_panel, streamlines=self.streamline_panel)
             # Advanced comparison (V4-M8): temporal / spatial / physics axes.
             # Needs two scenarios to compare (like the semantic diff).
             self.advanced_compare_panel = (
@@ -1015,6 +1024,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.quantity_provider = None
             self.device_panel = None
             self.velocity_panel = None
+            self.streamline_panel = None
             self.timeseries_panel = None
             self.energy_panel = None
             self.factor_effects_panel = None
@@ -1158,7 +1168,7 @@ class MainWindow(QtWidgets.QMainWindow):
                      "energy_panel", "forecasting_panel", "quantities_panel",
                      "advanced_compare_panel", "study_panel",
                      "hazard_panel", "spacetime_panel", "narrative_panel",
-                     "device_panel", "velocity_panel", "dashboard_panel",
+                     "device_panel", "velocity_panel", "streamline_panel", "dashboard_panel",
                      "smoke_layer_motion_panel"):
             panel = getattr(self, attr, None)
             if panel is not None:

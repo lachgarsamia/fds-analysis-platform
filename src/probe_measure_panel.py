@@ -33,17 +33,25 @@ from PyQt5 import QtWidgets
 class ProbeMeasurePanel(QtWidgets.QWidget):
     def __init__(self, devices: QtWidgets.QWidget = None,
                  zones: QtWidgets.QWidget = None,
-                 velocity: QtWidgets.QWidget = None, parent=None):
+                 velocity: QtWidgets.QWidget = None,
+                 streamlines: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self.devices_widget = devices
         self.zones_widget = zones
         self.velocity_widget = velocity
+        # Velocity streamlines (matplotlib streamplot, a second, independent
+        # visualization of the same U/W-VELOCITY field the Velocity tab's
+        # quiver already draws) -- a sibling tab, not a change to Velocity
+        # itself, so the two are directly next to each other for visual
+        # comparison (see streamline_panel.py's module docstring).
+        self.streamlines_widget = streamlines
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.tabs = QtWidgets.QTabWidget()
         for widget, label in ((devices, "Devices"), (zones, "Zones"),
-                             (velocity, "Velocity")):
+                             (velocity, "Velocity"),
+                             (streamlines, "Velocity (Streamlines)")):
             if widget is not None:
                 self.tabs.addTab(widget, label)
         layout.addWidget(self.tabs, 1)
@@ -56,6 +64,6 @@ class ProbeMeasurePanel(QtWidgets.QWidget):
         """All children load on first show, not just the one currently in
         view -- switching modes later must never reveal a blank panel."""
         for widget in (self.devices_widget, self.zones_widget,
-                      self.velocity_widget):
+                      self.velocity_widget, self.streamlines_widget):
             if widget is not None and hasattr(widget, "ensure_loaded"):
                 widget.ensure_loaded()

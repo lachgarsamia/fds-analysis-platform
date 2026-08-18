@@ -3131,38 +3131,38 @@ class TestProbeMeasurePanel:
     """Analysis section consolidation Phase 4 (Analysis final-polish pass:
     the disposable "Quick probe" mode was removed -- Devices/Zones/
     Velocity already cover deliberate measurement more purposefully; see
-    probe_measure_panel.py's docstring): Devices and Zones are two modes
-    of one "Spatial Probes" workspace -- each child's own construction/
-    store access/lazy-load/bus wiring is unchanged, only the tab-level
-    presentation is consolidated.
+    probe_measure_panel.py's docstring): Devices, Zones, and Velocity are
+    three modes of one "Spatial Probes" workspace -- each child's own
+    construction/store access/lazy-load/bus wiring is unchanged, only the
+    tab-level presentation is consolidated.
 
-    Velocity was a third mode until a later product decision removed its
-    tab (main_window.py passes velocity=None to ProbeMeasurePanel now):
-    this dataset has zero U/V/W-VELOCITY data (the M-SIM gate), so the
-    tab was, in practice, only ever the static gated-explanation text --
-    no quiver, no streamlines, no probe ever actually computed a reading.
-    window.velocity_panel is still built and still wired elsewhere
-    (session save/restore, bind_to_bus, context.py/graph_panel.py's
-    defensive reads) -- only its tab is hidden."""
+    Velocity's tab was hidden for a while (main_window.py passed
+    velocity=None to ProbeMeasurePanel) because this dataset had zero
+    U/W-VELOCITY data (the M-SIM gate) -- the tab was, in practice, only
+    ever the static gated-explanation text, no quiver, no streamlines, no
+    probe ever actually computed a reading. Restored (velocity vector
+    field workstream, 2026-08-14) now that U/W-VELOCITY are ungated with
+    real, cross-validated data and this exact panel was independently
+    verified against it."""
 
-    def test_wrapper_holds_devices_and_zones_as_tabs_not_velocity(self, qapp):
+    def test_wrapper_holds_devices_zones_and_velocity_as_tabs(self, qapp):
         window = MainWindow(load_simulation_data())
         if window.probe_measure_panel is None:
             window.close()
             return
         wrapper = window.probe_measure_panel
         labels = [wrapper.tabs.tabText(i) for i in range(wrapper.tabs.count())]
-        assert labels == ["Devices", "Zones"]
+        assert labels == ["Devices", "Zones", "Velocity", "Velocity (Streamlines)"]
         assert wrapper.tabs.widget(0) is window.device_panel
         assert wrapper.tabs.widget(1) is window.zone_panel
+        assert wrapper.tabs.widget(2) is window.velocity_panel
+        assert wrapper.tabs.widget(3) is window.streamline_panel
         assert not hasattr(window, "measurement_panel")
-        # velocity_panel still exists as an object (other code reads it
-        # defensively) -- it's just not one of the wrapper's tabs.
         assert window.velocity_panel is not None
-        assert wrapper.velocity_widget is None
+        assert wrapper.velocity_widget is window.velocity_panel
         window.close()
 
-    def test_showing_wrapper_loads_devices_and_zones_not_just_visible_one(self, qapp):
+    def test_showing_wrapper_loads_devices_zones_and_velocity_not_just_visible_one(self, qapp):
         window = MainWindow(load_simulation_data())
         if window.probe_measure_panel is None:
             window.close()
@@ -3173,6 +3173,7 @@ class TestProbeMeasurePanel:
         QtWidgets.QApplication.processEvents()
         assert window.device_panel._loaded
         assert window.zone_panel._loaded
+        assert window.velocity_panel._loaded
         window.close()
 
     def test_show_tab_reveals_a_specific_child_three_levels_deep(self, qapp):
