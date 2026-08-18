@@ -99,7 +99,7 @@ from evidence_notebook_panel import EvidenceNotebookDock
 from evidence_notebook import EvidenceNotebook
 from diff_analysis import DifferenceOverTimeDialog
 from session import build_session_dict, read_session, write_session
-from nav import NavRail, EXPANDED_WIDTH as NAV_DEFAULT_WIDTH
+from nav import NavRail
 from pages.live import LivePage
 from pages.home import HomePage
 from pages.compare import ComparePage
@@ -1116,32 +1116,22 @@ class MainWindow(QtWidgets.QMainWindow):
         for key, _label in nav_entries:
             self.page_stack.addWidget(self.pages[key])
 
-        self.nav_rail = NavRail(nav_entries)
+        # UI overhaul (global chrome pass): hover-to-reveal nav rail, not a
+        # QSplitter pane -- a splitter always allocates real layout space to
+        # both panes, so "expanding" it on hover would push page_stack over
+        # instead of overlaying it. Parenting nav_rail directly onto
+        # page_stack *without* adding it via page_stack.addWidget() keeps it
+        # outside the QStackedLayout entirely: it isn't shown/hidden by page
+        # switches, isn't managed by any layout, and floats at whatever
+        # geometry _layout_nav_rail() gives it, raised above the current
+        # page. See _layout_nav_rail()/resizeEvent for how it's kept pinned
+        # and on top.
+        self.nav_rail = NavRail(nav_entries, parent=self.page_stack)
         self.nav_rail.page_selected.connect(self._navigate_to)
         self.nav_rail.theme_toggle_requested.connect(self._toggle_theme)
-        self.nav_rail.collapsed_changed.connect(self._on_nav_collapsed_changed)
-
-        # Drag-to-resize nav rail (live-testing feedback: collapse/expand was
-        # the only width control) -- a QSplitter instead of the previous
-        # plain QHBoxLayout, since that's the standard Qt way to get a
-        # draggable divider for free rather than hand-rolling one. The rail
-        # itself still enforces its own min/max width (nav.py); the
-        # splitter just lets the user pick anywhere in that range.
-        self.nav_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        self.nav_splitter.setObjectName("shellSplitter")
-        self.nav_splitter.setContentsMargins(0, 0, 0, 0)
-        self.nav_splitter.setHandleWidth(6)
-        self.nav_splitter.addWidget(self.nav_rail)
-        self.nav_splitter.addWidget(self.page_stack)
-        self.nav_splitter.setCollapsible(0, False)  # the rail's own Collapse button owns that, not a drag-to-0
-        self.nav_splitter.setCollapsible(1, False)
-        self.nav_splitter.setStretchFactor(0, 0)
-        self.nav_splitter.setStretchFactor(1, 1)
-        saved_width = int(self.settings.value("nav_rail_width", NAV_DEFAULT_WIDTH))
-        self.nav_rail.note_expanded_width(saved_width)
-        self.nav_splitter.setSizes([self.nav_rail.target_width(), 10_000])
-        self.nav_splitter.splitterMoved.connect(self._on_nav_splitter_moved)
-        self.setCentralWidget(self.nav_splitter)
+        self.nav_rail.expanded_changed.connect(lambda _expanded: self._layout_nav_rail())
+        self.setCentralWidget(self.page_stack)
+        self._layout_nav_rail()
 
         self._build_evidence_notebook()
         self._build_sessions()
@@ -1417,30 +1407,28 @@ class MainWindow(QtWidgets.QMainWindow):
         self._active_page_key = key
         self.page_stack.setCurrentWidget(page)
         self.nav_rail.set_active(key)
+        self.nav_rail.raise_()  # setCurrentWidget can shuffle page_stack's child z-order; keep the rail on top
         page.on_enter()
         # RC polish: a panel that becomes visible catches up to the current
         # selection/time (hidden panels skip live updates for performance).
         if getattr(self, "selection_bus", None) is not None:
             self.selection_bus.resend()
 
-    def _on_nav_collapsed_changed(self, collapsed: bool) -> None:
-        """NavRail's Collapse button changed state -- snap the splitter to
-        whatever width that implies (target_width()) rather than relying on
-        the splitter to notice the rail's own min/max width changed, which
-        isn't guaranteed to reposition an already-dragged handle."""
-        self.nav_splitter.setSizes([self.nav_rail.target_width(), 10_000])
+    def _layout_nav_rail(self) -> None:
+        """Pins the floating nav rail (nav.py) to page_stack's left edge at
+        full height and keeps it above the current page in paint order.
+        nav_rail isn't managed by any layout (that's what lets it float over
+        page content on hover instead of pushing it over), so nothing else
+        keeps its geometry in sync -- called on every window resize
+        (resizeEvent below) and whenever hover changes its width
+        (NavRail.expanded_changed)."""
+        self.nav_rail.setGeometry(0, 0, self.nav_rail.width(), self.page_stack.height())
+        self.nav_rail.raise_()
 
-    def _on_nav_splitter_moved(self, _pos: int, _index: int) -> None:
-        """User dragged the nav rail's own edge -- persist it (same
-        QSettings convention as theme/ui_scale) and remember it as the
-        width to restore to after a collapse/expand round-trip. No-op
-        while collapsed: note_expanded_width() itself guards that, since a
-        collapsed rail is fixed-width and can't actually be the thing being
-        dragged."""
-        width = self.nav_rail.width()
-        self.nav_rail.note_expanded_width(width)
-        if not self.nav_rail.is_collapsed():
-            self.settings.setValue("nav_rail_width", width)
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "nav_rail"):
+            self._layout_nav_rail()
 
     def _reset_grid_after_compare(self) -> None:
         """Bugfix: leaving a Compare preset's comparison grid (2x1, two

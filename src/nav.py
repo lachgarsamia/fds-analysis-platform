@@ -1,8 +1,21 @@
 """Left navigation rail (FireLab roadmap Phase 1): a vertical list of
-page buttons, mutually exclusive (exactly one page active at a time), with
-a collapse toggle for icon-only mode. Keyboard shortcuts (1-6) are wired
-by MainWindow (same place the app's other shortcuts already live), not
-here -- a rail widget shouldn't assume it owns global key handling.
+page buttons, mutually exclusive (exactly one page active at a time).
+
+UI overhaul (global chrome pass): hover-to-reveal, not a manual collapse
+button. The rail defaults to a slim icon/number-only strip and expands to
+full width for as long as the mouse is over it (enterEvent/leaveEvent
+below), collapsing again the instant the mouse leaves -- there's no
+persisted "collapsed" preference to restore because there's nothing to
+remember, the rail is always slim except while actively hovered.
+
+This widget only owns its own width (via setFixedWidth in _set_expanded);
+it does NOT position itself on screen. main_window.py parents it directly
+onto page_stack *without* adding it to a layout, so it floats above page
+content rather than sharing space with it, and repositions/raises it via
+its own _layout_nav_rail() on resize and on this widget's expanded_changed
+signal. Keyboard shortcuts (1-6) are wired by MainWindow (same place the
+app's other shortcuts already live), not here -- a rail widget shouldn't
+assume it owns global key handling.
 """
 
 from __future__ import annotations
@@ -12,8 +25,6 @@ from PyQt5 import QtCore, QtWidgets
 from branding import build_partner_logos_widget
 
 EXPANDED_WIDTH = 340
-MIN_EXPANDED_WIDTH = 220
-MAX_EXPANDED_WIDTH = 560
 COLLAPSED_WIDTH = 48
 LOGO_HEIGHT = 150
 
@@ -24,14 +35,14 @@ class NavRail(QtWidgets.QWidget):
 
     page_selected = QtCore.pyqtSignal(str)  # page key
     theme_toggle_requested = QtCore.pyqtSignal()
-    collapsed_changed = QtCore.pyqtSignal(bool)
+    expanded_changed = QtCore.pyqtSignal(bool)  # hover state, not a persisted preference
 
     def __init__(self, entries: list, parent=None):
         super().__init__(parent)
         self.setObjectName("navRail")
         self._buttons: dict = {}
         self._labels: dict = {}
-        self._collapsed = False
+        self._expanded = False
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(4, 8, 4, 8)
@@ -79,26 +90,14 @@ class NavRail(QtWidgets.QWidget):
         self._theme_button.setToolTip("Switch to light mode")
         layout.addWidget(self._theme_button)
 
-        self._collapse_button = QtWidgets.QPushButton()
-        self._collapse_button.setObjectName("navCollapseButton")
-        self._collapse_button.setAccessibleName("Collapse or expand the navigation rail")
-        self._collapse_button.clicked.connect(self.toggle_collapsed)
-        layout.addWidget(self._collapse_button)
-
         self._relabel()
         if entries:
             self._buttons[entries[0][0]].setChecked(True)
-        # Drag-to-resize (live-testing feedback: collapse/expand was the
-        # only width control) -- bounded, not fixed, so the containing
-        # QSplitter (main_window.py's shell) can resize this via its own
-        # drag handle. _expanded_width remembers whatever width was last in
-        # effect while NOT collapsed (the splitter drag, or a restored
-        # QSettings value main_window.py applies after construction), so a
-        # collapse/expand cycle restores it instead of snapping back to the
-        # EXPANDED_WIDTH default every time.
-        self._expanded_width = EXPANDED_WIDTH
-        self.setMinimumWidth(MIN_EXPANDED_WIDTH)
-        self.setMaximumWidth(MAX_EXPANDED_WIDTH)
+        # Starts slim; enterEvent expands it for as long as the mouse stays
+        # over it. setFixedWidth (not min/max) because there's no drag-resize
+        # anymore -- a transient hover flyout doesn't need a user-tunable
+        # width the way a permanently-allocated pane did.
+        self.setFixedWidth(COLLAPSED_WIDTH)
 
     def set_active(self, key: str) -> None:
         button = self._buttons.get(key)
@@ -118,47 +117,35 @@ class NavRail(QtWidgets.QWidget):
         self._logo.set_dark(is_dark)
         self._relabel()
 
-    def toggle_collapsed(self) -> None:
-        self.set_collapsed(not self._collapsed)
+    def enterEvent(self, event) -> None:
+        self._set_expanded(True)
+        super().enterEvent(event)
 
-    def set_collapsed(self, collapsed: bool) -> None:
-        self._collapsed = collapsed
-        if collapsed:
-            self.setFixedWidth(COLLAPSED_WIDTH)
-        else:
-            # Release the collapsed state's fixed width back to the normal
-            # drag range -- main_window.py's splitterMoved handler (or the
-            # collapsed_changed signal below) is what actually restores
-            # target_width() as the on-screen width via setSizes().
-            self.setMinimumWidth(MIN_EXPANDED_WIDTH)
-            self.setMaximumWidth(MAX_EXPANDED_WIDTH)
-        self._logo.setVisible(not collapsed)
+    def leaveEvent(self, event) -> None:
+        self._set_expanded(False)
+        super().leaveEvent(event)
+
+    def _set_expanded(self, expanded: bool) -> None:
+        if expanded == self._expanded:
+            return
+        self._expanded = expanded
+        width = EXPANDED_WIDTH if expanded else COLLAPSED_WIDTH
+        self.setFixedWidth(width)
+        self.resize(width, self.height())  # not under a layout, so the fixed-width change alone won't move pixels
+        self._logo.setVisible(expanded)
         self._relabel()
-        self.collapsed_changed.emit(collapsed)
+        self.expanded_changed.emit(expanded)
 
-    def is_collapsed(self) -> bool:
-        return self._collapsed
-
-    def target_width(self) -> int:
-        """The width the containing QSplitter should apply right now --
-        main_window.py calls this after set_collapsed() (via
-        collapsed_changed) and after restoring a saved width from
-        QSettings."""
-        return COLLAPSED_WIDTH if self._collapsed else self._expanded_width
-
-    def note_expanded_width(self, width: int) -> None:
-        """main_window.py calls this from the splitter's splitterMoved
-        signal, but only while NOT collapsed (a drag can't happen while
-        collapsed anyway, since width is fixed then) -- keeps
-        _expanded_width tracking the user's actual choice so it survives a
-        collapse/expand round-trip, and so it's there to persist."""
-        if not self._collapsed:
-            self._expanded_width = max(MIN_EXPANDED_WIDTH, min(MAX_EXPANDED_WIDTH, width))
+    def is_expanded(self) -> bool:
+        return self._expanded
 
     def _relabel(self) -> None:
         for key, button in self._buttons.items():
             full = self._labels[key]
-            button.setText(full.split(None, 1)[0] if self._collapsed else full)
+            # The number prefix (not an icon) is what keeps the active page
+            # identifiable in the slim rail -- combined with the :checked
+            # QSS accent background (theme.py), which applies regardless of
+            # width, so the active page stays visible without hovering.
+            button.setText(full if self._expanded else full.split(None, 1)[0])
         self._theme_button.setText(
-            self._theme_icon if self._collapsed else f"{self._theme_icon}  {self._theme_full_label}")
-        self._collapse_button.setText(">>" if self._collapsed else "<<  Collapse")
+            f"{self._theme_icon}  {self._theme_full_label}" if self._expanded else self._theme_icon)

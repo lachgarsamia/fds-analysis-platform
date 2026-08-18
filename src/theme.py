@@ -430,16 +430,6 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
         font-weight: 600;
     }}
 
-    QPushButton#navCollapseButton {{
-        background-color: transparent;
-        border: none;
-        color: {p.text_secondary};
-    }}
-
-    QPushButton#navCollapseButton:hover {{
-        color: {p.text_primary};
-    }}
-
     QPushButton#navThemeButton {{
         background-color: transparent;
         border: none;

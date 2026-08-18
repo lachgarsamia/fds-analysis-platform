@@ -5,7 +5,7 @@ exercise Live Viewer content; these focus on what's new: page identity,
 lazy placeholder builds, and playback pausing on navigation away."""
 
 import pytest
-from PyQt5 import QtWidgets
+from PyQt5 import QtCore, QtWidgets
 
 from data_provider import load_simulation_data
 from main_window import MainWindow
@@ -33,11 +33,21 @@ class TestNavRail:
         assert rail._buttons["live"].isChecked()
         assert not rail._buttons["home"].isChecked()
 
-    def test_collapse_shrinks_width_and_relabels(self, qapp):
+    def test_starts_collapsed(self, qapp):
         rail = NavRail([("home", "Home")])
-        expanded_width = rail.width()
-        rail.set_collapsed(True)
-        assert rail.width() < expanded_width
+        assert not rail.is_expanded()
+        assert rail._buttons["home"].text() == "1"
+
+    def test_hover_expands_and_leave_collapses(self, qapp):
+        rail = NavRail([("home", "Home")])
+        collapsed_width = rail.width()
+        QtWidgets.QApplication.sendEvent(rail, QtCore.QEvent(QtCore.QEvent.Enter))
+        assert rail.is_expanded()
+        assert rail.width() > collapsed_width
+        assert rail._buttons["home"].text() == "1  Home"
+        QtWidgets.QApplication.sendEvent(rail, QtCore.QEvent(QtCore.QEvent.Leave))
+        assert not rail.is_expanded()
+        assert rail.width() == collapsed_width
         assert rail._buttons["home"].text() == "1"
 
 
