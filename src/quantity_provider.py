@@ -27,7 +27,7 @@ from collections import OrderedDict
 
 from registry import get_quantity
 from slice_key import SliceKey, DEFAULT_DIRECTION, DEFAULT_OFFSET, DIRECTION_TO_AXIS, available_slices
-from derived_quantities import derive, source_quantity
+from derived_quantities import derive, source_quantity, dynamic_pressure
 
 
 class GatedQuantityError(RuntimeError):
@@ -116,6 +116,20 @@ class QuantityProvider:
         # its source read gets the same gating/plane checks as any other
         # quantity (V6-M5).
         source = self.get(scenario, self._source_key(key))
+        if key.quantity == "DYNAMIC PRESSURE":
+            # Try real per-cell DENSITY at the same plane first; only the
+            # original 24-scenario dataset (which never captured DENSITY)
+            # falls through to dynamic_pressure()'s constant-rho fallback.
+            # Caught broadly (GatedQuantityError covers both "DENSITY not
+            # registered/gated" and "not in this scenario's plane
+            # inventory" -- V6-M5's per-scenario check); a provider/store
+            # test double that doesn't support DENSITY at all must fall
+            # back the same way, not crash.
+            try:
+                density = self.get(scenario, SliceKey("DENSITY", key.direction, key.offset))
+            except Exception:  # noqa: BLE001
+                density = None
+            return dynamic_pressure(source, density_frame=density)
         return derive(key.quantity, source)   # elementwise over the whole (t,z,x) array
 
     def get(self, scenario: int, key: SliceKey = None):

@@ -77,6 +77,18 @@ QUANTITY_REGISTRY = {
         hazard_levels=(1.0, 2.0, 3.0), kind="slice2d",
         interpretation="Speed magnitude |v| of the flow; direction is not stored "
                        "(the in-plane U/W components are gated)."),
+    "DENSITY": QuantityInfo(
+        # Real per-cell gas density (kg/m3), captured starting with the
+        # Stage 1 rerun; cross-validated full-grid against fdsreader's raw
+        # per-mesh decode across all 24 scenarios (exact match, zero sign
+        # mismatches -- signed isn't applicable here, but the same rigor).
+        # Range observed directly on real data: ambient ~1.195 kg/m3,
+        # dropping to ~0.52 kg/m3 in the hot plume (roughly half, as the
+        # ideal-gas-law drop with temperature predicts) -- not assumed.
+        "DENSITY", "Gas density", "kg/m³", "coolwarm", 0.0,
+        slider_min=1, slider_max=2, slider_default=1, kind="slice2d",
+        interpretation="Real local gas density; feeds DYNAMIC PRESSURE in place of "
+                       "the fixed-air-density assumption on scenarios where it exists."),
     "SOOT DENSITY": QuantityInfo(
         # Fixed range (colormap expressiveness pass): 0-20000 mg/m3, tuned
         # to the real 24-scenario dataset's measured max-over-run (~19289

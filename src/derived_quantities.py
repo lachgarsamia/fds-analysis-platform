@@ -25,10 +25,24 @@ def temperature_rise(temperature_frame, ambient: float = AMBIENT_C) -> np.ndarra
     return np.asarray(temperature_frame, dtype=float) - ambient
 
 
-def dynamic_pressure(speed_frame, rho: float = RHO_AIR) -> np.ndarray:
-    """½ρ|v|² (Pa), from the VELOCITY speed magnitude."""
+def dynamic_pressure(speed_frame, density_frame=None, rho: float = RHO_AIR) -> np.ndarray:
+    """½ρ|v|² (Pa), from the VELOCITY speed magnitude.
+
+    `density_frame`, when given, is the real per-cell DENSITY array
+    (kg/m3, same shape as speed_frame) -- used elementwise in place of the
+    fixed `rho` constant. Falls back to `rho` (RHO_AIR by default) only
+    when no density field is available for this dataset -- the original
+    24-scenario run never captured DENSITY, so this keeps producing the
+    same (approximate) result there, while scenarios with real DENSITY
+    (Stage 1 onward) get the physically accurate value: room-temperature
+    air is ~1.2 kg/m3, but real density drops to roughly half that in the
+    hot plume, so the old constant overestimated dynamic pressure by up
+    to ~2x in exactly the cells where it matters most."""
     v = np.asarray(speed_frame, dtype=float)
-    return 0.5 * rho * v * v
+    if density_frame is None:
+        return 0.5 * rho * v * v
+    d = np.asarray(density_frame, dtype=float)
+    return 0.5 * d * v * v
 
 
 # derived quantity name -> (source quantity, function)
