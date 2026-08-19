@@ -1506,7 +1506,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self.splitter.setChildrenCollapsible(True)  # user can fully collapse the panel
-        root_layout.addWidget(self.splitter)
+        root_layout.addWidget(self.splitter, 1)
 
         self.splitter.addWidget(self._build_control_panel())
         self.splitter.addWidget(self._build_plot_panel())
@@ -1517,6 +1517,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setStretchFactor(2, 0)
         self.splitter.setSizes([380, 700, 280])
+
+        # Vent 1/Vent 2/Number of candles (Live Viewer layout pass): a bar
+        # docked below the whole splitter row, spanning full width -- not
+        # nested in any one splitter column, so it can't crowd the room
+        # diagram (control panel) or the inspector on a narrower window the
+        # way adding more sidebar cards would have. See
+        # _build_scenario_control_bar().
+        self.scenario_control_bar = self._build_scenario_control_bar()
+        root_layout.addWidget(self.scenario_control_bar)
         return central
 
     def _build_inspector_panel(self) -> QtWidgets.QWidget:
@@ -1609,53 +1618,15 @@ class MainWindow(QtWidgets.QMainWindow):
         # UI overhaul, global chrome pass: it's now self.playback_bar, one
         # shared instance in MainWindow's persistent header, visible on
         # every page instead of just Live Viewer's sidebar. See
-        # playback_bar.py and _build_shell()'s header construction.)
-
-        # Ventilation first (user feedback): the vents are the primary
-        # thing people compare, so they sit at the top of the scenario
-        # controls with short "Vent 1"/"Vent 2" labels (the VOD/VOC codes
-        # stay in the accessible names and tooltips for traceability).
-        vod_section = CollapsibleSection("Vent 1")
-        self.vod_toggle = VentWidget(
-            [("Open", 0), ("Closed", 1), ("HVAC", 2)], state_labels=_VOD_STATES, default_index=DEFAULT_VOD,
-            accessible_name="Air vent 1 (VOD) state",
-        )
-        self.vod_toggle.setToolTip(
-            "Vent 1 (VOD): opens, closes, or connects an air vent in the room "
-            "to a fan (HVAC). Open lets smoke and hot air escape and fresh air "
-            "in; closed traps heat and smoke inside."
-        )
-        self.vod_toggle.value_changed.connect(self._on_vod_changed)
-        vod_section.add_row(self.vod_toggle)
-        outer.addWidget(vod_section)
-
-        voc_section = CollapsibleSection("Vent 2")
-        self.voc_toggle = VentWidget(
-            [("Open", 0), ("Closed", 1)], state_labels=_VOC_STATES, default_index=DEFAULT_VOC,
-            accessible_name="Air vent 2 (VOC) state",
-        )
-        self.voc_toggle.setToolTip(
-            "Vent 2 (VOC): opens or closes a second air vent in the room. "
-            "Works the same way as Vent 1 -- open lets air move through, "
-            "closed seals the room."
-        )
-        self.voc_toggle.value_changed.connect(self._on_voc_changed)
-        voc_section.add_row(self.voc_toggle)
-        outer.addWidget(voc_section)
-
-        candle_section = CollapsibleSection("Number of candles")
-        self.candle_toggle = CandleCard(
-            [("1 candle", 0), ("2 candles", 1)], default_index=DEFAULT_CANDLES,
-            accessible_name="Number of candles",
-        )
-        self.candle_toggle.setToolTip(
-            "Sets how many lit candles are burning in the room. More candles "
-            "create a bigger, hotter fire source and change how quickly the "
-            "room heats up."
-        )
-        self.candle_toggle.value_changed.connect(self._on_candle_changed)
-        candle_section.add_row(self.candle_toggle)
-        outer.addWidget(candle_section)
+        # playback_bar.py and _build_shell()'s header construction.
+        #
+        # Vent 1/Vent 2/Number of candles used to live here too, as their
+        # own sidebar cards -- Live Viewer layout pass: they're now in
+        # self.scenario_control_bar, docked below the plot/inspector row
+        # instead of competing with the room diagram/quantity selector for
+        # this narrow column. See _build_scenario_control_bar(). Door
+        # opening width stays here -- only vents/candles were asked to
+        # move.)
 
         door_section = CollapsibleSection("Door opening width")
         # Options list is [("Wide open", 1), ("Narrow", 0)]; DEFAULT_DOOR=1 is
@@ -1678,9 +1649,11 @@ class MainWindow(QtWidgets.QMainWindow):
         # (their handlers/widgets still exist, just operate on hidden
         # widgets harmlessly if ever driven). The grid, timeline, quantity
         # selector, display scale, and analysis panels below stay active.
+        # Vent 1/Vent 2/Number of candles get the same gate applied to
+        # self.scenario_control_bar (built separately -- see
+        # _build_scenario_control_bar()) instead of here.
         if not self.is_factorial:
-            for section in (schematic_section, candle_section, vod_section,
-                            voc_section, door_section):
+            for section in (schematic_section, door_section):
                 section.setVisible(False)
 
         outer.addWidget(self._divider())
@@ -1754,6 +1727,82 @@ class MainWindow(QtWidgets.QMainWindow):
         outer.addWidget(quit_button)
 
         return scroll
+
+    def _build_scenario_control_bar(self) -> QtWidgets.QWidget:
+        """Vent 1/Vent 2/Number of candles (Live Viewer layout pass): moved
+        out of the left sidebar into a bar docked below the plot/inspector
+        row (_build_central_widget), instead of competing with the room
+        diagram/quantity selector for the sidebar's narrow column. Same
+        VentWidget/CandleCard instances, same value_changed wiring, same
+        tooltips as the sidebar cards they replace -- a relocation, not a
+        behavior change. Door opening width stays in the sidebar (only
+        vents/candles were asked to move)."""
+        bar = QtWidgets.QWidget()
+        bar.setObjectName("scenarioControlBar")
+        row = QtWidgets.QHBoxLayout(bar)
+        row.setContentsMargins(16, 10, 16, 10)
+        row.setSpacing(28)
+
+        def _group(title: str, control: QtWidgets.QWidget) -> QtWidgets.QWidget:
+            wrap = QtWidgets.QWidget()
+            col = QtWidgets.QVBoxLayout(wrap)
+            col.setContentsMargins(0, 0, 0, 0)
+            col.setSpacing(4)
+            label = QtWidgets.QLabel(title)
+            label.setProperty("role", "section-title")
+            col.addWidget(label)
+            col.addWidget(control)
+            return wrap
+
+        # Ventilation first (user feedback): the vents are the primary
+        # thing people compare, so they sit before candles, with short
+        # "Vent 1"/"Vent 2" labels (the VOD/VOC codes stay in the
+        # accessible names and tooltips for traceability).
+        self.vod_toggle = VentWidget(
+            [("Open", 0), ("Closed", 1), ("HVAC", 2)], state_labels=_VOD_STATES, default_index=DEFAULT_VOD,
+            accessible_name="Air vent 1 (VOD) state",
+        )
+        self.vod_toggle.setToolTip(
+            "Vent 1 (VOD): opens, closes, or connects an air vent in the room "
+            "to a fan (HVAC). Open lets smoke and hot air escape and fresh air "
+            "in; closed traps heat and smoke inside."
+        )
+        self.vod_toggle.value_changed.connect(self._on_vod_changed)
+        row.addWidget(_group("Vent 1", self.vod_toggle))
+
+        self.voc_toggle = VentWidget(
+            [("Open", 0), ("Closed", 1)], state_labels=_VOC_STATES, default_index=DEFAULT_VOC,
+            accessible_name="Air vent 2 (VOC) state",
+        )
+        self.voc_toggle.setToolTip(
+            "Vent 2 (VOC): opens or closes a second air vent in the room. "
+            "Works the same way as Vent 1 -- open lets air move through, "
+            "closed seals the room."
+        )
+        self.voc_toggle.value_changed.connect(self._on_voc_changed)
+        row.addWidget(_group("Vent 2", self.voc_toggle))
+
+        self.candle_toggle = CandleCard(
+            [("1 candle", 0), ("2 candles", 1)], default_index=DEFAULT_CANDLES,
+            accessible_name="Number of candles",
+        )
+        self.candle_toggle.setToolTip(
+            "Sets how many lit candles are burning in the room. More candles "
+            "create a bigger, hotter fire source and change how quickly the "
+            "room heats up."
+        )
+        self.candle_toggle.value_changed.connect(self._on_candle_changed)
+        row.addWidget(_group("Number of candles", self.candle_toggle))
+
+        row.addStretch(1)
+
+        # M2.5: same gate _build_control_panel applies to the room diagram/
+        # door sections -- a generic guest study has no candle/vent factor
+        # axes, so hide this whole bar (nothing else lives in it).
+        if not self.is_factorial:
+            bar.setVisible(False)
+
+        return bar
 
     def _scenario_options(self) -> list:
         """[(label, case_index), ...] for a grid cell's per-cell scenario

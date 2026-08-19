@@ -417,6 +417,14 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
         border-bottom: 1px solid {p.border};
     }}
 
+    /* Live Viewer layout pass: Vent 1/Vent 2/Number of candles, docked
+       below the plot/inspector row -- see main_window.py's
+       _build_scenario_control_bar(). */
+    QWidget#scenarioControlBar {{
+        background-color: {p.bg_sunken};
+        border-top: 1px solid {p.border};
+    }}
+
     QPushButton#navButton {{
         background-color: transparent;
         border: none;
