@@ -166,13 +166,14 @@ class TestMainWindowPageSwitching:
         window.close()
 
     def test_live_content_built_eagerly_regardless_of_active_page(self, qapp):
-        """The Live page's real content (view_grid, timeline, ...) must
-        exist as soon as MainWindow is constructed, not only once the user
-        navigates there -- every pre-existing test/call site assumes this."""
+        """The Live page's real content (view_grid, ...) and the shared
+        header chrome (playback_bar) must both exist as soon as MainWindow
+        is constructed, not only once the user navigates there -- every
+        pre-existing test/call site assumes this."""
         window = MainWindow(load_simulation_data())
         assert window._active_page_key == "live"
         assert window.view_grid is not None
-        assert window.timeline is not None
+        assert window.playback_bar.timeline is not None
         window.close()
 
     def test_navigate_to_live_and_back_preserves_time_index(self, qapp):

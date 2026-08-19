@@ -219,7 +219,7 @@ class TestIntegration:
         """Verify window closes and cleans up without crash."""
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
-        window.start_button.click()
+        window.playback_bar.start_button.click()
         qapp.processEvents()
         time.sleep(0.2)
         # Closing should stop controller and clean up
@@ -656,7 +656,7 @@ class TestIntegration:
         window._on_seek_requested(250)
         qapp.processEvents()
         assert window.time_controller.index == 250
-        assert window.timeline.slider.value() == 250
+        assert window.playback_bar.timeline.slider.value() == 250
         assert window.time_controller.is_playing(), "seeking must not pause playback"
         assert not window.heatmap.get_array() is None
 
@@ -677,7 +677,7 @@ class TestIntegration:
         """DoD: 'speed change takes effect immediately'."""
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
-        window.speed_toggle.set_value(3)
+        window.playback_bar.speed_toggle.set_value(3)
         window.time_controller.set_speed(3)
         assert window.time_controller._speed == 3
         window.close()
@@ -709,7 +709,7 @@ class TestIntegration:
         assert window._busy
         assert QtWidgets.QApplication.overrideCursor() is not None, "busy cursor must be active"
         assert QtWidgets.QApplication.overrideCursor().shape() == QtCore.Qt.WaitCursor
-        assert not window.timeline.slider.isEnabled()
+        assert not window.playback_bar.timeline.slider.isEnabled()
 
         deadline = time.perf_counter() + 3.0
         while window._busy and time.perf_counter() < deadline:
@@ -717,7 +717,7 @@ class TestIntegration:
             time.sleep(0.005)
         assert not window._busy, "prefetch never completed within 3s"
         assert QtWidgets.QApplication.overrideCursor() is None, "busy cursor must be restored"
-        assert window.timeline.slider.isEnabled()
+        assert window.playback_bar.timeline.slider.isEnabled()
         window.close()
 
     def test_rapid_toggle_changes_during_pending_prefetch_no_crash(self, qapp):
@@ -747,7 +747,7 @@ class TestIntegration:
             qapp.processEvents()
             time.sleep(0.005)
         assert not window._busy
-        assert window.timeline.slider.isEnabled()
+        assert window.playback_bar.timeline.slider.isEnabled()
 
         # _busy only tracks the *latest* requested scenario -- the earlier,
         # superseded toggles (candles=1, door=0) each started their own
@@ -850,7 +850,7 @@ class TestIntegration:
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         assert window.time_controller._loop is True
-        window.timeline.loop_button.setChecked(False)
+        window.playback_bar.timeline.loop_button.setChecked(False)
         assert window.time_controller._loop is False
         window.close()
 
@@ -1967,10 +1967,10 @@ class TestEventTimeline:
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo:
-            assert window.timeline.marker_bar.markers == []
+            assert window.playback_bar.timeline.marker_bar.markers == []
             window.close()
             return
-        markers = window.timeline.marker_bar.markers
+        markers = window.playback_bar.timeline.marker_bar.markers
         assert markers, "real data must produce at least the peak marker"
         labels = [label for _f, label in markers]
         # V3-M2: markers are now the events.py fire story (the peak event's
@@ -1995,11 +1995,11 @@ class TestEventTimeline:
         if velocity_idx is None:
             window.close()
             return
-        before = window.timeline.marker_bar.markers
+        before = window.playback_bar.timeline.marker_bar.markers
         window.quantity_combo.setCurrentIndex(velocity_idx)
         _drain_workers(qapp, window.controller._prefetch_workers)
         qapp.processEvents()
-        assert window.timeline.marker_bar.markers == before
+        assert window.playback_bar.timeline.marker_bar.markers == before
         window.close()
 
     def test_marker_click_seeks_playback(self, qapp):
@@ -2008,10 +2008,10 @@ class TestEventTimeline:
         if sim_data.is_demo:
             window.close()
             return
-        markers = window.timeline.marker_bar.markers
+        markers = window.playback_bar.timeline.marker_bar.markers
         assert markers
         target_frame = markers[-1][0]
-        window.timeline.marker_bar.marker_clicked.emit(target_frame)
+        window.playback_bar.timeline.marker_bar.marker_clicked.emit(target_frame)
         assert window.time_controller.index == target_frame
         window.close()
 
@@ -2391,7 +2391,7 @@ class TestFireStory:
         # physically time-ordered, and mirrored onto the timeline markers
         times = [e.primary_time() for e in events]
         assert times == sorted(times)
-        assert len(window.timeline.marker_bar.markers) == len(events)
+        assert len(window.playback_bar.timeline.marker_bar.markers) == len(events)
         # clicking a story event seeks playback to its frame
         target = events[-1]
         window._on_insight_activated(target)
@@ -4041,34 +4041,54 @@ class TestReleaseCandidatePolish:
 
 
 class TestAnalysisPlayback:
-    """RC polish: analysis pages feel alive (playback synced to the Live Viewer)."""
+    """UI overhaul (global chrome pass): the playback transport is one
+    shared instance (window.playback_bar) in MainWindow's persistent
+    header, visible on every page and driving the same TimeController --
+    not a per-page widget (this used to be two separately-built copies,
+    the Live Viewer sidebar's and Analysis's own)."""
 
     def test_transport_bar_and_shared_clock(self, qapp):
         window = MainWindow(load_simulation_data())
-        assert hasattr(window, "analysis_timeline") and hasattr(window, "analysis_speed")
-        # the analysis transport drives the same TimeController as the Live Viewer
+        assert hasattr(window, "playback_bar")
+        # the header transport drives the same TimeController as everything else
         window._on_seek_requested(5)
         assert window.time_controller.index == 5
-        window._analysis_stop()
+        window._restart_simulation()
         assert window.time_controller.index == 0
 
-    def test_transport_bar_is_visible_above_overview_and_interpretation(self, qapp):
-        """The shared playback bar sits above the outer tab group
-        (pages/analysis.py), so it's visible regardless of which group is
-        active -- confirm this explicitly for Overview & Interpretation,
-        the group this was requested for."""
+    def test_playback_bar_visible_on_every_page(self, qapp):
+        """The header (main_window.py's _build_shell()) sits above
+        page_stack, not inside any one page, so it's visible regardless of
+        which page is active -- confirm this explicitly across all of
+        them, not just Analysis or Live Viewer."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        for key in list(window.pages.keys()):
+            window._navigate_to(key)
+            assert not window.playback_bar.isHidden(), key
+        window.close()
+
+    def test_scrub_from_another_page_updates_live_viewer_on_return(self, qapp):
+        """Scrubbing via the shared header while a non-Live-Viewer page is
+        active must still update frame-dependent state correctly once the
+        user navigates back to Live Viewer -- there's only one shared
+        clock/heatmap regardless of which page is currently showing."""
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo:
             window.close()
             return
-        analysis_page = window.pages["analysis"]
-        group_names = [analysis_page.tabs.tabText(i) for i in range(analysis_page.tabs.count())]
-        assert "Overview & Interpretation" in group_names
-        analysis_page.tabs.setCurrentIndex(group_names.index("Overview & Interpretation"))
-        assert not window.analysis_timeline.isHidden()
-        window._on_seek_requested(12)
-        assert window.time_controller.index == 12  # transport still drives the shared clock
+        window.show()
+        window._navigate_to("analysis")
+        window._on_seek_requested(77)
+        qapp.processEvents()
+        assert window.time_controller.index == 77
+        assert window.playback_bar.timeline.slider.value() == 77
+        window._navigate_to("live")
+        qapp.processEvents()
+        assert window.time_controller.index == 77
+        assert window.playback_bar.timeline.slider.value() == 77
+        assert window.heatmap.get_array() is not None
         window.close()
 
     def test_playback_time_broadcasts_to_bus(self, qapp):

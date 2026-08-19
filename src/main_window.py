@@ -28,7 +28,7 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as Navigatio
 
 from config import DEFAULT_CANDLES, DEFAULT_DOOR, DEFAULT_VOD, DEFAULT_VOC, QUANTITY_DISPLAY, ISOTHERM_LEVELS, AMBIENT_C
 from theme import THEMES, apply_card_shadow, build_qss
-from widgets import ToggleGroup, CollapsibleSection, TimelineWidget
+from widgets import CollapsibleSection
 from simulation_controller import SimulationController
 from time_controller import TimeController
 from data_provider import SimulationData, load_study, DataLoadError
@@ -100,6 +100,7 @@ from evidence_notebook import EvidenceNotebook
 from diff_analysis import DifferenceOverTimeDialog
 from session import build_session_dict, read_session, write_session
 from nav import NavRail
+from playback_bar import PlaybackBar
 from pages.live import LivePage
 from pages.home import HomePage
 from pages.compare import ComparePage
@@ -813,12 +814,30 @@ class MainWindow(QtWidgets.QMainWindow):
         wraps _build_central_widget()'s existing content unchanged -- built
         eagerly, right here, at the exact same point in __init__ as before
         this shell existed, so every attribute it sets (self.view_grid,
-        self.timeline, self.temp_slider, ...) is available immediately, not
+        self.playback_bar, self.temp_slider, ...) is available immediately, not
         deferred behind a page switch. Dataset/Analysis embed the
         experiment_browser/analytics_panel docks' own inner content
         (already built -- see __init__'s ordering comment); the Simulation
         Viewer (LivePage) is the page shown first, per the UI/UX
         modernization spec -- Home remains reachable from the nav rail."""
+        # UI overhaul (global chrome pass): one playback transport, in a
+        # persistent header above page_stack, instead of two separately-
+        # built copies (the old Live Viewer sidebar section and Analysis's
+        # own _build_analysis_playback_bar()) -- see playback_bar.py. It
+        # drives self.time_controller directly, same as the old sidebar
+        # controls did, so every page sees the same clock regardless of
+        # which one is currently showing. Built before _build_central_widget()
+        # below: that call chain (_init_plot) already pushes the initial
+        # frame range into it.
+        self.playback_bar = PlaybackBar()
+        self.playback_bar.start_clicked.connect(self._start_simulation)
+        self.playback_bar.pause_clicked.connect(self._stop_simulation)
+        self.playback_bar.restart_clicked.connect(self._restart_simulation)
+        self.playback_bar.play_pause_clicked.connect(self._toggle_play_pause)
+        self.playback_bar.seek_requested.connect(self._on_seek_requested)
+        self.playback_bar.loop_toggled.connect(self.time_controller.set_loop)
+        self.playback_bar.speed_changed.connect(self.time_controller.set_speed)
+
         live_content = self._build_central_widget()
 
         # Time-Series Workspace (V2 roadmap M1.1): real-data only (needs a
@@ -1071,7 +1090,6 @@ class MainWindow(QtWidgets.QMainWindow):
             "dataset": DatasetPage(dataset_content),
             "analysis": AnalysisPage(
                 on_shown=self._on_analysis_page_shown,
-                playback_bar=self._build_analysis_playback_bar(),
                 history_bar=self._build_history_nav_bar(),
                 settings=self.settings,
                 forecasting_content=ForecastingPanel(
@@ -1130,7 +1148,28 @@ class MainWindow(QtWidgets.QMainWindow):
         self.nav_rail.page_selected.connect(self._navigate_to)
         self.nav_rail.theme_toggle_requested.connect(self._toggle_theme)
         self.nav_rail.expanded_changed.connect(lambda _expanded: self._layout_nav_rail())
-        self.setCentralWidget(self.page_stack)
+
+        # self.playback_bar was already built (and wired) earlier in this
+        # method, before _build_central_widget() -- that call chain needs
+        # it to exist to push the initial frame range in. Here it just
+        # gets placed into the header, above page_stack. nav_rail is
+        # parented to page_stack (not this header), so its hover-expand
+        # never covers the header -- the transport stays fully visible and
+        # clickable even while the rail is expanded.
+        header = QtWidgets.QWidget()
+        header.setObjectName("appHeader")
+        header_layout = QtWidgets.QHBoxLayout(header)
+        header_layout.setContentsMargins(16, 8, 16, 8)
+        header_layout.addWidget(self.playback_bar, 1)
+
+        shell = QtWidgets.QWidget()
+        shell_layout = QtWidgets.QVBoxLayout(shell)
+        shell_layout.setContentsMargins(0, 0, 0, 0)
+        shell_layout.setSpacing(0)
+        shell_layout.addWidget(header)
+        shell_layout.addWidget(self.page_stack, 1)
+
+        self.setCentralWidget(shell)
         self._layout_nav_rail()
 
         self._build_evidence_notebook()
@@ -1453,10 +1492,12 @@ class MainWindow(QtWidgets.QMainWindow):
         roadmap Phase 1 wraps this in a LivePage instead of setting it
         directly as MainWindow's central widget (see _build_shell()), but
         every widget built here (self.splitter, self.view_grid,
-        self.timeline, self.temp_slider, ...) is constructed exactly as
-        before, at the same point in __init__, so it's available as a
-        MainWindow attribute immediately -- not lazily -- for every
-        existing call site and test."""
+        self.temp_slider, ...) is constructed exactly as before, at the
+        same point in __init__, so it's available as a MainWindow
+        attribute immediately -- not lazily -- for every existing call
+        site and test. (self.playback_bar is built separately, in
+        _build_shell() -- it's shared chrome, not part of this page's own
+        content.)"""
         central = QtWidgets.QWidget()
         central.setObjectName("centralWidget")
         root_layout = QtWidgets.QVBoxLayout(central)
@@ -1563,57 +1604,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.schematic.set_room_extent(room_extent)
         self.schematic.update_state(DEFAULT_CANDLES, DEFAULT_DOOR, DEFAULT_VOD, DEFAULT_VOC)
 
-        # --- Simulation transport controls (UI/UX modernization Phase 4:
-        # wrapped in a card like every other control-panel section below,
-        # instead of sitting bare between two manual dividers) ---------------
-        playback_section = CollapsibleSection("Playback")
-        transport_row = QtWidgets.QHBoxLayout()
-        transport_row.setSpacing(8)
-        self.start_button = QtWidgets.QPushButton("Start")
-        self.start_button.setObjectName("primaryButton")
-        self.start_button.setAccessibleName("Start simulation")
-        self.start_button.setToolTip("Start the fire simulation animation (Space)")
-        self.start_button.clicked.connect(self._start_simulation)
-
-        self.stop_button = QtWidgets.QPushButton("Pause")
-        self.stop_button.setAccessibleName("Pause simulation")
-        self.stop_button.setToolTip("Pause the simulation (Space)")
-        self.stop_button.setEnabled(False)
-        self.stop_button.clicked.connect(self._stop_simulation)
-
-        self.restart_button = QtWidgets.QPushButton("Restart")
-        self.restart_button.setAccessibleName("Restart simulation from the beginning")
-        self.restart_button.setToolTip("Restart the simulation from t=0 (Ctrl+R)")
-        self.restart_button.clicked.connect(self._restart_simulation)
-
-        for b in (self.start_button, self.stop_button, self.restart_button):
-            transport_row.addWidget(b)
-        transport_container = QtWidgets.QWidget()
-        transport_container.setLayout(transport_row)
-        playback_section.add_row(transport_container)
-
-        # M1.4: interactive scrubber (play/pause + seek slider + time label +
-        # loop toggle), replacing the old read-only QProgressBar.
-        self.timeline = TimelineWidget()
-        self.timeline.play_pause_clicked.connect(self._toggle_play_pause)
-        self.timeline.seek_requested.connect(self._on_seek_requested)
-        self.timeline.loop_toggled.connect(self.time_controller.set_loop)
-        playback_section.add_row(self.timeline)
-        outer.addWidget(playback_section)
-
         # --- Scenario sections ----------------------------------------------
-        speed_section = CollapsibleSection("Playback speed")
-        self.speed_toggle = ToggleGroup(
-            [("1x", 1), ("2x", 2), ("3x", 3)], default_index=0,
-            accessible_name="Playback speed",
-        )
-        self.speed_toggle.setToolTip(
-            "Controls how fast the simulation plays back -- 2x and 3x speed "
-            "up the animation without changing the underlying simulation."
-        )
-        self.speed_toggle.value_changed.connect(self.time_controller.set_speed)
-        speed_section.add_row(self.speed_toggle)
-        outer.addWidget(speed_section)
+        # (Playback transport used to live here as its own sidebar card --
+        # UI overhaul, global chrome pass: it's now self.playback_bar, one
+        # shared instance in MainWindow's persistent header, visible on
+        # every page instead of just Live Viewer's sidebar. See
+        # playback_bar.py and _build_shell()'s header construction.)
 
         # Ventilation first (user feedback): the vents are the primary
         # thing people compare, so they sit at the top of the scenario
@@ -1711,10 +1707,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.quantity_combo.setEnabled(multiple_available)
         self.quantity_combo.currentIndexChanged.connect(self._on_quantity_changed)
         quantity_section.add_row(self.quantity_combo)
-        # RC polish (§3): the quantity selector sits directly below the Playback
-        # section so changing what's shown is immediately accessible, instead of
-        # being buried below the scenario controls.
-        outer.insertWidget(outer.indexOf(playback_section) + 1, quantity_section)
+        # RC polish (§3): the quantity selector sits directly below the room
+        # diagram (playback moved to the global header -- see above) so
+        # changing what's shown is immediately accessible, instead of being
+        # buried below the scenario controls.
+        outer.insertWidget(outer.indexOf(schematic_section) + 1, quantity_section)
         # Layout-declutter pass, round 2: kept this sidebar card (matches
         # where Candles/Door/Vents already live) as the *one* visible
         # quantity control and removed the per-cell toolbar combo instead
@@ -2417,10 +2414,8 @@ class MainWindow(QtWidgets.QMainWindow):
         cell.set_scenario_silently(self.controller.current_case_index())
         cell.set_quantity_silently(self.current_quantity_key)
         self._current_n_frames = self._init_cell_view(cell)
-        self.timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
-        if getattr(self, "analysis_timeline", None) is not None:
-            self.analysis_timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
-        self.timeline.set_index(0)
+        self.playback_bar.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
+        self.playback_bar.set_index(0)
         self._update_event_markers()
 
     def _fire_events_for_case(self, case_index: int) -> list:
@@ -2468,7 +2463,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if cell is active_cell:
                 markers = [(ev.frame_index(fps), ev.statement) for ev in events
                            if ev.frame_index(fps) is not None]
-                self.timeline.set_event_markers(markers)
+                self.playback_bar.set_event_markers(markers)
             # The inspector is built after the plot panel (which triggers
             # the first marker update), so guard its first call.
             if has_inspector:
@@ -2698,9 +2693,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 # up): a no-op paint if this cell's strip has no data set
                 # (hidden, or a quantity that doesn't get one).
                 cell.timeseries_strip.set_index(index)
-        self.timeline.set_index(index)
-        if getattr(self, "analysis_timeline", None) is not None:
-            self.analysis_timeline.set_index(index)
+        self.playback_bar.set_index(index)
         current_time = index / self.time_controller.timesteps_per_second
         self.statusBar().showMessage(f"t = {current_time:.1f} s", 2000)
         self._update_inspector(index, frames)
@@ -2821,11 +2814,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 section.clear_difference_stats()
 
     def _on_playing_changed(self, playing: bool):
-        self.timeline.set_playing(playing)
-        if getattr(self, "analysis_timeline", None) is not None:
-            self.analysis_timeline.set_playing(playing)
-        self.start_button.setEnabled(not playing)
-        self.stop_button.setEnabled(playing)
+        self.playback_bar.set_playing(playing)
 
     def _on_seek_requested(self, index: int):
         # The time is broadcast to the bus from _on_time_changed (the single
@@ -2834,8 +2823,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_sim_error(self, message: str):
         QtWidgets.QMessageBox.critical(self, "Simulation error", message)
-        self.stop_button.setEnabled(False)
-        self.start_button.setEnabled(True)
+        # Deliberately narrower than set_playing(): only resets the Start/
+        # Pause enabled-state, same as before this was PlaybackBar-backed --
+        # doesn't touch the scrubber's own play/pause icon.
+        self.playback_bar.stop_button.setEnabled(False)
+        self.playback_bar.start_button.setEnabled(True)
 
     def _on_prefetch_finished(self, case_idx: int):
         """A background scenario load completed (M1.4.4). If the user has
@@ -2966,14 +2958,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._busy = True
         self._was_playing_before_load = self.time_controller.is_playing()
         self.time_controller.pause()
-        self.timeline.slider.setEnabled(False)
+        self.playback_bar.timeline.slider.setEnabled(False)
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         self.statusBar().showMessage("Loading scenario…")
 
     def _end_busy_state(self):
         self._busy = False
         QtWidgets.QApplication.restoreOverrideCursor()
-        self.timeline.slider.setEnabled(True)
+        self.playback_bar.timeline.slider.setEnabled(True)
         self.statusBar().showMessage("Ready.", 2000)
 
     def _sync_current_scenario(self, case_idx: int):
@@ -2983,9 +2975,7 @@ class MainWindow(QtWidgets.QMainWindow):
         caller decides whether to resume playback."""
         self._current_n_frames = self._field(
             self.controller.store, case_idx, self.current_quantity_key).shape[0]
-        self.timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
-        if getattr(self, "analysis_timeline", None) is not None:
-            self.analysis_timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
+        self.playback_bar.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
         self._update_event_markers()
         active = self.view_grid.active_cell()
         if active.cell_type == "slice":
@@ -3319,9 +3309,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.temp_label.setText(f"{int(vmax)} {display['unit']}")
 
         self._current_n_frames = self._field(self.controller.store, cell.case_index, cell.quantity_key).shape[0]
-        self.timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
-        if getattr(self, "analysis_timeline", None) is not None:
-            self.analysis_timeline.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
+        self.playback_bar.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
         self._update_event_markers()
 
     def _apply_manifest_case_to_controller(self, case_index: int):
@@ -4482,48 +4470,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self._stop_simulation()
         else:
             self._start_simulation()
-
-    # --- Analysis-page playback transport (RC polish) --------------------
-    def _build_analysis_playback_bar(self) -> QtWidgets.QWidget:
-        """A compact transport for the Analysis page, driving the *same*
-        TimeController as the Live Viewer -- so the temporal analysis panels
-        play/pause/step/loop in lockstep. Reuses TimelineWidget + the existing
-        seek/play/loop/speed handlers; no new playback engine."""
-        bar = QtWidgets.QWidget()
-        row = QtWidgets.QHBoxLayout(bar)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(8)
-
-        def _tool(text, tip, slot):
-            btn = QtWidgets.QToolButton()
-            btn.setText(text)
-            btn.setToolTip(tip)
-            btn.setAccessibleName(tip)
-            btn.clicked.connect(slot)
-            return btn
-
-        row.addWidget(_tool("⏮", "Step back one frame",
-                            lambda: self._on_seek_requested(max(0, self.time_controller.index - 1))))
-        self.analysis_timeline = TimelineWidget()
-        self.analysis_timeline.play_pause_clicked.connect(self._toggle_play_pause)
-        self.analysis_timeline.seek_requested.connect(self._on_seek_requested)
-        self.analysis_timeline.loop_toggled.connect(self.time_controller.set_loop)
-        row.addWidget(self.analysis_timeline, 1)
-        row.addWidget(_tool("⏭", "Step forward one frame",
-                            lambda: self._on_seek_requested(
-                                min(self._current_n_frames - 1, self.time_controller.index + 1))))
-        row.addWidget(_tool("⏹", "Stop and return to the start", self._analysis_stop))
-        self.analysis_speed = ToggleGroup(
-            [("1x", 1), ("2x", 2), ("3x", 3)], default_index=0,
-            accessible_name="Analysis playback speed")
-        self.analysis_speed.value_changed.connect(self.time_controller.set_speed)
-        row.addWidget(self.analysis_speed)
-        return bar
-
-    def _analysis_stop(self) -> None:
-        if self.time_controller.is_playing():
-            self._toggle_play_pause()
-        self._on_seek_requested(0)
 
     def _build_history_nav_bar(self) -> QtWidgets.QWidget:
         """Analysis roadmap A3: a visible surface for the existing

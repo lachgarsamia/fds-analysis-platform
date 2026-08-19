@@ -409,6 +409,14 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
         border-right: 1px solid {p.border};
     }}
 
+    /* UI overhaul (global chrome pass): persistent playback header, above
+       page_stack on every page -- see playback_bar.py, main_window.py's
+       _build_shell(). */
+    QWidget#appHeader {{
+        background-color: {p.bg_sunken};
+        border-bottom: 1px solid {p.border};
+    }}
+
     QPushButton#navButton {{
         background-color: transparent;
         border: none;
