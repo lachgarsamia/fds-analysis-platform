@@ -1193,6 +1193,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.device_panel is not None:
             self.device_panel.devices_changed.connect(self._refresh_device_markers)
             self.device_panel.device_activated.connect(self._on_insight_activated)
+            # Live readout/marker pass: follow the shared playback frame
+            # (own set_bus, same precedent as time_window_panel/
+            # spacetime_panel/dashboard_panel -- this panel has no
+            # frame_slider for the generic bind_to_bus sync to hook).
+            self.device_panel.set_bus(self.selection_bus)
         # V6-M3: a placed/renamed/deleted vector probe refreshes the Live
         # Viewer's quiver/streamline overlay; jump-to reuses the same shared
         # navigation as devices/insights.

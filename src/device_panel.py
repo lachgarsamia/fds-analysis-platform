@@ -13,6 +13,20 @@ and cached on `results`; nothing here or in the Live Viewer ever recomputes
 it per frame -- playback only ever indexes the cached arrays (see
 Device.state_at() and MainWindow._device_markers_for()).
 
+Live playback (Probe & Measure domain-coverage/live-readout pass): the
+locator canvas crops to the room's real wall bounds with aspect="equal",
+the same treatment B1 (views.py) gave the Live Viewer, inlined directly
+off schematic.ROOM_X/ROOM_Z rather than reusing set_room_outline() itself
+-- that method is entangled with SliceView-only blit/artist state this
+panel doesn't have. set_bus() (matching time_window_panel/spacetime_panel/
+dashboard_panel's own precedent over the generic bind_to_bus slider-sync,
+which this panel has no frame_slider for) follows Selection.time_s so the
+marker color and readout track whatever frame the pinned playback bar is
+on, not the placement instant -- gated on isVisible() (same "a hidden
+analysis tab must not re-render on every playback tick" rule
+bind_to_bus's own _on_selection already applies) so a backgrounded tab
+costs nothing per tick.
+
 Reuses QuantityProvider (device readings), the registry (TEMPERATURE
 display), the Insight model (activation navigation, via the same
 insight_activated wiring every other V3 feature uses), and
@@ -29,6 +43,7 @@ from widgets import MplCanvas
 from slice_key import SliceKey, AXIS_TO_DIRECTION
 from registry import get_quantity
 from analysis_panel_base import populate_scenario_combo
+from schematic import ROOM_X, ROOM_Z
 import devices as dv
 
 _PLANE_AXES = ("y", "x", "z")   # y first: the app's default/verified plane
@@ -55,6 +70,8 @@ class DevicePanel(QtWidgets.QWidget):
         self._devices: list = []
         self._counters = {"thermocouple": 0, "heat_detector": 0, "sprinkler": 0}
         self._loc_ax = None
+        self._bus = None
+        self._current_index = 0    # live playback frame -- see set_bus()
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -177,7 +194,30 @@ class DevicePanel(QtWidgets.QWidget):
     # ------------------------------------------------------------- lifecycle
     def showEvent(self, event):
         super().showEvent(event)
+        was_loaded = self._loaded
         self.ensure_loaded()
+        if was_loaded:
+            # Not the first show (ensure_loaded already rendered that case):
+            # catch up on whatever frame playback moved to while this tab
+            # was hidden and set_bus()'s isVisible() gate was skipping it.
+            self._render()
+
+    def set_bus(self, bus) -> None:
+        """Follow the shared playback frame (Selection.time_s), same
+        set_bus precedent as time_window_panel/spacetime_panel/
+        dashboard_panel -- this panel has no frame_slider for the generic
+        bind_to_bus sync to hook. One-way: this panel never publishes a
+        selection, only reacts."""
+        self._bus = bus
+        bus.changed.connect(self._on_selection)
+        self._on_selection(bus.current, None)
+
+    def _on_selection(self, sel, origin) -> None:
+        if origin is self or sel.time_s is None:
+            return
+        self._current_index = max(0, int(round(sel.time_s * self._fps)))
+        if self._loaded and self.isVisible():
+            self._render()
 
     def ensure_loaded(self) -> None:
         if self._loaded or not self._manifest:
@@ -358,6 +398,21 @@ class DevicePanel(QtWidgets.QWidget):
         dv.export_csv(d, path)
 
     # --------------------------------------------------------------- render
+    def _live_readout(self, d: dv.Device) -> str:
+        """The device's reading at the currently active playback frame
+        (Device.state_at() -- an index into the already-computed series,
+        never a recompute), so scrubbing/playing the pinned playback bar
+        updates this line -- unlike _headline()'s run-aggregate summary."""
+        state = d.state_at(self._current_index)
+        temp = state.get("temperature_C")
+        if temp is None:
+            return ""
+        t_s = self._current_index / self._fps
+        live = f"{temp:.0f} °C at t={t_s:.1f}s"
+        if d.type != "thermocouple":
+            live += " · active" if state.get("active") else " · idle"
+        return live
+
     def _headline(self, d: dv.Device) -> str:
         r = d.results or {}
         if not r:
@@ -407,7 +462,19 @@ class DevicePanel(QtWidgets.QWidget):
         frame = self._data[int(self._data.shape[0] * 0.6)]
         q = get_quantity("TEMPERATURE")
         ax.imshow(frame, cmap=q.cmap, vmin=q.vmin, vmax=q.slider_default,
-                  aspect="auto", extent=self._extent if self._extent else None)
+                  aspect="equal", extent=self._extent if self._extent else None)
+        # Domain-coverage fix: crop to the room's real wall bounds on both
+        # axes, same treatment B1 (views.py) gave the Live Viewer -- inlined
+        # off the shared ROOM_X/ROOM_Z constants rather than the full
+        # SliceView.set_room_outline() (that method also draws wall/door/
+        # vent LineCollection artists and manages blit-cache invalidation,
+        # neither of which this from-scratch-redraw canvas has or needs).
+        x_left, x_right = min(ROOM_X), max(ROOM_X)
+        z_bottom, z_top = min(ROOM_Z), max(ROOM_Z)
+        x_margin = (x_right - x_left) * 0.05
+        z_margin = (z_top - z_bottom) * 0.05
+        ax.set_xlim(x_left - x_margin, x_right + x_margin)
+        ax.set_ylim(z_bottom - z_margin, z_top + z_margin)
         ax.set_xticks([]); ax.set_yticks([])
         ax.set_title("Click to place a device", fontsize=8)
         case_index = self.scenario_combo.currentData()
@@ -415,7 +482,8 @@ class DevicePanel(QtWidgets.QWidget):
         for d in self._devices:
             if d.scenario != case_index:
                 continue
-            active = bool((d.results or {}).get("activated")) if d.type != "thermocouple" else False
+            active = (bool(d.state_at(self._current_index).get("active"))
+                      if d.type != "thermocouple" else False)
             color = _COLOR_ACTIVE if active else _COLOR_IDLE
             ax.plot(d.position[0], d.position[1], "D", color=color, markersize=8,
                     markeredgecolor="black", markeredgewidth=1.0)
@@ -428,6 +496,8 @@ class DevicePanel(QtWidgets.QWidget):
         self.canvas.draw_idle()
         d = self._current()
         if d is not None:
-            self.readout.setText(f"{d.name}: {self._headline(d)}  ·  {(d.results or {}).get('basis', '')}")
+            live = self._live_readout(d)
+            prefix = f"{d.name}: {live} · " if live else f"{d.name}: "
+            self.readout.setText(f"{prefix}{self._headline(d)}  ·  {(d.results or {}).get('basis', '')}")
         else:
             self.readout.setText("")
