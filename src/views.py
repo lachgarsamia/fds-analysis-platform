@@ -312,7 +312,16 @@ class SliceView:
         self.ax = self.canvas.fig.add_subplot(gs[0, 0])
         self._colorbar_ax = self.canvas.fig.add_subplot(gs[0, 1])
         self.ax.set_facecolor(MplCanvas.PLOT_BG)
-        imshow_kwargs = dict(cmap=cmap, interpolation=interpolation, aspect="auto")
+        # Room/domain auto-fit pass: "equal", not "auto" -- "auto" stretches
+        # the image to whatever rectangle the Axes happens to have,
+        # ignoring the data's real physical proportions. Meaningless while
+        # the axes limits were the *un-cropped* full mesh extent (any
+        # stretching was invisible padding either way), but set_room_outline
+        # below now crops both axes to the room's real wall bounds, so this
+        # is what makes that crop render at the room's true W:H ratio
+        # (letterboxed if the cell's own box doesn't match) instead of
+        # squashed/stretched to fill it.
+        imshow_kwargs = dict(cmap=cmap, interpolation=interpolation, aspect="equal")
         if extent is not None:
             imshow_kwargs["extent"] = extent
         self.heatmap = self.ax.imshow(self._masked_for_display(first_frame), **imshow_kwargs)
@@ -322,13 +331,15 @@ class SliceView:
         # the primary heatmap so it's pixel-aligned by construction. Uses
         # SOOT DENSITY's own registry colormap (gray_r), not a new color
         # convention. zorder above the heatmap, below devices/room/hover
-        # so those stay legible through the smoke.
+        # so those stay legible through the smoke. aspect="equal" here too
+        # -- it has to match the heatmap's or the two stop being pixel-
+        # aligned the instant the axes aren't square.
         soot_q = get_quantity("SOOT DENSITY")
         self.soot_overlay = self.ax.imshow(
             np.zeros_like(first_frame, dtype=np.float32), cmap=soot_q.cmap,
             vmin=0.0, vmax=smd.MIN_CEILING_MG_M3,
             alpha=np.zeros_like(first_frame, dtype=np.float32),
-            aspect="auto", zorder=2, **({"extent": extent} if extent is not None else {}))
+            aspect="equal", zorder=2, **({"extent": extent} if extent is not None else {}))
         # Ember particles (Phase 2.1g): always present, empty/invisible
         # outside cinematic mode -- zorder puts it above the heatmap.
         # Deliberately no c=... at construction: passing a color arg (even
@@ -507,31 +518,44 @@ class SliceView:
             self.room_door.set_segments([])
             self.room_vents.set_segments([])
             self.room_door_label.set_visible(False)
+            self.ax.set_xlim(auto=True)
             self.ax.set_ylim(auto=True)
-            self.ax.autoscale(True, axis="y")
+            self.ax.autoscale(True)
             self.canvas.capture_background()
             return
         self.room_walls.set_segments([[(x0, z0), (x1, z1)] for x0, z0, x1, z1 in geometry["walls"]])
-        # Layout-tightening pass: the y-normal mesh domain reaches well above
-        # the real ceiling (ambient buffer air FDS needs but nothing this app
-        # visualizes), so the un-cropped view was mostly empty sky above the
-        # room. Crop the visible range to the room's own wall bounds (floor to
-        # the ceiling slab's top face) plus a small margin -- not the full
-        # `extent` itself (that stays untouched: probes/pixel math/colorbar
-        # all still address the real mesh coordinates, only the camera moves).
+        # Layout-tightening pass (extended -- room-fit follow-up): the
+        # y-normal mesh domain reaches well beyond the room on both axes,
+        # not just above the real ceiling -- the real dataset's domain is
+        # 1.00 x 0.48 m against a 0.73 x 0.22 m room (73%/46% of the raw
+        # domain), a FDS door-corridor buffer on x and ambient air on z,
+        # neither of which this app visualizes. Originally only z was
+        # cropped ("mostly empty sky above the room"); x was left at the
+        # full domain, leaving the equivalent gap along the door-corridor
+        # side uncropped. Crop both to the room's own wall bounds plus a
+        # small margin -- not the full `extent` itself (that stays
+        # untouched: probes/pixel math/colorbar all still address the real
+        # mesh coordinates, only the camera moves). The margin still keeps
+        # the door opening (HOLE XB starts at 0.25, just outside ROOM_X[0]
+        # =0.27) fully in view -- see room_overlay_geometry's docstring.
+        wall_xs = [x for x0, _z0, x1, _z1 in geometry["walls"] for x in (x0, x1)]
         wall_zs = [z for _x0, z0, _x1, z1 in geometry["walls"] for z in (z0, z1)]
+        x_left, x_right = min(wall_xs), max(wall_xs)
         z_bottom, z_top = min(wall_zs), max(wall_zs)
-        margin = (z_top - z_bottom) * 0.05
-        self.ax.set_ylim(z_bottom - margin, z_top + margin)
+        x_margin = (x_right - x_left) * 0.05
+        z_margin = (z_top - z_bottom) * 0.05
+        self.ax.set_xlim(x_left - x_margin, x_right + x_margin)
+        self.ax.set_ylim(z_bottom - z_margin, z_top + z_margin)
         dx0, dz0, dx1, dz1 = geometry["door"]
         self.room_door.set_segments([[(dx0, dz0), (dx1, dz1)]])
-        # "Door" (colormap expressiveness follow-up): the door line sits
-        # right where the room's real exterior domain space begins (see
-        # ROOM_X/ROOM_Z in schematic.py) -- named so that empty region
-        # reads as "outside the room" rather than a rendering gap. A small
-        # fixed offset to the right of the line, in the same physical
-        # (meter) units as everything else this method places, keeps it
-        # just inside the room instead of overlapping the door line itself.
+        # "Door" (colormap expressiveness follow-up; room-fit follow-up:
+        # the exterior corridor this label originally explained is now
+        # cropped out of view entirely -- see the x-crop above -- but the
+        # door opening itself sits right at the room's cropped left edge,
+        # so the label stays to identify it). A small fixed offset to the
+        # right of the line, in the same physical (meter) units as
+        # everything else this method places, keeps it just inside the
+        # room instead of overlapping the door line itself.
         self.room_door_label.set_position((dx0 + 0.02, (dz0 + dz1) / 2))
         self.room_door_label.set_text("Door")
         self.room_door_label.set_visible(True)
@@ -541,8 +565,8 @@ class SliceView:
             vent_colors.append(_VENT_STATE_COLORS.get(state, "#94A3B8"))
         self.room_vents.set_segments(vent_segs)
         self.room_vents.set_color(vent_colors)
-        # set_ylim above changes what's underneath the animated artists
-        # (MplCanvas's own docstring: anything that does must recapture) --
+        # set_xlim/set_ylim above change what's underneath the animated
+        # artists (MplCanvas's own docstring: anything that does must recapture) --
         # skipping this left the blit cache holding a stale, differently-
         # zoomed snapshot (sometimes the *previous quantity's* heatmap and
         # colorbar), which the next blit_update() would restore and then
