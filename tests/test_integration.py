@@ -3702,32 +3702,6 @@ class TestSpatiotemporalPanel:
 class TestResearchWorkspace:
     """V5-M4: hazard spaces + mission-control dashboard + workspace hook."""
 
-    def test_hazard_panel_syncs_and_classifies(self, qapp):
-        import hazard_spaces as hz
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            assert getattr(window, "hazard_panel", None) is None
-            window.close()
-            return
-        panel = window.hazard_panel
-        panel.ensure_loaded()
-        assert panel._series["classes"].shape[0] == panel._data.shape[0]
-        # scenario sync is not visibility-gated
-        window.selection_bus.update(origin=None, scenario=2)
-        assert panel.scenario_combo.currentData() == 2
-        # RC polish: time sync only drives the visible analysis tab. Show it.
-        # Phase B: hazard_panel is nested inside the Hazard & Tenability
-        # mode-toggle wrapper now -- reveal the wrapper's tab, not the panel
-        # directly (it's no longer a direct QTabWidget child itself).
-        window.show()
-        window._navigate_to("analysis")
-        window.pages["analysis"].show_tab(window.hazard_tenability_panel)
-        QtWidgets.QApplication.processEvents()
-        window.selection_bus.update(origin=None, time_s=10.0)
-        assert panel.frame_slider.value() == int(round(10.0 * window.time_controller.timesteps_per_second))
-        window.close()
-
     def test_dashboard_reads_selection_live(self, qapp):
         from selection import Selection
         sim_data = load_simulation_data()
@@ -3794,23 +3768,6 @@ class TestWorkspaceAndCommunication:
         window.selection_bus.update(origin=None, point=(0.9, 0.1))
         expected = phys_to_index(st._extent, st._data.shape[1:], 0.9, 0.1)
         assert (st._row, st._col) == expected
-        window.close()
-
-    def test_narrative_chain_and_click_seeks(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            window.close()
-            return
-        nv = window.narrative_panel
-        nv.ensure_loaded()
-        assert nv.tree.topLevelItemCount() >= 1
-        top = nv.tree.topLevelItem(0)
-        assert top.childCount() >= 1                       # evidence children
-        assert any("basis:" in top.child(i).text(0) for i in range(top.childCount()))
-        ev = top.data(0, QtCore.Qt.UserRole)
-        nv._on_item(top, 0)                                # activating publishes to the bus
-        assert window.selection_bus.current.time_s == ev.primary_time()
         window.close()
 
 
@@ -4111,8 +4068,8 @@ class TestAnalysisPlayback:
         QtWidgets.QApplication.processEvents()
         window._on_seek_requested(80)
         assert window.height_panel.frame_slider.value() == 80        # visible follows
-        ap.show_tab(window.hazard_tenability_panel)
-        window.hazard_panel.ensure_loaded()
+        ap.show_tab(window.spacetime_panel)
+        window.spacetime_panel.ensure_loaded()
         QtWidgets.QApplication.processEvents()
         frozen = window.height_panel.frame_slider.value()
         window._on_seek_requested(160)
@@ -4853,11 +4810,11 @@ class TestUnifiedWorkspace:
             return
         window._on_workspace_preset("Study analytics")
         assert window._active_page_key == "analysis"
-        # Tabs are grouped -- the outer tab now holds the "Factors &
-        # Sensitivity" group's own inner QTabWidget, which must be showing
-        # study_panel.
+        # "Factors & Sensitivity" has one member (Study) -- single-member
+        # groups go straight to that member now, no inner one-tab
+        # QTabWidget wrapping it (Analysis page pruning).
         group = window.pages["analysis"].tabs.currentWidget()
-        assert group.currentWidget() is window.study_panel
+        assert group is window.study_panel
         window.close()
 
     def test_hover_highlight_sets_and_clears_without_touching_selection(self, qapp):
@@ -5046,51 +5003,6 @@ class _SyntheticCOProvider:
         return self._real.get_extent(scenario, key)
 
 
-class TestHazardTenabilityMerge:
-    """Analysis-improvement roadmap Phase B: Hazard and Tenability were two
-    separate top-level tabs classifying the same field into hazard bands
-    via overlapping engines -- now one "Hazard & Tenability" tab with a
-    mode toggle. A thin wrapper only, so both panels keep their full
-    existing functionality/disclaimers unchanged."""
-
-    def test_wrapper_holds_both_panels_and_defaults_to_map_view(self, qapp):
-        window = MainWindow(load_simulation_data())
-        wrapper = window.hazard_tenability_panel
-        if wrapper is None:
-            window.close()
-            return
-        assert wrapper.hazard_widget is window.hazard_panel
-        assert wrapper.tenability_widget is window.tenability_panel
-        assert wrapper.stack.currentWidget() is window.hazard_panel
-        window.close()
-
-    def test_mode_toggle_switches_between_panels(self, qapp):
-        window = MainWindow(load_simulation_data())
-        wrapper = window.hazard_tenability_panel
-        if wrapper is None:
-            window.close()
-            return
-        wrapper.mode_combo.setCurrentIndex(1)
-        assert wrapper.stack.currentWidget() is window.tenability_panel
-        wrapper.mode_combo.setCurrentIndex(0)
-        assert wrapper.stack.currentWidget() is window.hazard_panel
-        window.close()
-
-    def test_showing_wrapper_loads_both_panels_not_just_visible_one(self, qapp):
-        window = MainWindow(load_simulation_data())
-        wrapper = window.hazard_tenability_panel
-        if wrapper is None:
-            window.close()
-            return
-        window.show()
-        window._navigate_to("analysis")
-        window.pages["analysis"].show_tab(wrapper)
-        QtWidgets.QApplication.processEvents()
-        assert window.hazard_panel._loaded
-        assert window.tenability_panel._loaded
-        window.close()
-
-
 class TestAskTabDirect:
     """Analysis final-polish pass: the Assistant template-summary layer
     (assistant.py/assistant_panel.py/assistant_query_panel.py) was removed
@@ -5136,26 +5048,6 @@ class TestFullFED:
     fallback against real data, and the full pipeline via a synthetic CO
     provider (mirroring V6-M3's _SyntheticVectorProvider pattern)."""
 
-    def test_hazard_panel_falls_back_to_partial_screen_when_co_gated(self, qapp):
-        window = MainWindow(load_simulation_data())
-        if window.sim_data.is_demo:
-            window.close()
-            return
-        window.hazard_panel.ensure_loaded()
-        assert not window.hazard_panel._series["has_co"]
-        import hazard_spaces as hz
-        assert hz.BASIS in window.hazard_panel.caption.text()
-        window.close()
-
-    def test_tenability_panel_falls_back_to_partial_screen_when_co_gated(self, qapp):
-        window = MainWindow(load_simulation_data())
-        if window.sim_data.is_demo:
-            window.close()
-            return
-        window.tenability_panel.ensure_loaded()
-        assert not window.tenability_panel._has_co
-        window.close()
-
     def test_spacetime_full_fed_is_gated_on_real_data(self, qapp):
         window = MainWindow(load_simulation_data())
         if window.sim_data.is_demo:
@@ -5166,30 +5058,6 @@ class TestFullFED:
         st.quantity_combo.setCurrentIndex(st.quantity_combo.findData("full_fed"))
         assert st._data is None
         assert "Gated" in st.status.text()
-        window.close()
-
-    def test_hazard_panel_escalates_via_full_fed_with_synthetic_co(self, qapp):
-        window = MainWindow(load_simulation_data())
-        if window.sim_data.is_demo:
-            window.close()
-            return
-        window.hazard_panel._provider = _SyntheticCOProvider(window.quantity_provider, co_ppm=20000.0)
-        window.hazard_panel.ensure_loaded()
-        assert window.hazard_panel._series["has_co"]
-        import hazard_spaces as hz
-        assert hz.FULL_FED_BASIS in window.hazard_panel.caption.text()
-        window.close()
-
-    def test_tenability_panel_shows_full_fed_with_synthetic_co(self, qapp):
-        window = MainWindow(load_simulation_data())
-        if window.sim_data.is_demo:
-            window.close()
-            return
-        window.tenability_panel._provider = _SyntheticCOProvider(window.quantity_provider, co_ppm=20000.0)
-        window.tenability_panel.ensure_loaded()
-        assert window.tenability_panel._has_co
-        from tenability_panel import _FULL_FED_NOTICE
-        assert window.tenability_panel.disclaimer.text() == _FULL_FED_NOTICE
         window.close()
 
     def test_spacetime_full_fed_with_synthetic_co_renders(self, qapp):

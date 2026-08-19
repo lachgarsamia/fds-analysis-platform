@@ -86,26 +86,6 @@ def _related_graph_nodes(app, selection: Selection) -> list:
     return nodes
 
 
-def _nearest_narrative_event(app, selection: Selection):
-    """The narrative event closest in time to the selection, for this
-    scenario. Reuses narrative_panel's own cached, per-scenario event
-    detection (`_events`) -- the same store-read-once-then-cache cost
-    graph_panel._events_for already accepts at this same bus-changed rate;
-    a scenario already visited in the Narrative tab is a pure cache hit."""
-    panel = getattr(app, "narrative_panel", None)
-    if panel is None or selection.scenario is None:
-        return None
-    try:
-        events = panel._events(selection.scenario)
-    except Exception:
-        return None
-    timed = [e for e in events if e.primary_time() is not None]
-    if not timed:
-        return None
-    t = selection.time_s if selection.time_s is not None else 0.0
-    return min(timed, key=lambda e: abs(e.primary_time() - t))
-
-
 def _related_cause_chain(app, selection: Selection) -> list:
     """The Cause Explorer's last-computed chain, only when the researcher
     has already traced a hot spot near the selected point in that panel --
@@ -122,17 +102,16 @@ def _related_cause_chain(app, selection: Selection) -> list:
 
 def _point_story(app, selection: Selection) -> str:
     """A short combined paragraph for the selected point (Analysis-
-    improvement roadmap Phase C): nearest Narrative event + a local
-    measurement/zone reading + the Cause Explorer's chain, if available.
-    Every clause reuses an existing engine's own already-computed result --
-    nothing here fabricates a new number. Empty string if nothing applies
-    (no point selected, or nothing related found yet)."""
+    improvement roadmap Phase C): a local measurement/zone reading + the
+    Cause Explorer's chain, if available. Every clause reuses an existing
+    engine's own already-computed result -- nothing here fabricates a new
+    number. Empty string if nothing applies (no point selected, or
+    nothing related found yet). (Analysis page pruning: used to also lead
+    with the nearest Narrative event -- removed along with narrative_panel
+    itself, not just hidden.)"""
     if selection.point is None:
         return ""
     sentences = []
-    event = _nearest_narrative_event(app, selection)
-    if event is not None:
-        sentences.append(f"Nearest narrative event: {event.statement}")
     reading = None
     for m in _related_measurements(app, selection):
         if m.readout:

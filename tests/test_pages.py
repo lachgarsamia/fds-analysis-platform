@@ -109,10 +109,13 @@ class TestAnalysisPageGrouping:
 
     def test_only_supplied_panels_form_a_group(self, qapp):
         """A group with nothing supplied gets no tab at all (same "only
-        supplied surfaces get a tab" rule the flat layout already had)."""
+        supplied surfaces get a tab" rule the flat layout already had).
+        Two groups supplied (not just Dashboard alone) so the page's own
+        single-overall-section shortcut doesn't also collapse self.tabs
+        away entirely -- that's a different, page-level special case."""
         page = AnalysisPage(dashboard_content=QtWidgets.QLabel("Dashboard"),
-                            narrative_content=QtWidgets.QLabel("Narrative"))
-        assert page.tabs.count() == 1
+                            study_content=QtWidgets.QLabel("Study"))
+        assert page.tabs.count() == 2
         assert page.tabs.tabText(0) == "Overview & Interpretation"
 
     def test_show_tab_reveals_nested_panel_and_expands_experimental(self, qapp):
@@ -139,20 +142,26 @@ class TestAnalysisPageGrouping:
         page.show_tab(devices)
         group = page.tabs.currentWidget()
         assert page.tabs.tabText(page.tabs.currentIndex()) == "Probe & Measure"
-        assert group.currentWidget() is wrapper
+        # Probe & Measure has one member (Spatial Probes/ProbeMeasurePanel)
+        # -- single-member groups go straight to that member now, no inner
+        # one-tab QTabWidget wrapping it (Analysis page pruning).
+        assert group is wrapper
+        assert wrapper.tabs.currentWidget() is devices
         assert wrapper.tabs.currentWidget() is devices
 
     def test_tab_shown_fires_on_outer_and_inner_switch(self, qapp):
         calls = []
         page = AnalysisPage(
             dashboard_content=QtWidgets.QLabel("Dashboard"),
-            narrative_content=QtWidgets.QLabel("Narrative"),
-            study_content=QtWidgets.QLabel("Study"))
+            pairwise_content=QtWidgets.QLabel("Pairwise"),
+            clustering_content=QtWidgets.QLabel("Clustering"))
         page.tab_shown.connect(lambda: calls.append(1))
-        overview_group = page.tabs.widget(0)   # Overview & Interpretation: Dashboard, Narrative
-        overview_group.setCurrentIndex(1)      # inner switch, no outer change
+        page.tabs.setCurrentIndex(1)        # move to Compare & Discover first (outer)
+        calls.clear()
+        compare_group = page.tabs.widget(1)   # Compare & Discover: Pairwise, Clustering
+        compare_group.setCurrentIndex(1)      # inner switch, no outer change
         assert len(calls) == 1
-        page.tabs.setCurrentIndex(1)        # outer switch to Factors & Sensitivity
+        page.tabs.setCurrentIndex(0)        # outer switch to Overview & Interpretation
         assert len(calls) == 2
 
 

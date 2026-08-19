@@ -55,7 +55,6 @@ from forecasting_panel import ForecastingPanel
 from timeseries import TimeSeriesPanel
 from energy_panel import EnergyBudgetPanel
 from factor_effects_panel import FactorEffectsPanel
-from tenability_panel import TenabilityPanel
 from fire_mri_panel import FireMRIPanel
 from figure_export import (PublicationExportDialog, export_publication_figure,
                            provenance_line, figure_png_bytes)
@@ -79,11 +78,8 @@ from quantity_provider import QuantityProvider
 from analysis_panel_base import bind_to_bus
 from study_panel import StudyPanel
 from sensitivity_panel import SensitivityPanel
-from hazard_panel import HazardPanel
-from hazard_tenability_panel import HazardTenabilityPanel
 from dashboard_panel import DashboardPanel
 from spacetime_panel import SpaceTimePanel
-from narrative_panel import NarrativePanel
 from graph_panel import GraphPanel
 from history import InvestigationHistory
 import field_calculator as field_calculator_mod
@@ -586,7 +582,6 @@ class MainWindow(QtWidgets.QMainWindow):
     _BUNDLE_FIGURES = [
         ("height_panel", "plot_canvas", "height_profile", "Vertical temperature profile and layer/plume/ceiling over time."),
         ("zone_panel", "plot_canvas", "zone_stats", "Named-zone temperature and thermal-dose over time."),
-        ("hazard_panel", "timeline_canvas", "hazard_timeline", "Hazard-class fractions over time (temperature-only partial screen)."),
         ("study_panel", "parallel_canvas", "study_parallel", "Parameter-vs-response parallel coordinates across the factorial."),
         ("sensitivity_panel", "surface_canvas", "sensitivity_surface", "Estimated response surface (interpolated from existing scenarios)."),
     ]
@@ -881,19 +876,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._analysis_quantity_options_with_computed(), self.sim_data.timesteps_per_second,
                 field_fn=self._field_fn_for_analysis_panels(), extent_fn=self._extent_for)
             self.energy_panel = EnergyBudgetPanel(self.sim_data.manifest)
-            # Tenability screening (M3.2; full FED V6-M6): works for any
-            # study with a manifest, factorial or not (it's per-scenario, no
-            # factor axes). Takes the provider (not the raw store) so a CO
-            # read cleanly gates instead of touching the store.
-            self.tenability_panel = TenabilityPanel(
-                self.quantity_provider, self.sim_data.manifest, self.sim_data.timesteps_per_second)
             # Fire MRI (V3-M1): per-scenario temporal signature maps.
             self.fire_mri_panel = FireMRIPanel(
                 self.controller.store, self.sim_data.manifest,
                 self._quantity_options(), self.sim_data.timesteps_per_second)
             # Physics query engine (V3-M4). Takes the provider, not the raw
-            # store (Analysis roadmap C9) -- same reasoning as
-            # TenabilityPanel just above: a gated quantity then raises
+            # store (Analysis roadmap C9): a gated quantity then raises
             # GatedQuantityError cleanly instead of the store attempting a
             # read for data that was never extracted.
             self.query_panel = QueryPanel(
@@ -968,19 +956,6 @@ class MainWindow(QtWidgets.QMainWindow):
             # Quantity reference/breadth (V4-M11): available / derived / gated.
             self.quantities_panel = QuantitiesPanel(
                 self.controller.store, self.sim_data.manifest)
-            # Research workspace (V5-M4): hazard spaces + mission-control
-            # dashboard. Per-scenario, so any study (not just the factorial).
-            # V6-M6: takes the provider (not the raw store) so a CO read
-            # (full FED) cleanly gates instead of touching the store.
-            self.hazard_panel = HazardPanel(
-                self.quantity_provider, self.sim_data.manifest,
-                self.sim_data.timesteps_per_second)
-            # Hazard & Tenability (Analysis-improvement roadmap Phase B): a
-            # mode-toggle wrapper, not a rewrite -- both panels keep their
-            # own full functionality/bus wiring/disclaimers unchanged, this
-            # only merges two overlapping top-level tabs into one.
-            self.hazard_tenability_panel = HazardTenabilityPanel(
-                self.hazard_panel, self.tenability_panel)
             self.dashboard_panel = DashboardPanel(
                 self.controller.store, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second, energy_content=self.energy_panel)
@@ -999,9 +974,6 @@ class MainWindow(QtWidgets.QMainWindow):
             # purely a new view over layer_height.py's existing series.
             self.smoke_layer_motion_panel = SmokeLayerMotionPanel(
                 self.quantity_provider, self.sim_data.manifest,
-                self.sim_data.timesteps_per_second)
-            self.narrative_panel = NarrativePanel(
-                self.controller.store, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
             # Research Knowledge Graph (V5 Phase 6): laboratory memory over
             # every existing artifact. `app=self` lets it gather live artifacts.
@@ -1052,7 +1024,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.factor_effects_panel = None
             self.study_panel = None
             self.sensitivity_panel = None
-            self.tenability_panel = None
             self.fire_mri_panel = None
             self.query_panel = None
             self.attention_panel = None
@@ -1065,12 +1036,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.advanced_compare_panel = None
             self.clustering_content = None
             self.quantities_panel = None
-            self.hazard_panel = None
-            self.hazard_tenability_panel = None
             self.dashboard_panel = None
             self.spacetime_panel = None
             self.smoke_layer_motion_panel = None
-            self.narrative_panel = None
             self.graph_panel = None
 
         dataset_content = self.experiment_browser.widget() if self.experiment_browser is not None else None
@@ -1102,11 +1070,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 pairwise_content=self.advanced_compare_panel,
                 clustering_content=self.clustering_content,
                 study_content=self.study_panel,
-                hazard_tenability_content=self.hazard_tenability_panel,
                 dashboard_content=self.dashboard_panel,
                 spacetime_content=self.spacetime_panel,
                 smoke_layer_motion_content=self.smoke_layer_motion_panel,
-                narrative_content=self.narrative_panel,
                 graph_content=self.graph_panel,
                 quantities_content=self.quantities_panel,
                 ask_content=self.query_panel),
@@ -1196,10 +1162,10 @@ class MainWindow(QtWidgets.QMainWindow):
         for attr in ("height_panel", "zone_panel", "time_window_panel",
                      "fire_mri_panel",
                      "query_panel", "attention_panel", "cause_panel",
-                     "factor_effects_panel", "tenability_panel", "timeseries_panel",
+                     "factor_effects_panel", "timeseries_panel",
                      "energy_panel", "forecasting_panel", "quantities_panel",
                      "advanced_compare_panel", "study_panel",
-                     "hazard_panel", "spacetime_panel", "narrative_panel",
+                     "spacetime_panel",
                      "device_panel", "velocity_panel", "streamline_panel", "dashboard_panel",
                      "smoke_layer_motion_panel"):
             panel = getattr(self, attr, None)
@@ -1229,9 +1195,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # Consolidation Phase 2: the selected window publishes Selection.interval.
         if self.time_window_panel is not None:
             self.time_window_panel.set_bus(self.selection_bus)
-        # V5-M5: a narrative step publishes its Insight's selection (seek + sync).
-        if self.narrative_panel is not None:
-            self.narrative_panel.event_activated.connect(self._on_insight_activated)
         # V5 Phase 6: the knowledge graph publishes a node's Selection and
         # rebuilds its selected-scenario events when the selection changes.
         if self.graph_panel is not None:
@@ -1274,7 +1237,7 @@ class MainWindow(QtWidgets.QMainWindow):
     # cares about, so every quantity-aware panel follows (via the M1 binder).
     _WORKSPACE = {
         "Overview": ("dashboard_panel", None),
-        "Temperature study": ("hazard_tenability_panel", "TEMPERATURE"),
+        "Temperature study": ("dashboard_panel", "TEMPERATURE"),
         "Ventilation study": ("sensitivity_panel", "VELOCITY"),
         "Smoke study": ("height_panel", "TEMPERATURE"),
         "Study analytics": ("study_panel", None),

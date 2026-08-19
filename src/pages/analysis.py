@@ -78,7 +78,7 @@ from tour import ANALYSIS_STEPS, ANALYSIS_SETTINGS_KEY, TourOverlay, mark_tour_c
 # ProbeMeasurePanel construction) and the removed Study response-arrival-
 # time options (study_analytics.py's RESPONSE_FIELDS).
 _GROUPS = [
-    ("Overview & Interpretation", ["Dashboard", "Hazard & Tenability", "Narrative"]),
+    ("Overview & Interpretation", ["Dashboard"]),
     ("Compare & Discover", ["Pairwise Comparison", "PCA / Clustering"]),
     ("Probe & Measure", ["Spatial Probes"]),
     ("Factors & Sensitivity", ["Study"]),
@@ -200,11 +200,9 @@ class AnalysisPage(Page):
                  pairwise_content: QtWidgets.QWidget = None,
                  clustering_content: QtWidgets.QWidget = None,
                  study_content: QtWidgets.QWidget = None,
-                 hazard_tenability_content: QtWidgets.QWidget = None,
                  dashboard_content: QtWidgets.QWidget = None,
                  spacetime_content: QtWidgets.QWidget = None,
                  smoke_layer_motion_content: QtWidgets.QWidget = None,
-                 narrative_content: QtWidgets.QWidget = None,
                  graph_content: QtWidgets.QWidget = None,
                  quantities_content: QtWidgets.QWidget = None,
                  ask_content: QtWidgets.QWidget = None, parent=None):
@@ -236,8 +234,6 @@ class AnalysisPage(Page):
         # mode supplies none.
         sections = [
             ("Dashboard", dashboard_content),
-            ("Hazard & Tenability", hazard_tenability_content),
-            ("Narrative", narrative_content),
             ("Space-time", spacetime_content),
             ("Field & Time Explorer", spatiotemporal_content),
             ("Smoke-Layer Motion", smoke_layer_motion_content),
@@ -286,6 +282,14 @@ class AnalysisPage(Page):
                 members = [(lbl, by_label[lbl]) for lbl in member_labels
                           if by_label.get(lbl) is not None]
                 if not members:
+                    return
+                if len(members) == 1:
+                    # Same "nothing to pick between" shortcut this page's
+                    # own top-level `available` list already applies for a
+                    # lone group (see `elif len(available) == 1` above) --
+                    # a single-member group goes straight to that member,
+                    # no inner tab bar with exactly one, unpickable tab.
+                    self.tabs.addTab(members[0][1], group_label)
                     return
                 inner = QtWidgets.QTabWidget()
                 inner.currentChanged.connect(lambda _i: self.tab_shown.emit())
