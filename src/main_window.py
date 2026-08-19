@@ -1530,8 +1530,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _build_inspector_panel(self) -> QtWidgets.QWidget:
         """Right-hand Live Inspector (FireLab roadmap Phase 3): probe
-        readout, peak-temperature sparkline, HRR gauge, live narration --
-        see _update_inspector() for how it's kept in sync with playback.
+        readout, peak-temperature sparkline, HRR-over-time sparkline, HRR
+        gauge, live narration -- see _update_inspector() for how it's
+        kept in sync with playback.
         One section per visible grid cell (V6 polish: a 2+ cell comparison
         grid used to only ever show the active cell's stats); self.inspector
         stays a direct alias to section 0 for any 1x1-layout code that only
@@ -2556,29 +2557,61 @@ class MainWindow(QtWidgets.QMainWindow):
         nxt = index + 1
         return data[nxt] if nxt < data.shape[0] else None
 
-    def _hrr_intensity_for_cell(self, cell, index: int) -> float:
-        """cell's current HRR(t) normalized to that scenario's own peak
-        (FireLab roadmap Phase 2.1c) -- 1.0 (neutral) if there's no
-        manifest entry, no *_hrr.csv, or a zero peak, so demo-data mode
-        and any scenario missing the CSV still renders bloom/flicker, just
-        without the extra data-driven modulation."""
+    def _hrr_raw_for_cell(self, cell):
+        """(times, hrr_kw) -- the scenario's own *_hrr.csv, read once and
+        cached per case_index in self._hrr_cache -- or None if there's no
+        manifest entry or no CSV (demo-data mode, or a scenario missing
+        the file). Shared by _hrr_intensity_for_cell (cinema bloom's
+        current-frame scalar, Phase 2.1c) and _hrr_series_for_cell
+        (Inspector's HRR-over-time sparkline) so every consumer reads the
+        same cached data instead of each re-parsing the file."""
         if not self.sim_data.manifest:
-            return 1.0
+            return None
         cached = self._hrr_cache.get(cell.case_index)
         if cached is None:
             entry = next((e for e in self.sim_data.manifest if e.case_index == cell.case_index), None)
             hrr_data = _read_hrr_csv(entry.path) if entry else None
             cached = hrr_data if hrr_data is not None else ()
             self._hrr_cache[cell.case_index] = cached
-        if cached == ():
+        return cached if cached != () else None
+
+    def _hrr_intensity_for_cell(self, cell, index: int) -> float:
+        """cell's current HRR(t) normalized to that scenario's own peak
+        (FireLab roadmap Phase 2.1c) -- 1.0 (neutral) if there's no raw
+        HRR data (see _hrr_raw_for_cell) or a zero peak, so demo-data mode
+        and any scenario missing the CSV still renders bloom/flicker, just
+        without the extra data-driven modulation."""
+        raw = self._hrr_raw_for_cell(cell)
+        if raw is None:
             return 1.0
-        times, hrr_kw = cached
+        times, hrr_kw = raw
         peak = float(np.max(hrr_kw)) if len(hrr_kw) else 0.0
         if peak <= 0:
             return 1.0
         t_now = index / self.time_controller.timesteps_per_second
         current = float(np.interp(t_now, times, hrr_kw))
         return max(0.15, min(1.5, current / peak))
+
+    def _hrr_series_for_cell(self, cell, n_frames: int) -> list:
+        """Per-frame HRR (kW), one value per simulation frame -- the raw
+        *_hrr.csv time series (_hrr_raw_for_cell) resampled onto this
+        scenario's frame grid via the same np.interp already used for
+        _hrr_intensity_for_cell's single current-frame value, just
+        evaluated at every frame's time instead of one. Index-aligned
+        with the Inspector's peak-temperature series (both one value per
+        frame, both scrubbed by the same set_index(frame_index)), so the
+        two sparklines share one marker convention. [] if unavailable
+        (demo mode, no manifest entry, no CSV, or zero frames) --
+        inspector.py's _Sparkline already renders an empty series as a
+        blank chart, the same "no data, not a crash" convention the HRR
+        gauge already uses for its own scalar reading."""
+        raw = self._hrr_raw_for_cell(cell)
+        if raw is None or n_frames <= 0:
+            return []
+        times, hrr_kw = raw
+        fps = self.time_controller.timesteps_per_second
+        frame_times = np.arange(n_frames) / fps
+        return np.interp(frame_times, times, hrr_kw).tolist()
 
     def _frame_for_cell(self, cell, index: int):
         """The frame `cell` should show at timeline `index`, dispatched by
@@ -2778,13 +2811,15 @@ class MainWindow(QtWidgets.QMainWindow):
         per tick. `frames` is `{id(cell): frame}`, the same arrays
         _on_time_changed's own loop already computed via _frame_for_cell
         for this exact index -- reused here for the dynamic min/max readout
-        instead of re-fetching. The peak-temperature sparkline/HRR gauge
-        are always about TEMPERATURE and the scenario's own *_hrr.csv
-        respectively -- neither depends on which quantity a cell currently
-        displays, so both stay populated for any "slice" cell regardless of
-        its displayed quantity (re-reading TEMPERATURE separately only when
-        it isn't already the displayed quantity). Difference/ensemble cells
-        leave those two neutral -- there's no single scenario to narrate."""
+        instead of re-fetching. The peak-temperature sparkline, the
+        HRR-over-time sparkline, and the HRR gauge are always about
+        TEMPERATURE and the scenario's own *_hrr.csv respectively --
+        neither depends on which quantity a cell currently displays, so
+        all three stay populated for any "slice" cell regardless of its
+        displayed quantity (re-reading TEMPERATURE separately only when
+        it isn't already the displayed quantity). Difference/ensemble
+        cells leave them neutral -- there's no single scenario to
+        narrate."""
         frames = frames or {}
         cells = self.view_grid.visible_cells()
         self.inspector_stack.ensure_count(len(cells))
@@ -2838,7 +2873,9 @@ class MainWindow(QtWidgets.QMainWindow):
                     if temp_data is not None:
                         peak_by_frame = temp_data.reshape(temp_data.shape[0], -1).max(axis=1).tolist()
                         door_wide_open = self.controller.params.door == 1
-                        section.set_scenario(peak_by_frame, QUANTITY_DISPLAY["TEMPERATURE"]["vmin"], door_wide_open)
+                        hrr_by_frame = self._hrr_series_for_cell(cell, temp_data.shape[0])
+                        section.set_scenario(peak_by_frame, QUANTITY_DISPLAY["TEMPERATURE"]["vmin"],
+                                            door_wide_open, hrr_by_frame)
                     else:
                         section.clear()
                 else:

@@ -1,8 +1,9 @@
 """Live Inspector (FireLab roadmap Phase 3; static/dynamic split added in
 the scientific-visualization completion pass): a right-hand panel on the
 Live page showing a large-type cursor-probe readout, a peak-temperature
-sparkline scrubbed in sync with TimeController, an HRR gauge, and a
-deterministic live-narration line (auto_summary.narrate_frame).
+sparkline and an HRR-over-time sparkline (both scrubbed in sync with
+TimeController), an HRR gauge, and a deterministic live-narration line
+(auto_summary.narrate_frame).
 
 Split into two groups so the panel reads as stable during playback
 instead of "continuously refreshing": static metadata (scenario,
@@ -196,6 +197,18 @@ class InspectorPanel(QtWidgets.QWidget):
         self.sparkline = _Sparkline()
         layout.addWidget(self.sparkline)
 
+        # HRR-over-time sparkline: second view of the same *_hrr.csv data
+        # already driving the "X% of peak" gauge below (see
+        # main_window.py's _hrr_raw_for_cell/_hrr_series_for_cell) -- not a
+        # new data source, just a per-frame series instead of one scalar.
+        # Same _Sparkline component/style as the peak-temperature one
+        # above, right next to it.
+        self._hrr_sparkline_caption = QtWidgets.QLabel("Heat release rate over time")
+        self._hrr_sparkline_caption.setProperty("role", "caption")
+        layout.addWidget(self._hrr_sparkline_caption)
+        self.hrr_sparkline = _Sparkline()
+        layout.addWidget(self.hrr_sparkline)
+
         self._hrr_caption = QtWidgets.QLabel("Heat release rate")
         self._hrr_caption.setProperty("role", "caption")
         layout.addWidget(self._hrr_caption)
@@ -253,20 +266,24 @@ class InspectorPanel(QtWidgets.QWidget):
 
     def set_palette(self, palette) -> None:
         self.sparkline.set_color(palette.accent)
+        self.hrr_sparkline.set_color(palette.accent)
 
     def set_compact(self, compact: bool) -> None:
-        """Show/hide the HRR/narration/Fire story block, keeping
-        Scenario/Quantity/Grid size/Slice/Duration/Frames + the Live
-        frame/min-max/probe readout + the peak-temperature sparkline (kept
-        visible even when compact -- comparing scenarios still wants that
-        curve, just not the HRR gauge/narration/Fire story). Hiding (not
-        removing) these widgets means they keep updating from underneath
-        -- toggling back to non-compact shows current data immediately, no
-        stale placeholder."""
+        """Show/hide the scalar HRR gauge/narration/Fire story block,
+        keeping Scenario/Quantity/Grid size/Slice/Duration/Frames + the
+        Live frame/min-max/probe readout + both sparklines (peak
+        temperature, HRR-over-time -- kept visible even when compact,
+        same reasoning for both: comparing scenarios still wants those
+        curves, just not the scalar HRR gauge/narration/Fire story).
+        Hiding (not removing) these widgets means they keep updating from
+        underneath -- toggling back to non-compact shows current data
+        immediately, no stale placeholder."""
         self._compact = compact
         expanded = not compact
         self._sparkline_caption.setVisible(True)
         self.sparkline.setVisible(True)
+        self._hrr_sparkline_caption.setVisible(True)
+        self.hrr_sparkline.setVisible(True)
         for w in (self._hrr_caption, self.hrr_gauge, self.hrr_state_label,
                  self.narration_label, self._story_caption, self.phase_label, self.story_list):
             w.setVisible(expanded)
@@ -341,24 +358,33 @@ class InspectorPanel(QtWidgets.QWidget):
         self.phase_label.setText(f"Now: {current.statement}" if current is not None
                                  else "Now: before ignition")
 
-    def set_scenario(self, peak_temp_by_frame: list, ambient_c: float, door_wide_open: bool) -> None:
-        """Called on scenario/quantity change -- resets the sparkline
-        series and the narration's static context (ambient/door)."""
+    def set_scenario(self, peak_temp_by_frame: list, ambient_c: float, door_wide_open: bool,
+                     hrr_by_frame: list = None) -> None:
+        """Called on scenario/quantity change -- resets both sparkline
+        series (peak temperature, HRR -- index-aligned, one value per
+        simulation frame, same convention for both) and the narration's
+        static context (ambient/door). hrr_by_frame defaults to [] when
+        the scenario has no *_hrr.csv -- _Sparkline already renders an
+        empty series as a blank chart, no separate "no data" state needed
+        here (unlike the scalar HRR gauge, which does show one)."""
         self._series = list(peak_temp_by_frame)
         self._ambient_c = ambient_c
         self._door_wide_open = door_wide_open
         self.sparkline.set_series(self._series)
+        self.hrr_sparkline.set_series(list(hrr_by_frame or []))
 
     def set_time(self, index: int, hrr_fraction: float = None,
                  frame_min: float = None, frame_max: float = None, unit: str = "") -> None:
-        """Called every playback tick: scrubs the sparkline marker, updates
-        the HRR gauge (0-100%, None leaves it at its last value -- no HRR
-        data available for this scenario), regenerates the narration line
-        from already-computed numbers, and refreshes the frame/time/min-
-        max readout -- frame_min/frame_max are the caller's already-
-        computed current-frame extremes (this widget never touches the
-        data array itself)."""
+        """Called every playback tick: scrubs both sparkline markers
+        (peak temperature, HRR), updates the HRR gauge (0-100%, None
+        leaves it at its last value -- no HRR data available for this
+        scenario), regenerates the narration line from already-computed
+        numbers, and refreshes the frame/time/min-max readout --
+        frame_min/frame_max are the caller's already-computed
+        current-frame extremes (this widget never touches the data array
+        itself)."""
         self.sparkline.set_index(index)
+        self.hrr_sparkline.set_index(index)
         if hrr_fraction is not None:
             self.hrr_gauge.setValue(int(round(max(0.0, min(1.0, hrr_fraction)) * 100)))
             self.hrr_gauge.setFormat("%p% of peak")
@@ -394,6 +420,7 @@ class InspectorPanel(QtWidgets.QWidget):
         than showing stale or misleading numbers."""
         self._series = []
         self.sparkline.set_series([])
+        self.hrr_sparkline.set_series([])
         self.hrr_gauge.setValue(0)
         self.narration_label.setText("")
 
