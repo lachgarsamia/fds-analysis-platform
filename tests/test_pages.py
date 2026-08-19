@@ -84,7 +84,7 @@ class TestAnalysisPageGrouping:
         page = AnalysisPage(
             spatiotemporal_content=QtWidgets.QLabel("Spatiotemporal"),
             study_content=QtWidgets.QLabel("Study"),
-            pairwise_content=QtWidgets.QLabel("Pairwise Comparison"),
+            compare_presets_content=QtWidgets.QLabel("Compare Presets"),
             fire_mri_content=QtWidgets.QLabel("Fire MRI"),
             attention_content=QtWidgets.QLabel("Attention"))
         assert page.tabs.count() == 4
@@ -153,12 +153,12 @@ class TestAnalysisPageGrouping:
         calls = []
         page = AnalysisPage(
             dashboard_content=QtWidgets.QLabel("Dashboard"),
-            pairwise_content=QtWidgets.QLabel("Pairwise"),
+            compare_presets_content=QtWidgets.QLabel("Compare Presets"),
             clustering_content=QtWidgets.QLabel("Clustering"))
         page.tab_shown.connect(lambda: calls.append(1))
         page.tabs.setCurrentIndex(1)        # move to Compare & Discover first (outer)
         calls.clear()
-        compare_group = page.tabs.widget(1)   # Compare & Discover: Pairwise, Clustering
+        compare_group = page.tabs.widget(1)   # Compare & Discover: Compare Presets, Clustering
         compare_group.setCurrentIndex(1)      # inner switch, no outer change
         assert len(calls) == 1
         page.tabs.setCurrentIndex(0)        # outer switch to Overview & Interpretation
@@ -213,7 +213,7 @@ class TestMainWindowPageSwitching:
         sim_data = load_simulation_data()
         assert sim_data.is_demo
         window = MainWindow(sim_data)
-        for key in ("home", "compare", "dataset", "analysis", "export", "live"):
+        for key in ("home", "dataset", "analysis", "export", "live"):
             window._navigate_to(key)
         window.close()
 

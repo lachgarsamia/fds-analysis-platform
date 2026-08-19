@@ -67,7 +67,7 @@ from cause_panel import CausePanel
 from height_panel import HeightPanel
 from zone_panel import ZonePanel
 from time_window_panel import TimeWindowPanel
-from advanced_compare_panel import AdvancedComparePanel
+from compare_presets_panel import ComparePresetsPanel
 from probe_measure_panel import ProbeMeasurePanel
 from spatiotemporal_panel import SpatiotemporalPanel
 from smoke_layer_motion_panel import SmokeLayerMotionPanel
@@ -99,7 +99,6 @@ from nav import NavRail
 from playback_bar import PlaybackBar
 from pages.live import LivePage
 from pages.home import HomePage
-from pages.compare import ComparePage
 from pages.dataset import DatasetPage
 from pages.analysis import AnalysisPage
 from pages.export_page import ExportPage
@@ -152,8 +151,10 @@ _HAZARD_STRIP_CAPTION = "Fraction of room floor area exceeding each temperature 
 _HAZARD_BAND_LABELS = tuple(
     (color, f"{t:g}°C") for color, t in zip(_HAZARD_COLORS, _HAZARD_THRESHOLDS_C))
 
-# Compare page story presets (FireLab roadmap Phase 4, pages/compare.py):
-# each key resolves to two scenarios differing in exactly one factor
+# Compare Presets story presets (FireLab roadmap Phase 4, pages/compare.py;
+# moved into Compare & Discover by the Analysis page pruning pass -- see
+# compare_presets_panel.py): each key resolves to two scenarios differing
+# in exactly one factor
 # (others held at config.py's own DEFAULT_* values) and the quantity that
 # best shows the effect. "door" uses VELOCITY, not TEMPERATURE, per M2.3's
 # verified finding that the door-width effect shows up in airflow, not heat.
@@ -945,14 +946,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self.probe_measure_panel = ProbeMeasurePanel(
                 devices=self.device_panel, zones=self.zone_panel,
                 velocity=self.velocity_panel, streamlines=self.streamline_panel)
-            # Advanced comparison (V4-M8): temporal / spatial / physics axes.
-            # Needs two scenarios to compare (like the semantic diff).
-            self.advanced_compare_panel = (
-                AdvancedComparePanel(
-                    self.controller.store, self.sim_data.manifest,
-                    self._quantity_options(), self.sim_data.timesteps_per_second,
-                    summaries=getattr(self, "_scenario_summaries", None))
-                if len(self.sim_data.manifest) >= 2 else None)
+            # Compare Presets (Analysis page pruning, item 8): the former
+            # top-level Compare page's story-preset buttons, now Compare &
+            # Discover's second sub-view. Factorial-only, same gate as the
+            # sensitivity/factor-effects panels -- the presets are
+            # candle/door/vent factor comparisons a generic guest study
+            # has no axes for.
+            self.compare_presets_panel = (
+                ComparePresetsPanel(on_preset=self._apply_compare_preset)
+                if self.is_factorial else None)
             # Quantity reference/breadth (V4-M11): available / derived / gated.
             self.quantities_panel = QuantitiesPanel(
                 self.controller.store, self.sim_data.manifest)
@@ -1033,7 +1035,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.time_window_panel = None
             self.probe_measure_panel = None
             self.spatiotemporal_panel = None
-            self.advanced_compare_panel = None
+            self.compare_presets_panel = None
             self.clustering_content = None
             self.quantities_panel = None
             self.dashboard_panel = None
@@ -1054,7 +1056,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pages = {
             "home": HomePage(on_start=lambda: self._navigate_to("live")),
             "live": LivePage(live_content, self.time_controller, settings=self.settings),
-            "compare": ComparePage(on_preset=self._apply_compare_preset),
             "dataset": DatasetPage(dataset_content),
             "analysis": AnalysisPage(
                 on_shown=self._on_analysis_page_shown,
@@ -1067,7 +1068,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 cause_content=self.cause_panel,
                 spatiotemporal_content=self.spatiotemporal_panel,
                 probe_measure_content=self.probe_measure_panel,
-                pairwise_content=self.advanced_compare_panel,
+                compare_presets_content=self.compare_presets_panel,
                 clustering_content=self.clustering_content,
                 study_content=self.study_panel,
                 dashboard_content=self.dashboard_panel,
@@ -1080,22 +1081,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
             "about": AboutPage(),
         }
-        has_manifest = bool(self.sim_data.manifest)
         self.pages["home"].set_stats(
             len(self.sim_data.manifest or []), self._current_n_frames, len(self.quantity_infos))
-        self.pages["compare"].set_available(has_manifest)
 
         nav_entries = [
-            ("home", "Home"), ("live", "Live Viewer"), ("compare", "Compare"),
+            ("home", "Home"), ("live", "Live Viewer"),
             ("dataset", "Dataset Explorer"), ("analysis", "Analysis"), ("export", "Export"),
             ("about", "About"),
         ]
-        # M2.5: the Compare page's presets are candle-factor comparisons
-        # ("door open vs closed", etc.); a generic guest study has no such
-        # factors, so drop Compare from its navigation.
-        if not self.is_factorial:
-            nav_entries = [(k, label) for k, label in nav_entries if k != "compare"]
-
         self.page_stack = QtWidgets.QStackedWidget()
         for key, _label in nav_entries:
             self.page_stack.addWidget(self.pages[key])
@@ -1164,7 +1157,7 @@ class MainWindow(QtWidgets.QMainWindow):
                      "query_panel", "attention_panel", "cause_panel",
                      "factor_effects_panel", "timeseries_panel",
                      "energy_panel", "forecasting_panel", "quantities_panel",
-                     "advanced_compare_panel", "study_panel",
+                     "study_panel",
                      "spacetime_panel",
                      "device_panel", "velocity_panel", "streamline_panel", "dashboard_panel",
                      "smoke_layer_motion_panel"):
@@ -1184,10 +1177,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # V5-M4: the space-time panel publishes/reacts to the selected point.
         if self.spacetime_panel is not None:
             self.spacetime_panel.set_bus(self.selection_bus)
-        # Consolidation Phase 2: the A/B pair publishes/reacts to
-        # Selection.comparison (previously defined but unused by any panel).
-        if self.advanced_compare_panel is not None:
-            self.advanced_compare_panel.set_bus(self.selection_bus)
         # Consolidation Phase 2: the point/region probe publishes to the bus
         # (previously local-only) so other panels (e.g. SpaceTimePanel) can follow it.
         if self.timeseries_panel is not None:
@@ -1365,10 +1354,6 @@ class MainWindow(QtWidgets.QMainWindow):
             ("inspector", "story_list"), ("height_panel", "insights"),
             ("zone_panel", "insights"),
             ("time_window_panel", "insights"),
-            ("advanced_compare_panel", "temporal_list"),
-            ("advanced_compare_panel", "spatial_list"),
-            ("advanced_compare_panel", "physics_list"),
-            ("advanced_compare_panel", "semantic_diff_list"),
             ("query_panel", "results"),
             ("cause_panel", "chain"),
         ):
@@ -3094,7 +3079,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self.time_controller.is_playing():
             self._on_time_changed(self.time_controller.index)
 
-    # ------------------------------------------------- Compare page presets
+    # ---------------------------------------------- Compare Presets buttons
     def _find_scenario(self, factor: str, value: int):
         """case_index of the manifest entry matching `factor=value` with
         every other factor held at its config.py DEFAULT_*, or None if no
@@ -3144,7 +3129,7 @@ class MainWindow(QtWidgets.QMainWindow):
             combo.setCurrentIndex(idx)
 
     def _apply_compare_preset(self, key: str) -> None:
-        """Compare page: jumps into the Live page's own grid, stacked
+        """Compare Presets (Compare & Discover): jumps into the Live page's own grid, stacked
         (2x1) with scenario A above scenario B, both shown as plain slices
         of the preset's quantity -- switching to "2x1" auto-enables "Link
         color scales" (see _set_grid_layout), so equal values render as
@@ -4066,9 +4051,7 @@ class MainWindow(QtWidgets.QMainWindow):
             devices=(self.device_panel.get_devices()
                      if self.device_panel is not None else []),
             vector_probes=(self.velocity_panel.get_probes()
-                          if self.velocity_panel is not None else []),
-            comparisons=(self.advanced_compare_panel.get_comparisons()
-                        if self.advanced_compare_panel is not None else []))
+                          if self.velocity_panel is not None else []))
 
     # --------------------------------------------------- named sessions (M6)
     def _refresh_sessions(self) -> None:
@@ -4156,9 +4139,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.velocity_panel is not None:
             self.velocity_panel.set_probes(session.get("vector_probes", []))
             self._refresh_vector_field()
-        # Analysis-improvement roadmap Phase C: restore pinned Compare Axes results.
-        if self.advanced_compare_panel is not None:
-            self.advanced_compare_panel.set_comparisons(session.get("comparisons", []))
+        # Analysis page pruning (item 8): Compare Axes (advanced_compare_panel)
+        # was removed, so pinned comparisons from an older session have
+        # nowhere to restore to -- warn rather than silently drop them.
+        legacy_comparisons = session.get("comparisons")
+        if legacy_comparisons:
+            logger.warning(
+                "session has %d saved comparison(s) that can no longer be restored "
+                "(Compare Axes was removed); they will not appear", len(legacy_comparisons))
         # V5-M1: restore the shared selection (absent in older sessions -> empty).
         if getattr(self, "selection_bus", None) is not None:
             self.selection_bus.set(Selection.from_dict(session.get("selection", {})))
@@ -4447,9 +4435,11 @@ class MainWindow(QtWidgets.QMainWindow):
             QtGui.QKeySequence("Shift+Right"), self,
             activated=lambda: self.time_controller.step(self.time_controller.timesteps_per_second),
         )
-        # FireLab roadmap Phase 1: 1-7 jump straight to a nav-rail page, in
-        # the same display order as the rail itself.
-        for i, key in enumerate(("home", "live", "compare", "dataset", "analysis", "export", "about"), start=1):
+        # FireLab roadmap Phase 1: 1-6 jump straight to a nav-rail page, in
+        # the same display order as the rail itself. (Analysis page pruning:
+        # was 1-7 with "compare" at 3 -- renumbered down, not left dead, now
+        # that the Compare page is gone.)
+        for i, key in enumerate(("home", "live", "dataset", "analysis", "export", "about"), start=1):
             QtWidgets.QShortcut(QtGui.QKeySequence(str(i)), self, activated=lambda k=key: self._navigate_to(k))
         # Demo-script bookmarks (FireLab roadmap Phase 5): Ctrl+Shift+<n>
         # records the current (page, scenario, time) into slot n;

@@ -47,8 +47,7 @@ def build_session_dict(layout_name: str, cells: list, active_index: int, time_in
                         selection: dict | None = None,
                         calculated_fields: list | None = None,
                         devices: list | None = None,
-                        vector_probes: list | None = None,
-                        comparisons: list | None = None) -> dict:
+                        vector_probes: list | None = None) -> dict:
     return {
         "version": SESSION_VERSION,
         "layout": layout_name,
@@ -71,7 +70,11 @@ def build_session_dict(layout_name: str, cells: list, active_index: int, time_in
         "calculated_fields": calculated_fields or [],  # V6-M1 Field Calculator definitions
         "devices": devices or [],  # V6-M2 Virtual Device Network placements + cached results
         "vector_probes": vector_probes or [],  # V6-M3 True Velocity probe placements + cached results
-        "comparisons": comparisons or [],  # Analysis-improvement roadmap Phase C: pinned Compare Axes results
+        # "comparisons" (Analysis-improvement roadmap Phase C: pinned Compare
+        # Axes results) is no longer written -- Compare Axes/advanced_compare_panel
+        # was removed by the Analysis page pruning pass. A legacy session file
+        # may still have this key; main_window._apply_analysis_session warns
+        # if so rather than silently dropping it.
     }
 
 

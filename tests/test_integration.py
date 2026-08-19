@@ -2205,9 +2205,7 @@ class TestMultiStudyGuestStudy:
         assert window.is_factorial is False
         assert not window.candle_toggle.isVisibleTo(window)
         assert window.analytics_panel is None
-        in_stack = any(window.page_stack.widget(i) is window.pages["compare"]
-                       for i in range(window.page_stack.count()))
-        assert in_stack is False
+        assert window.compare_presets_panel is None
         window.close()
 
     def test_degenerate_study_renders_and_switches_quantity(self, qapp):
@@ -2424,27 +2422,17 @@ class TestFireStory:
         window.close()
 
 
-class TestSemanticDiffPanel:
-    """V3-M3, merged into Compare Axes (Analysis-improvement roadmap Phase
-    A): semantic diff was a structurally-duplicate sibling tab (same two-
-    scenario+quantity shape as Advanced Comparison) -- now its 4th axis."""
+class TestComparisonReportExport:
+    """Export -> A-vs-B comparison report (HTML). Independent of Compare
+    Axes/advanced_compare_panel (removed by the Analysis page pruning
+    pass) -- built from _scenario_summaries directly, not the panel; this
+    class used to be TestSemanticDiffPanel and also covered the panel's
+    own evidence-list UI, which is gone along with it.
 
-    def test_panel_lists_differences_and_shows_evidence(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            assert getattr(window, "advanced_compare_panel", None) is None
-            window.close()
-            return
-        panel = window.advanced_compare_panel
-        assert panel is not None
-        panel.ensure_loaded()
-        assert panel.semantic_diff_list.count() >= 1
-        # clicking a difference renders the A - B evidence field
-        first = panel._sd_cache[list(panel._sd_cache.keys())[0]][0]
-        panel._show_semantic_evidence(first)
-        assert panel.semantic_diff_canvas.fig.axes
-        window.close()
+    NOTE for whoever's tracking the 3 known pre-existing flaky/hung
+    tests: test_comparison_report_includes_key_differences below is the
+    TestSemanticDiffPanel hang from that catalogue -- same test, same
+    hang, new fully-qualified ID (class renamed)."""
 
     def test_comparison_report_includes_key_differences(self, qapp, tmp_path, monkeypatch):
         sim_data = load_simulation_data()
@@ -3026,108 +3014,6 @@ class TestNamedSessions:
         window.close()
 
 
-class TestAdvancedComparePanel:
-    """V4-M8: advanced comparison workflows (temporal / spatial / physics)."""
-
-    def test_axes_populate_and_physics_is_honest(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo or len(sim_data.manifest) < 2:
-            assert getattr(window, "advanced_compare_panel", None) is None
-            window.close()
-            return
-        panel = window.advanced_compare_panel
-        panel.ensure_loaded()
-        assert panel.combo_a.count() == len(sim_data.manifest)
-        total = (panel.temporal_list.count() + panel.spatial_list.count()
-                 + panel.physics_list.count())
-        assert total >= 1
-        for i in range(panel.physics_list.count()):
-            ins = panel.physics_list.item(i).data(QtCore.Qt.UserRole)
-            assert "not a proven cause" in ins.statement  # association-not-causation gate
-        # a comparison Insight saves to the Evidence Notebook
-        for lst in (panel.temporal_list, panel.spatial_list, panel.physics_list):
-            if lst.count():
-                lst.insight_saved.emit(lst.item(0).data(QtCore.Qt.UserRole))
-                break
-        assert len(window.evidence_dock.notebook) == 1
-        window.close()
-
-    def test_same_scenario_clears_axes(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if window.advanced_compare_panel is None:
-            window.close()
-            return
-        panel = window.advanced_compare_panel
-        panel.ensure_loaded()
-        panel.combo_b.setCurrentIndex(panel.combo_a.currentIndex())  # A == B
-        assert panel.temporal_list.count() == 0
-        assert panel.spatial_list.count() == 0
-        assert panel.physics_list.count() == 0
-        window.close()
-
-    def test_ab_pair_publishes_and_follows_selection_comparison(self, qapp):
-        """Consolidation Phase 2: combo_a/combo_b don't fit bind_to_bus's
-        generic scenario_combo lookup, so Selection.comparison (defined but
-        previously unused by any panel) is wired via a small custom
-        set_bus, matching the SensitivityPanel/SpaceTimePanel precedent."""
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if window.advanced_compare_panel is None:
-            window.close()
-            return
-        panel = window.advanced_compare_panel
-        panel.ensure_loaded()
-        target_a = sim_data.manifest[2].case_index
-        target_b = sim_data.manifest[3].case_index
-        idx_a = panel.combo_a.findData(target_a)
-        panel.combo_a.setCurrentIndex(idx_a)
-        idx_b = panel.combo_b.findData(target_b)
-        panel.combo_b.setCurrentIndex(idx_b)
-        assert window.selection_bus.current.comparison == (target_a, target_b)
-        # reverse: a comparison published elsewhere drives this panel's pair.
-        other_a, other_b = sim_data.manifest[0].case_index, sim_data.manifest[1].case_index
-        window.selection_bus.update(origin=None, comparison=(other_a, other_b))
-        assert panel.combo_a.currentData() == other_a
-        assert panel.combo_b.currentData() == other_b
-        window.close()
-
-    def test_add_to_session_report_pins_comparison_and_survives_round_trip(self, qapp, tmp_path):
-        """Analysis-improvement roadmap Phase C: "Add comparison to session
-        report" pins the current pair's semantic-diff differences, and the
-        session report picks them up via report_builder's reused
-        _differences_block rendering."""
-        import session_store
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if window.advanced_compare_panel is None:
-            window.close()
-            return
-        panel = window.advanced_compare_panel
-        panel.ensure_loaded()
-        panel._add_to_session_report()
-        assert len(panel._pinned_comparisons) == 1
-        assert "Added" in panel.report_status.text()
-        c = panel._pinned_comparisons[0]
-        assert c["case_a"] == panel.combo_a.currentData()
-        assert c["case_b"] == panel.combo_b.currentData()
-
-        session = window._collect_session_dict("s", "")
-        assert session["comparisons"] == panel.get_comparisons()
-        from report_builder import build_session_report
-        html = build_session_report(session)
-        assert c["label_a"] in html and c["label_b"] in html
-
-        session_store.save_session(str(tmp_path), session)
-        loaded = session_store.load_session(
-            session_store.list_sessions(str(tmp_path))[0].path)
-        window.advanced_compare_panel.set_comparisons([])
-        window._apply_analysis_session(loaded)
-        assert window.advanced_compare_panel.get_comparisons() == panel.get_comparisons()
-        window.close()
-
-
 class TestProbeMeasurePanel:
     """Analysis section consolidation Phase 4 (Analysis final-polish pass:
     the disposable "Quick probe" mode was removed -- Devices/Zones/
@@ -3194,27 +3080,25 @@ class TestProbeMeasurePanel:
 
 
 class TestCompareDiscover:
-    """Analysis final-polish pass: Compare & Discover's former 4-mode
-    CompareDiscoverPanel wrapper (Pairwise/Parallel coordinates/Ensemble/
-    Clustering) is unwrapped -- Parallel coordinates and Ensemble spread
-    were removed outright (not enough standalone research value for their
-    complexity), which left only 2 children, no longer earning their own
-    indirection layer. Pairwise Comparison and PCA/Clustering are now
-    direct tabs under the Compare & Discover group."""
+    """Analysis page pruning (item 8): Compare & Discover's former
+    Pairwise Comparison (advanced_compare_panel) was removed outright;
+    the top-level Compare page's story-preset buttons moved in as its
+    replacement (compare_presets_panel), alongside PCA/Clustering --
+    still two direct tabs, different second one."""
 
-    def test_pairwise_and_clustering_are_direct_analysis_tabs(self, qapp):
+    def test_presets_and_clustering_are_direct_analysis_tabs(self, qapp):
         window = MainWindow(load_simulation_data())
-        if window.advanced_compare_panel is None:
+        if window.compare_presets_panel is None:
             window.close()
             return
         assert not hasattr(window, "compare_discover_panel")
         assert not hasattr(window, "parallel_coordinates_panel")
         assert not hasattr(window, "ensemble_panel")
+        assert not hasattr(window, "advanced_compare_panel")
         window.show()
         window._navigate_to("analysis")
-        window.pages["analysis"].show_tab(window.advanced_compare_panel)
+        window.pages["analysis"].show_tab(window.compare_presets_panel)
         QtWidgets.QApplication.processEvents()
-        assert window.advanced_compare_panel._loaded
         if window.clustering_content is not None:
             window.pages["analysis"].show_tab(window.clustering_content)
             QtWidgets.QApplication.processEvents()

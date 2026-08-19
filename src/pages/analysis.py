@@ -29,7 +29,11 @@ template-summary layer were removed outright rather than kept because
 they already existed. Compare & Discover's former 4-mode
 CompareDiscoverPanel wrapper is unwrapped into two direct tabs (Pairwise
 Comparison, PCA/Clustering) now that only two of its four modes remain --
-a 2-child wrapper wasn't earning its own indirection layer. Reference &
+a 2-child wrapper wasn't earning its own indirection layer. (Analysis
+page pruning, item 8: Pairwise Comparison/advanced_compare_panel was
+later removed outright; the top-level Compare page's story-preset
+buttons moved in as its replacement -- see compare_presets_panel.py.)
+Reference &
 Communication's former Assistant tab is replaced by "Ask"
 (query_panel.py's QueryPanel, a distinct deterministic physics-query
 grammar previously reachable only as a secondary mode inside the removed
@@ -79,7 +83,7 @@ from tour import ANALYSIS_STEPS, ANALYSIS_SETTINGS_KEY, TourOverlay, mark_tour_c
 # time options (study_analytics.py's RESPONSE_FIELDS).
 _GROUPS = [
     ("Overview & Interpretation", ["Dashboard"]),
-    ("Compare & Discover", ["Pairwise Comparison", "PCA / Clustering"]),
+    ("Compare & Discover", ["Compare Presets", "PCA / Clustering"]),
     ("Probe & Measure", ["Spatial Probes"]),
     ("Factors & Sensitivity", ["Study"]),
     ("Spatiotemporal Analysis", ["Field & Time Explorer", "Space-time", "Smoke-Layer Motion"]),
@@ -197,7 +201,7 @@ class AnalysisPage(Page):
                  cause_content: QtWidgets.QWidget = None,
                  spatiotemporal_content: QtWidgets.QWidget = None,
                  probe_measure_content: QtWidgets.QWidget = None,
-                 pairwise_content: QtWidgets.QWidget = None,
+                 compare_presets_content: QtWidgets.QWidget = None,
                  clustering_content: QtWidgets.QWidget = None,
                  study_content: QtWidgets.QWidget = None,
                  dashboard_content: QtWidgets.QWidget = None,
@@ -244,7 +248,7 @@ class AnalysisPage(Page):
             ("Fire MRI", fire_mri_content),
             ("Attention", attention_content),
             ("Why is it hot?", cause_content),
-            ("Pairwise Comparison", pairwise_content),
+            ("Compare Presets", compare_presets_content),
             ("PCA / Clustering", clustering_content),
             ("Study", study_content),
             ("Forecasting", forecasting_content),
