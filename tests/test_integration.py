@@ -655,8 +655,17 @@ class TestIntegration:
 
         window._on_seek_requested(250)
         qapp.processEvents()
-        assert window.time_controller.index == 250
-        assert window.playback_bar.timeline.slider.value() == 250
+        # seek() lands on 250 synchronously and deterministically -- but it
+        # doesn't reset the playback QTimer's own real-wall-clock schedule
+        # (by design: a mid-playback seek must not pause playback), so the
+        # processEvents() above can legitimately pump one already-due timer
+        # tick past it under system load (flaky-test cleanup pass: this is
+        # what caused the "251 == 250" failures, confirmed via repro -- not
+        # a race in seek()/_tick() themselves, which are fully ordered).
+        # Tolerating exactly one extra tick keeps this a regression check
+        # for a genuinely stuck/paused index, not a fixed-timing assertion.
+        assert window.time_controller.index in (250, 251)
+        assert window.playback_bar.timeline.slider.value() == window.time_controller.index
         assert window.time_controller.is_playing(), "seeking must not pause playback"
         assert not window.heatmap.get_array() is None
 
