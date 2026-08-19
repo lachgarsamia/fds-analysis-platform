@@ -136,7 +136,7 @@ class TestAnalysisPageGrouping:
         not just the one level Phase D originally needed."""
         from probe_measure_panel import ProbeMeasurePanel
         devices = QtWidgets.QLabel("Devices")
-        wrapper = ProbeMeasurePanel(devices=devices, zones=QtWidgets.QLabel("Zones"))
+        wrapper = ProbeMeasurePanel(devices=devices)
         page = AnalysisPage(probe_measure_content=wrapper,
                             study_content=QtWidgets.QLabel("Study"))
         page.show_tab(devices)

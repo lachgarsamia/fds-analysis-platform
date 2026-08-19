@@ -65,7 +65,7 @@ from query_panel import QueryPanel
 from attention_panel import AttentionPanel
 from cause_panel import CausePanel
 from height_panel import HeightPanel
-from zone_panel import ZonePanel
+import zone_stats as zs
 from time_window_panel import TimeWindowPanel
 from compare_presets_panel import ComparePresetsPanel
 from probe_measure_panel import ProbeMeasurePanel
@@ -311,6 +311,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # that scenario's *_hrr.csv, or () if none was found -- read once
         # per scenario, not once per playback tick.
         self._hrr_cache = {}
+        # Analysis page pruning: headless holder for saved Zones, now that
+        # the Zones tab (creation/rename/delete UI) is gone -- see
+        # zone_stats.ZoneStore's own docstring. Always present (not gated
+        # on manifest/factorial like the panels), since it's just a plain
+        # session-backed list, no store/manifest dependency.
+        self.zone_panel = zs.ZoneStore()
         # V3-M2: per-scenario detected fire events (events.py), computed once.
         self._fire_events_cache = {}
         # FireLab roadmap Phase 3: (case_index, quantity_key) each visible
@@ -582,7 +588,6 @@ class MainWindow(QtWidgets.QMainWindow):
     # (attr, canvas attr, figure name, caption).
     _BUNDLE_FIGURES = [
         ("height_panel", "plot_canvas", "height_profile", "Vertical temperature profile and layer/plume/ceiling over time."),
-        ("zone_panel", "plot_canvas", "zone_stats", "Named-zone temperature and thermal-dose over time."),
         ("study_panel", "parallel_canvas", "study_parallel", "Parameter-vs-response parallel coordinates across the factorial."),
         ("sensitivity_panel", "surface_canvas", "sensitivity_surface", "Estimated response surface (interpolated from existing scenarios)."),
     ]
@@ -899,11 +904,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.controller.store, self.sim_data.manifest,
                 self._analysis_quantity_options_with_computed(), self.sim_data.timesteps_per_second,
                 field_fn=self._field_fn_for_analysis_panels(), extent_fn=self._extent_for)
-            # Named region / zone statistics (V4-M4): persistent zones with
-            # a full stats bundle, compared across scenarios, session-saved.
-            self.zone_panel = ZonePanel(
-                self.controller.store, self.sim_data.manifest,
-                self.sim_data.timesteps_per_second)
             # Time-window / interval analysis (V4-M5): time as a selectable
             # dimension -- interval stats, before/after, detected phases.
             self.time_window_panel = TimeWindowPanel(
@@ -944,7 +944,7 @@ class MainWindow(QtWidgets.QMainWindow):
             # surfaces get a tab" convention every other optional tab
             # already follows.
             self.probe_measure_panel = ProbeMeasurePanel(
-                devices=self.device_panel, zones=self.zone_panel,
+                devices=self.device_panel,
                 velocity=self.velocity_panel, streamlines=self.streamline_panel)
             # Compare Presets (Analysis page pruning, item 8): the former
             # top-level Compare page's story-preset buttons, now Compare &
@@ -1031,7 +1031,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.attention_panel = None
             self.cause_panel = None
             self.height_panel = None
-            self.zone_panel = None
             self.time_window_panel = None
             self.probe_measure_panel = None
             self.spatiotemporal_panel = None
@@ -1152,7 +1151,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.controller.store, fps=self.time_controller.timesteps_per_second)
         self._seek_from_bus = False
         fps = self.time_controller.timesteps_per_second
-        for attr in ("height_panel", "zone_panel", "time_window_panel",
+        for attr in ("height_panel", "time_window_panel",
                      "fire_mri_panel",
                      "query_panel", "attention_panel", "cause_panel",
                      "factor_effects_panel", "timeseries_panel",
@@ -1352,7 +1351,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.evidence_dock.hide()
         for panel_attr, list_attr in (
             ("inspector", "story_list"), ("height_panel", "insights"),
-            ("zone_panel", "insights"),
             ("time_window_panel", "insights"),
             ("query_panel", "results"),
             ("cause_panel", "chain"),
@@ -4039,7 +4037,7 @@ class MainWindow(QtWidgets.QMainWindow):
             getattr(self, "_link_clim", False), self.current_colormap,
             self.isotherms_action.isChecked(),
             notebook=self.evidence_dock.notebook.to_list(),
-            zones=self.zone_panel.get_zones() if self.zone_panel is not None else [],
+            zones=self.zone_panel.get_zones(),
             name=name, intent=intent, metadata=metadata,
             time_window=(self.time_window_panel.get_state()
                          if self.time_window_panel is not None else {}),
@@ -4236,8 +4234,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.evidence_dock.show()
 
         # V4-M4: restore named zones (absent in older sessions -> none).
-        if self.zone_panel is not None:
-            self.zone_panel.set_zones(session.get("zones", []))
+        self.zone_panel.set_zones(session.get("zones", []))
 
         time_index = session.get("time_index", 0)
         self.time_controller.seek(min(max(time_index, 0), self._current_n_frames - 1))

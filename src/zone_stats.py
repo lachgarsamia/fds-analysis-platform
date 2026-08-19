@@ -108,3 +108,28 @@ def smoke_accumulation(soot_data: np.ndarray, extent, zone: Zone, fps: int) -> f
     r0, r1, c0, c1 = zone_indices(extent, np.asarray(soot_data).shape[1:], zone)
     sub = np.asarray(soot_data, dtype=float)[:, r0:r1 + 1, c0:c1 + 1]
     return float(sub.mean(axis=(1, 2)).sum()) / fps
+
+
+class ZoneStore:
+    """Headless holder for the session's saved Zones -- no UI, just the
+    list + get_zones()/set_zones() session round-trip zone_panel.py's own
+    identically-named methods used to provide directly (Analysis page
+    pruning: the Zones tab/creation UI was removed, this is what's left).
+    Exists so graph_panel.py's Knowledge Graph zone nodes and context.py's
+    Context-Panel data layer keep reading zones after that removal --
+    session load/save is the only way zones enter or leave this list now;
+    there is no UI left to draw, rename, or delete one."""
+
+    def __init__(self):
+        self._zones: list = []
+
+    def ensure_loaded(self) -> None:
+        """No-op: kept only so call sites written for the old ZonePanel's
+        lazy-load convention (main_window.zone_panel.ensure_loaded()) keep
+        working unchanged -- a plain in-memory list has nothing to load."""
+
+    def get_zones(self) -> list:
+        return [z.to_dict() for z in self._zones]
+
+    def set_zones(self, zones: list) -> None:
+        self._zones = [Zone.from_dict(d) for d in (zones or []) if isinstance(d, dict)]

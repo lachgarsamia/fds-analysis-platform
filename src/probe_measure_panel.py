@@ -2,9 +2,8 @@
 Analysis-page tab.
 
 A thin QTabWidget wrapper, not a rewrite: hosts the existing Devices
-(instrument models: thermocouple/heat-detector/sprinkler), Zones (named,
-persistent region statistics + cross-scenario compare), and Velocity (true
-vector-field probes) panels as three modes of one "what happens at this
+(instrument models: thermocouple/heat-detector/sprinkler) and Velocity
+(true vector-field probes) panels as modes of one "what happens at this
 location/region?" workspace, instead of same-level tabs previously
 scattered in the same group with no shared framing. Every child's own
 construction, store access, lazy-load convention, and SelectionBus wiring
@@ -15,14 +14,20 @@ and Compare & Discover.
 (Analysis final-polish pass: the fourth former mode, "Quick probe" --
 disposable, un-named rectangle/point reads via measurement_panel.py's
 MeasurementPanel -- was removed. It was a second, less deliberate way to
-read the same field Devices/Zones/Velocity already cover more
-purposefully; measure.py, the underlying probe/rect-stats engine, stays
--- velocity.py's streamline reconstruction depends on it directly.)
+read the same field Devices/Velocity already cover more purposefully;
+measure.py, the underlying probe/rect-stats engine, stays --
+velocity.py's streamline reconstruction depends on it directly.
 
-Any of the three children may be absent (Velocity needs a manifest;
-Devices/Zones follow the same convention) -- only supplied children get a
-tab, same "only supplied surfaces get a tab" rule the outer AnalysisPage
-already follows.
+Analysis page pruning: the Zones mode/tab was removed too, panel and
+all -- zone_stats.py's computation engine and Zone data stay (now held
+headlessly by main_window.zone_panel, now a ZoneStore not a widget,
+instead of a UI panel), since
+graph_panel.py's Knowledge Graph and context.py's Context-Panel data
+layer still read saved zones; there is no UI left to create one.)
+
+Any child may be absent (Velocity needs a manifest; Devices follows the
+same convention) -- only supplied children get a tab, same "only
+supplied surfaces get a tab" rule the outer AnalysisPage already follows.
 """
 
 from __future__ import annotations
@@ -32,12 +37,10 @@ from PyQt5 import QtWidgets
 
 class ProbeMeasurePanel(QtWidgets.QWidget):
     def __init__(self, devices: QtWidgets.QWidget = None,
-                 zones: QtWidgets.QWidget = None,
                  velocity: QtWidgets.QWidget = None,
                  streamlines: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self.devices_widget = devices
-        self.zones_widget = zones
         self.velocity_widget = velocity
         # Velocity streamlines (matplotlib streamplot, a second, independent
         # visualization of the same U/W-VELOCITY field the Velocity tab's
@@ -49,7 +52,7 @@ class ProbeMeasurePanel(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.tabs = QtWidgets.QTabWidget()
-        for widget, label in ((devices, "Devices"), (zones, "Zones"),
+        for widget, label in ((devices, "Devices"),
                              (velocity, "Velocity"),
                              (streamlines, "Velocity (Streamlines)")):
             if widget is not None:
@@ -63,7 +66,7 @@ class ProbeMeasurePanel(QtWidgets.QWidget):
     def ensure_loaded(self) -> None:
         """All children load on first show, not just the one currently in
         view -- switching modes later must never reveal a blank panel."""
-        for widget in (self.devices_widget, self.zones_widget,
+        for widget in (self.devices_widget,
                       self.velocity_widget, self.streamlines_widget):
             if widget is not None and hasattr(widget, "ensure_loaded"):
                 widget.ensure_loaded()

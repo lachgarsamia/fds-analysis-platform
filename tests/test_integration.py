@@ -2756,102 +2756,24 @@ class TestDashboardJumpToPeak:
         window.close()
 
 
-class TestZonePanel:
-    """V4-M4: named region / zone statistics."""
-
-    def test_zone_bundle_stats_and_insights(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            assert getattr(window, "zone_panel", None) is None
-            window.close()
-            return
-        import zone_stats as zst
-        panel = window.zone_panel
-        panel.ensure_loaded()
-        panel._zones.append(zst.Zone("doorway", 0.8, 1.0, 0.0, 0.3))
-        panel._select_zone(0)
-        assert "doorway" in panel.stats_label.text()
-        assert "peak" in panel.stats_label.text()
-        assert panel.insights.count() >= 1
-        # cross-scenario comparison fills a row per scenario
-        panel._compare_across_scenarios()
-        assert panel.compare_table.rowCount() == len(sim_data.manifest)
-        # a zone finding saves to the Evidence Notebook (M2 wiring)
-        panel.insights.insight_saved.emit(panel.insights.item(0).data(QtCore.Qt.UserRole))
-        assert len(window.evidence_dock.notebook) == 1
-        window.close()
-
-    def test_zone_stats_include_smoke_accumulation(self, qapp):
-        """Continuous soot-density visualization pass, Step 6:
-        smoke_accumulation() was validated (a real, physically meaningful
-        time-integral of zone-mean SOOT DENSITY -- see zone_stats.py's
-        docstring) and exposed through this existing Zones workflow, not a
-        new panel or new selection state."""
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            window.close()
-            return
-        import zone_stats as zst
-        panel = window.zone_panel
-        panel.ensure_loaded()
-        assert panel._soot_data is not None
-        panel._zones.append(zst.Zone("doorway", 0.8, 1.0, 0.0, 0.3))
-        panel._select_zone(0)
-        text = panel.stats_label.text()
-        assert "smoke accumulation" in text
-        assert "n/a" not in text  # real soot data available for this scenario/plane
-        window.close()
-
-    def test_zone_compare_table_has_smoke_accum_column(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            window.close()
-            return
-        import zone_stats as zst
-        panel = window.zone_panel
-        panel.ensure_loaded()
-        panel._zones.append(zst.Zone("doorway", 0.8, 1.0, 0.0, 0.3))
-        panel._select_zone(0)
-        panel._compare_across_scenarios()
-        headers = [panel.compare_table.horizontalHeaderItem(c).text()
-                   for c in range(panel.compare_table.columnCount())]
-        assert any("smoke accum" in h.lower() for h in headers)
-        # every row got a real (non-"n/a") reading, not just the active scenario
-        col = next(c for c, h in enumerate(headers) if "smoke accum" in h.lower())
-        values = [panel.compare_table.item(r, col).text()
-                  for r in range(panel.compare_table.rowCount())]
-        assert all(v != "n/a" for v in values)
-        window.close()
-
-    def test_zone_smoke_accumulation_degrades_to_na_on_fetch_failure(self, qapp):
-        """Regression: a soot-fetch failure must not blank the whole panel
-        (PyQt5 aborts the process on an unhandled exception in a connected
-        slot -- _recompute is one) and must show "n/a", not a fabricated 0."""
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            window.close()
-            return
-        import zone_stats as zst
-        panel = window.zone_panel
-        panel.ensure_loaded()
-        panel._soot_data = None  # simulate an unavailable/failed fetch
-        panel._zones.append(zst.Zone("doorway", 0.8, 1.0, 0.0, 0.3))
-        panel._select_zone(0)  # must not raise
-        assert "n/a" in panel.stats_label.text()
-        window.close()
+class TestSavedZones:
+    """Analysis page pruning: the Zones tab (creation/rename/delete UI,
+    stats display, cross-scenario compare table) was removed outright --
+    those were all ZonePanel widget behavior with nowhere to run anymore.
+    zone_stats.py's computation engine and the Zone dataclass stay, now
+    held headlessly by main_window.zone_panel (a ZoneStore, not a widget
+    -- same attribute name, so callers/tests that only touch ._zones or
+    get_zones()/set_zones() are unaffected); this class keeps only the
+    session round-trip coverage, since that's the one behavior that still
+    applies to a headless holder."""
 
     def test_zones_survive_session_roundtrip(self, qapp, tmp_path):
         import zone_stats as zst
         from session import build_session_dict, write_session, read_session
         window = MainWindow(load_simulation_data())
-        if window.zone_panel is None:
+        if window.sim_data.is_demo:
             window.close()
             return
-        window.zone_panel.ensure_loaded()
         window.zone_panel._zones.append(zst.Zone("window", 0.1, 0.3, 0.2, 0.5))
         p = str(tmp_path / "s.json")
         cells = window.view_grid.visible_cells()
@@ -2933,9 +2855,7 @@ class TestNamedSessions:
         window.evidence_dock.add_insight(Insight(
             "Peak 469 C at t=8s.", category="query", quantity="TEMPERATURE",
             time_s=8.0, value=469.0, basis="max"))
-        window.zone_panel.ensure_loaded()
         window.zone_panel._zones.append(zst.Zone("doorway", 0.8, 1.0, 0.0, 0.3))
-        window.zone_panel._select_zone(0)
         window.time_window_panel.ensure_loaded()
         window.time_window_panel._mode = "window"
         window.time_window_panel._t0 = 10.0
@@ -3032,24 +2952,26 @@ class TestProbeMeasurePanel:
     real, cross-validated data and this exact panel was independently
     verified against it."""
 
-    def test_wrapper_holds_devices_zones_and_velocity_as_tabs(self, qapp):
+    def test_wrapper_holds_devices_and_velocity_as_tabs(self, qapp):
+        """Analysis page pruning: Zones was the second tab here -- removed
+        along with the whole panel, not just hidden (labels/indices shift
+        down by one)."""
         window = MainWindow(load_simulation_data())
         if window.probe_measure_panel is None:
             window.close()
             return
         wrapper = window.probe_measure_panel
         labels = [wrapper.tabs.tabText(i) for i in range(wrapper.tabs.count())]
-        assert labels == ["Devices", "Zones", "Velocity", "Velocity (Streamlines)"]
+        assert labels == ["Devices", "Velocity", "Velocity (Streamlines)"]
         assert wrapper.tabs.widget(0) is window.device_panel
-        assert wrapper.tabs.widget(1) is window.zone_panel
-        assert wrapper.tabs.widget(2) is window.velocity_panel
-        assert wrapper.tabs.widget(3) is window.streamline_panel
+        assert wrapper.tabs.widget(1) is window.velocity_panel
+        assert wrapper.tabs.widget(2) is window.streamline_panel
         assert not hasattr(window, "measurement_panel")
         assert window.velocity_panel is not None
         assert wrapper.velocity_widget is window.velocity_panel
         window.close()
 
-    def test_showing_wrapper_loads_devices_zones_and_velocity_not_just_visible_one(self, qapp):
+    def test_showing_wrapper_loads_devices_and_velocity_not_just_visible_one(self, qapp):
         window = MainWindow(load_simulation_data())
         if window.probe_measure_panel is None:
             window.close()
@@ -3059,7 +2981,6 @@ class TestProbeMeasurePanel:
         window.pages["analysis"].show_tab(window.probe_measure_panel)
         QtWidgets.QApplication.processEvents()
         assert window.device_panel._loaded
-        assert window.zone_panel._loaded
         assert window.velocity_panel._loaded
         window.close()
 
@@ -3115,8 +3036,7 @@ class TestPublicationExport:
         if sim_data.is_demo:
             window.close()
             return
-        for name, canvas_attr in (("height_panel", "plot_canvas"),
-                                   ("zone_panel", "plot_canvas")):
+        for name, canvas_attr in (("height_panel", "plot_canvas"),):
             panel = getattr(window, name)
             panel.ensure_loaded()
             assert hasattr(panel, "export_button")
@@ -3195,12 +3115,12 @@ class TestSharedSelectionModel:
             window.close()
             return
         window.height_panel.ensure_loaded()
-        window.zone_panel.ensure_loaded()
+        window.time_window_panel.ensure_loaded()
         # changing one panel's scenario publishes it; the other panel follows
         # (scenario sync is not visibility-gated).
         window.height_panel.scenario_combo.setCurrentIndex(3)
         assert window.selection_bus.current.scenario == window.height_panel.scenario_combo.currentData()
-        assert window.zone_panel.scenario_combo.currentData() == window.selection_bus.current.scenario
+        assert window.time_window_panel.scenario_combo.currentData() == window.selection_bus.current.scenario
         # RC polish: time sync is visibility-gated (only the shown analysis tab
         # animates live). Show the height panel, then a published time syncs its
         # frame slider.
