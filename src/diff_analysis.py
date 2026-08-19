@@ -5,8 +5,8 @@ across the *whole* timeline, as a curve -- showing when two scenarios
 diverge, not just by how much at the current frame.
 
 Pure computation is module-level (vectorized, no I/O); the dialog is a
-thin static plot, same isolation convention as forecasting_panel.py
-(never wired to TimeController).
+thin static plot, same isolation convention as every other static-analysis
+panel (never wired to TimeController).
 """
 
 from __future__ import annotations

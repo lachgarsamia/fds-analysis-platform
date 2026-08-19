@@ -1,7 +1,7 @@
 """Frame Descriptor Engine (V3 Phase 0, Fire Intelligence Layer).
 
-Per-*frame* scalar physics (as opposed to signatures.py's per-*cell*
-temporal maps): for every timestep, a handful of numbers describing the
+Per-*frame* scalar physics (as opposed to a per-*cell* temporal map): for
+every timestep, a handful of numbers describing the
 state of the fire -- spatial max/mean, hot-area fraction, smoke-layer
 height, mean temperature gradient, and their frame-to-frame rates of
 change. This `(n_frames, n_descriptors)` table is the raw material for

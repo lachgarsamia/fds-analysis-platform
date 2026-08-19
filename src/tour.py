@@ -24,18 +24,15 @@ STEPS = [
 
 SETTINGS_KEY = "tour/completed"
 
-# Analysis page's own coach-mark (roadmap A4): 2 steps, pointing at the
-# group tabs (the page's main organizing structure -- 6 groups by research
-# question) and the collapsed Experimental group specifically, since that
-# one's a different interaction pattern (a toggle button, not a tab) from
-# everything else on the page and easy to miss entirely.
+# Analysis page's own coach-mark (roadmap A4): 1 step, pointing at the
+# group tabs (the page's main organizing structure -- 5 groups by research
+# question). (Analysis page pruning: the second step, pointing at the
+# collapsed Experimental group's toggle button, was removed along with
+# that group.)
 ANALYSIS_STEPS = [
-    ("Six ways to investigate", "Tabs are grouped by the question they answer -- what's "
+    ("Five ways to investigate", "Tabs are grouped by the question they answer -- what's "
      "happening, how scenarios compare, what drives the response, how a quantity evolves "
      "over time and space, and reference tools."),
-    ("More tools, tucked away", "\"Experimental\" holds exploratory tools -- heuristic "
-     "saliency, causal tracing, forecasting -- collapsed by default so they don't compete "
-     "with the core workflow. Click it to expand."),
 ]
 ANALYSIS_SETTINGS_KEY = "tour/analysis_completed"
 

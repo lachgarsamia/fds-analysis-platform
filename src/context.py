@@ -86,29 +86,18 @@ def _related_graph_nodes(app, selection: Selection) -> list:
     return nodes
 
 
-def _related_cause_chain(app, selection: Selection) -> list:
-    """The Cause Explorer's last-computed chain, only when the researcher
-    has already traced a hot spot near the selected point in that panel --
-    already-cached on the panel (no new store read; context.py never
-    touches the store), consistent with "if available" rather than a
-    fresh trace on every selection change."""
-    panel = getattr(app, "cause_panel", None)
-    if panel is None or selection.point is None:
-        return []
-    if not _near(getattr(panel, "_last_point", None), selection.point):
-        return []
-    return list(getattr(panel, "_last_insights", None) or [])
-
-
 def _point_story(app, selection: Selection) -> str:
-    """A short combined paragraph for the selected point (Analysis-
-    improvement roadmap Phase C): a local measurement/zone reading + the
-    Cause Explorer's chain, if available. Every clause reuses an existing
-    engine's own already-computed result -- nothing here fabricates a new
-    number. Empty string if nothing applies (no point selected, or
-    nothing related found yet). (Analysis page pruning: used to also lead
-    with the nearest Narrative event -- removed along with narrative_panel
-    itself, not just hidden.)"""
+    """A short paragraph for the selected point (Analysis-improvement
+    roadmap Phase C): a local measurement/zone reading, if available.
+    Reuses an existing engine's own already-computed result -- nothing
+    here fabricates a new number. Empty string if nothing applies (no
+    point selected, or nothing related found yet). (Analysis page pruning:
+    used to also lead with the nearest Narrative event -- removed along
+    with narrative_panel itself, not just hidden. Later also dropped its
+    Cause Explorer chain clause when the Experimental group -- including
+    cause_panel.py -- was removed outright: that state was never
+    session-persisted, just the live panel's last interactive trace, so
+    nothing was left to serve it.)"""
     if selection.point is None:
         return ""
     sentences = []
@@ -123,9 +112,6 @@ def _point_story(app, selection: Selection) -> str:
             reading = f"inside zone \"{zones[0].name}\""
     if reading is not None:
         sentences.append(f"Local reading: {reading}")
-    chain = _related_cause_chain(app, selection)
-    if chain:
-        sentences.append(f"Cause trace (association, not causation): {chain[-1].statement}")
     if not sentences:
         return ""
     return " ".join(sentences)

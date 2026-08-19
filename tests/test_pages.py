@@ -70,32 +70,16 @@ class TestPageLifecycle:
 class TestAnalysisPageGrouping:
     """Analysis section consolidation Phase 1: tabs re-grouped by research
     question (Overview & Interpretation / Compare & Discover / Probe &
-    Measure / Factors & Sensitivity / Spatiotemporal Analysis), with
-    Experimental collapsed by default. Reference & Communication
-    (Quantities/Graph/Ask) was a sixth group here until a later product
-    decision removed it entirely -- see pages/analysis.py's own comment
-    on _GROUPS. graph_content is still accepted as a constructor param
-    (main_window.py still passes it) but no longer forms any tab, which
-    is exactly what test_only_supplied_panels_form_a_group already
-    covers generically for any unreferenced content -- not re-asserted
-    per-panel here."""
-
-    def test_panels_are_grouped_and_experimental_starts_collapsed(self, qapp):
-        page = AnalysisPage(
-            spatiotemporal_content=QtWidgets.QLabel("Spatiotemporal"),
-            study_content=QtWidgets.QLabel("Study"),
-            compare_presets_content=QtWidgets.QLabel("Compare Presets"),
-            fire_mri_content=QtWidgets.QLabel("Fire MRI"),
-            attention_content=QtWidgets.QLabel("Attention"))
-        assert page.tabs.count() == 4
-        group_names = [page.tabs.tabText(i) for i in range(page.tabs.count())]
-        assert group_names == ["Compare & Discover", "Factors & Sensitivity",
-                               "Spatiotemporal Analysis", "Experimental"]
-        experimental = page.tabs.widget(group_names.index("Experimental"))
-        assert experimental.tabs.count() == 2   # Fire MRI, Attention
-        assert experimental.tabs.isHidden()     # collapsed by default
-        experimental.toggle.setChecked(True)
-        assert not experimental.tabs.isHidden()
+    Measure / Factors & Sensitivity / Spatiotemporal Analysis). Reference &
+    Communication (Quantities/Graph/Ask) was a sixth group here until a
+    later product decision removed it entirely, and Experimental (Fire
+    MRI/Attention/Why is it hot?/Forecasting, collapsed by default) was
+    removed outright by Analysis page pruning's last item -- see
+    pages/analysis.py's own comment on _GROUPS. graph_content is still
+    accepted as a constructor param (main_window.py still passes it) but
+    no longer forms any tab, which is exactly what
+    test_only_supplied_panels_form_a_group already covers generically for
+    any unreferenced content -- not re-asserted per-panel here."""
 
     def test_graph_content_no_longer_forms_a_tab(self, qapp):
         """Reference & Communication was removed entirely -- graph_content
@@ -117,17 +101,6 @@ class TestAnalysisPageGrouping:
                             study_content=QtWidgets.QLabel("Study"))
         assert page.tabs.count() == 2
         assert page.tabs.tabText(0) == "Overview & Interpretation"
-
-    def test_show_tab_reveals_nested_panel_and_expands_experimental(self, qapp):
-        fire_mri = QtWidgets.QLabel("Fire MRI")
-        page = AnalysisPage(fire_mri_content=fire_mri,
-                            attention_content=QtWidgets.QLabel("Attention"),
-                            study_content=QtWidgets.QLabel("Study"))
-        page.show_tab(fire_mri)
-        experimental = page.tabs.currentWidget()
-        assert page.tabs.tabText(page.tabs.currentIndex()) == "Experimental"
-        assert experimental.tabs.currentWidget() is fire_mri
-        assert not experimental.tabs.isHidden()   # auto-expanded on reveal
 
     def test_show_tab_reveals_a_panel_nested_inside_a_workspace_wrapper(self, qapp):
         """Phase 4+: a workspace wrapper (e.g. ProbeMeasurePanel) nests its

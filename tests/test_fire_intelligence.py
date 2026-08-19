@@ -1,5 +1,9 @@
 """Tests for the V3 Fire Intelligence Layer foundation (Phase 0):
-signatures.py, descriptors.py, events.py, insight.py."""
+descriptors.py, events.py, insight.py. (Analysis page pruning, last item:
+signatures.py -- and its own TestSignatures class here -- was removed
+along with fire_mri_panel.py/the Experimental group; descriptors.py/
+events.py are independent, unrelated modules that happen to share this
+test file.)"""
 
 import os
 import sys
@@ -9,7 +13,6 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-import signatures as sg  # noqa: E402
 import descriptors as dc  # noqa: E402
 import events as ev  # noqa: E402
 from insight import Insight  # noqa: E402
@@ -29,50 +32,6 @@ def _ramp_data():
     a = np.array([20, 100, 200, 300, 300], dtype=np.float32)
     b = np.full(5, 20.0, dtype=np.float32)
     return np.stack([a, b], axis=1).reshape(5, 1, 2)
-
-
-class TestSignatures:
-    def test_peak_and_time_of_peak(self):
-        s = sg.compute_signatures(_ramp_data(), EXTENT, fps=2, levels=(100, 300), ambient_c=20.0)
-        np.testing.assert_allclose(s.map("peak")[0], [300.0, 20.0])
-        # cell A first reaches 300 at frame 3 -> t = 1.5 s at fps 2
-        assert s.map("time_of_peak")[0, 0] == pytest.approx(1.5)
-
-    def test_first_crossing_and_duration(self):
-        s = sg.compute_signatures(_ramp_data(), EXTENT, fps=2, levels=(100, 300), ambient_c=20.0)
-        # strict >100 (app convention): frame 1 is exactly 100, so the
-        # first crossing is frame 2 (200) -> t = 1.0 s; cell B is never inf
-        assert s.map("first_crossing_100")[0, 0] == pytest.approx(1.0)
-        assert np.isinf(s.map("first_crossing_100")[0, 1])
-        # frames strictly above 300: none (peak is exactly 300) -> 0 s
-        assert s.map("duration_above_300")[0, 0] == 0.0
-        # frames strictly above 100: frames 2,3,4 -> 3 * 0.5 s = 1.5 s
-        assert s.map("duration_above_100")[0, 0] == pytest.approx(1.5)
-
-    def test_thermal_dose_is_time_integral_of_excess(self):
-        s = sg.compute_signatures(_ramp_data(), EXTENT, fps=2, levels=(100,), ambient_c=20.0)
-        # cell A excess over ambient: [0,80,180,280,280]; * dt(0.5) summed = 410
-        assert s.map("thermal_dose")[0, 0] == pytest.approx(410.0)
-        assert s.map("thermal_dose")[0, 1] == 0.0
-
-    def test_at_cell_returns_all_channels(self):
-        s = sg.compute_signatures(_ramp_data(), EXTENT, fps=2, levels=(100,), ambient_c=20.0)
-        d = s.at_cell(0, 0)
-        assert "peak" in d and "thermal_dose" in d and d["peak"] == 300.0
-
-    def test_first_arrival_isochrone_monotone_outward_from_source(self):
-        # A wavefront that reaches column c at frame c (source at column 0),
-        # so first-arrival time increases with distance from the source --
-        # the property the Fire MRI isochrones visualize.
-        n_x = 6
-        data = np.full((n_x, 1, n_x), 20.0, dtype=np.float32)
-        for t in range(n_x):
-            for c in range(n_x):
-                if t >= c:
-                    data[t, 0, c] = 100.0
-        s = sg.compute_signatures(data, (0.0, 1.0, 0.0, 0.1), fps=1, levels=(50,), ambient_c=20.0)
-        arrival = s.map("first_crossing_50")[0]
-        assert np.all(np.diff(arrival) > 0), "first-arrival time must increase outward"
 
 
 class TestDescriptors:
@@ -126,8 +85,12 @@ class TestInsight:
 
 @requires_real_dataset
 class TestCrossValidationAgainstSummaryStats:
-    """Honesty rule: derived signatures/events must agree with the
-    already-trusted per-scenario statistics."""
+    """Honesty rule: derived events must agree with the already-trusted
+    per-scenario statistics. (Analysis page pruning, last item: the two
+    signatures.py-based tests that lived here -- signature peak vs.
+    summary max temp, and the disk-cache round-trip -- were removed along
+    with signatures.py itself; this one test, on descriptors.py/events.py,
+    is unrelated and stays.)"""
 
     def _sim(self):
         from data_provider import load_simulation_data
@@ -135,15 +98,6 @@ class TestCrossValidationAgainstSummaryStats:
         if sim.is_demo:
             pytest.skip("real dataset not present")
         return sim
-
-    def test_signature_peak_equals_summary_max_temp(self):
-        from summary_stats import compute_scenario_summary
-        sim = self._sim()
-        entry = sim.manifest[0]
-        summary = compute_scenario_summary(entry, sim.store, sim.timesteps_per_second)
-        s = sg.load_signatures(sim.store, entry.case_index, DEFAULT_SLICE_KEY,
-                               sim.timesteps_per_second)
-        assert float(s.map("peak").max()) == pytest.approx(summary.max_temp_c, abs=0.5)
 
     def test_event_threshold_time_matches_summary(self):
         from summary_stats import compute_scenario_summary
@@ -158,18 +112,6 @@ class TestCrossValidationAgainstSummaryStats:
         if summary.time_to_100c_s is not None:
             assert crossing is not None
             assert crossing.primary_time() == pytest.approx(summary.time_to_100c_s, abs=0.5)
-
-    def test_load_signatures_disk_cache_roundtrip(self, tmp_path):
-        sim = self._sim()
-        entry = sim.manifest[0]
-        cache_dir = str(tmp_path / "sigcache")
-        s1 = sg.load_signatures(sim.store, entry.case_index, DEFAULT_SLICE_KEY,
-                                sim.timesteps_per_second, cache_dir=cache_dir,
-                                source_folder=entry.path)
-        s2 = sg.load_signatures(sim.store, entry.case_index, DEFAULT_SLICE_KEY,
-                                sim.timesteps_per_second, cache_dir=cache_dir,
-                                source_folder=entry.path)
-        np.testing.assert_allclose(s1.map("peak"), s2.map("peak"))
 
 
 class TestInspectorStory:
@@ -390,126 +332,6 @@ class TestQueryRealData:
         ins = qe.execute(qe.Query("extreme", "TEMPERATURE"), data, extent,
                          sim.timesteps_per_second)[0]
         assert ins.value == pytest.approx(summary.max_temp_c, abs=0.5)
-
-
-import attention as at  # noqa: E402
-
-
-class TestAttention:
-    def test_static_field_is_near_empty(self):
-        static = np.full((4, 5, 5), 100.0, dtype=np.float32)  # nothing changes
-        sal = at.attention_series(static, fps=4)
-        assert sal.shape == (4, 5, 5)
-        assert float(sal.max()) == 0.0  # stable -> near-empty
-
-    def test_active_region_glows_stable_stays_dark(self):
-        d = np.full((3, 5, 5), 20.0, dtype=np.float32)
-        d[1, 2, 2] = 300.0            # a spike in the middle at frame 1
-        sal = at.attention_series(d, fps=4)
-        assert 0.0 <= sal.min() and sal.max() == pytest.approx(1.0)
-        # the spike's neighbourhood is far brighter than a quiet corner
-        assert sal[1][1:4, 1:4].max() > sal[1, 0, 0]
-
-    def test_velocity_and_hrr_cues_optional(self):
-        temp = np.random.default_rng(0).random((4, 4, 4)).astype(np.float32) * 100
-        base = at.attention_series(temp, fps=4)
-        vel = np.random.default_rng(1).random((4, 4, 4)).astype(np.float32)
-        hrr = np.array([0.0, 1.0, 3.0, 2.0])
-        withcues = at.attention_series(temp, vel, hrr, fps=4)
-        assert base.shape == withcues.shape  # cues add signal, don't change shape
-        assert float(withcues.max()) == pytest.approx(1.0)
-
-
-@requires_real_dataset
-class TestAttentionRealData:
-    """DoD: the source/plume region dominates the attention over the run."""
-
-    def test_most_active_region_is_the_source(self):
-        from data_provider import load_simulation_data
-        sim = load_simulation_data()
-        if sim.is_demo:
-            pytest.skip("real dataset not present")
-        e = sim.manifest[0]
-        temp = np.asarray(sim.store.get(e.case_index, DEFAULT_SLICE_KEY))
-        extent = sim.store.get_extent(e.case_index, DEFAULT_SLICE_KEY)
-        sal = at.attention_series(temp, fps=sim.timesteps_per_second)
-        mean_sal = sal.mean(axis=0)
-        n_z, n_x = mean_sal.shape
-        row, col = np.unravel_index(int(np.argmax(mean_sal)), mean_sal.shape)
-        x = extent[0] + col / (n_x - 1) * (extent[1] - extent[0])
-        assert x > 0.70  # the candle/plume region, not the cold left side
-
-
-import cause_explorer as ce  # noqa: E402
-
-
-class TestCauseExplorer:
-    def _sourced_field(self):
-        # A single hot source at (0,0); temperature falls off with distance.
-        n = 5
-        f = np.zeros((n, n), dtype=np.float32)
-        for r in range(n):
-            for c in range(n):
-                f[r, c] = max(20.0, 300.0 - 20.0 * np.hypot(r, c))
-        return f
-
-    def test_trace_is_monotonic_and_ends_at_source(self):
-        f = self._sourced_field()
-        path = ce.trace_to_source(f, 4, 4)
-        temps = [f[r, c] for r, c in path]
-        assert all(temps[k + 1] >= temps[k] for k in range(len(temps) - 1))
-        assert path[-1] == (0, 0)  # the hottest cell / source
-
-    def test_explain_chain_reaches_source_and_labels_association(self):
-        f = self._sourced_field()
-        insights, path = ce.explain(f, (0.0, 1.0, 0.0, 1.0), time_s=5.0, row=4, col=4)
-        assert len(insights) >= 2
-        assert "source" in insights[-1].statement.lower()
-        # honesty gate: the tracing is labelled association, not causation
-        assert any("association" in i.basis.lower() and "not proven causation" in i.basis.lower()
-                   for i in insights)
-        # navigable: the last step points at the source location
-        assert insights[-1].location is not None
-
-    def test_cold_cell_has_no_source_to_trace(self):
-        f = np.full((4, 4), 20.0, dtype=np.float32)
-        insights, path = ce.explain(f, (0, 1, 0, 1), 0.0, 3, 3)
-        assert len(insights) == 1 and "near ambient" in insights[0].statement
-        assert len(path) == 1
-
-    def test_local_maximum_is_reported_as_a_source(self):
-        f = self._sourced_field()
-        insights, _p = ce.explain(f, (0, 1, 0, 1), 0.0, 0, 0)  # pick the source itself
-        assert "itself the hottest" in insights[-1].statement.lower()
-
-
-@requires_real_dataset
-class TestCauseRealData:
-    """DoD: a hot plume cell traces back toward the fire source; the
-    tracing is gated as association, not proven causation."""
-
-    def test_hot_cell_traces_to_the_candle_source(self):
-        from data_provider import load_simulation_data
-        sim = load_simulation_data()
-        if sim.is_demo:
-            pytest.skip("real dataset not present")
-        e = sim.manifest[0]
-        data = np.asarray(sim.store.get(e.case_index, DEFAULT_SLICE_KEY))
-        extent = sim.store.get_extent(e.case_index, DEFAULT_SLICE_KEY)
-        fi = int(data.shape[0] * 0.6)
-        frame = data[fi]
-        gr, gc = np.unravel_index(int(np.argmax(frame)), frame.shape)
-        # pick a hot (>100 C) cell that is not the global maximum
-        hot = np.argwhere((frame > 100) & ~((np.arange(frame.shape[0])[:, None] == gr)
-                                             & (np.arange(frame.shape[1])[None, :] == gc)))
-        if hot.size == 0:
-            pytest.skip("no secondary hot cell to trace")
-        pr, pc = hot[np.argmin(hot[:, 0])]
-        insights, path = ce.explain(frame, extent, fi / sim.timesteps_per_second, int(pr), int(pc))
-        # traces back to the source, near the candle band (x > 0.7)
-        src = insights[-1].location
-        assert src is not None and src[0] > 0.70
-        assert any("not proven causation" in i.basis.lower() for i in insights)
 
 
 import height_analysis as haz  # noqa: E402

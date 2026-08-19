@@ -51,19 +51,15 @@ from browser import ExperimentBrowserDock, _SummaryTextWorker
 from analytics_panel import AnalyticsPanelDock, _AnalyticsFeatureWorker
 from auto_summary import export_markdown, generate_summary
 from prediction_store import PredictionSource
-from forecasting_panel import ForecastingPanel
 from timeseries import TimeSeriesPanel
 from energy_panel import EnergyBudgetPanel
 from factor_effects_panel import FactorEffectsPanel
-from fire_mri_panel import FireMRIPanel
 from figure_export import (PublicationExportDialog, export_publication_figure,
                            provenance_line, figure_png_bytes)
 from report_builder import (build_scenario_report, build_comparison_report,
                             build_session_report, write_report)
 from semantic_diff import compare as compare_scenarios, difference_statements
 from query_panel import QueryPanel
-from attention_panel import AttentionPanel
-from cause_panel import CausePanel
 from height_panel import HeightPanel
 import zone_stats as zs
 from time_window_panel import TimeWindowPanel
@@ -882,22 +878,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._analysis_quantity_options_with_computed(), self.sim_data.timesteps_per_second,
                 field_fn=self._field_fn_for_analysis_panels(), extent_fn=self._extent_for)
             self.energy_panel = EnergyBudgetPanel(self.sim_data.manifest)
-            # Fire MRI (V3-M1): per-scenario temporal signature maps.
-            self.fire_mri_panel = FireMRIPanel(
-                self.controller.store, self.sim_data.manifest,
-                self._quantity_options(), self.sim_data.timesteps_per_second)
             # Physics query engine (V3-M4). Takes the provider, not the raw
             # store (Analysis roadmap C9): a gated quantity then raises
             # GatedQuantityError cleanly instead of the store attempting a
             # read for data that was never extracted.
             self.query_panel = QueryPanel(
                 self.quantity_provider, self.sim_data.manifest, self.sim_data.timesteps_per_second)
-            # Physics attention map (V3-M6): heuristic saliency, per frame.
-            self.attention_panel = AttentionPanel(
-                self.controller.store, self.sim_data.manifest, self.sim_data.timesteps_per_second)
-            # Cause explorer (V3-M7, gated): why-is-it-hot gradient tracing.
-            self.cause_panel = CausePanel(
-                self.controller.store, self.sim_data.manifest, self.sim_data.timesteps_per_second)
             # Height-aware analysis workspace (V4-M1): vertical profiles,
             # smoke layer, plume, ceiling jet.
             self.height_panel = HeightPanel(
@@ -1026,10 +1012,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.factor_effects_panel = None
             self.study_panel = None
             self.sensitivity_panel = None
-            self.fire_mri_panel = None
             self.query_panel = None
-            self.attention_panel = None
-            self.cause_panel = None
             self.height_panel = None
             self.time_window_panel = None
             self.probe_measure_panel = None
@@ -1060,11 +1043,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 on_shown=self._on_analysis_page_shown,
                 history_bar=self._build_history_nav_bar(),
                 settings=self.settings,
-                forecasting_content=ForecastingPanel(
-                    self.prediction_store, self.controller.store, self.sim_data.manifest),
-                fire_mri_content=self.fire_mri_panel,
-                attention_content=self.attention_panel,
-                cause_content=self.cause_panel,
                 spatiotemporal_content=self.spatiotemporal_panel,
                 probe_measure_content=self.probe_measure_panel,
                 compare_presets_content=self.compare_presets_panel,
@@ -1152,10 +1130,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._seek_from_bus = False
         fps = self.time_controller.timesteps_per_second
         for attr in ("height_panel", "time_window_panel",
-                     "fire_mri_panel",
-                     "query_panel", "attention_panel", "cause_panel",
+                     "query_panel",
                      "factor_effects_panel", "timeseries_panel",
-                     "energy_panel", "forecasting_panel", "quantities_panel",
+                     "energy_panel", "quantities_panel",
                      "study_panel",
                      "spacetime_panel",
                      "device_panel", "velocity_panel", "streamline_panel", "dashboard_panel",
@@ -1358,7 +1335,6 @@ class MainWindow(QtWidgets.QMainWindow):
             ("inspector", "story_list"), ("height_panel", "insights"),
             ("time_window_panel", "insights"),
             ("query_panel", "results"),
-            ("cause_panel", "chain"),
         ):
             panel = getattr(self, panel_attr, None)
             insight_list = getattr(panel, list_attr, None) if panel is not None else None

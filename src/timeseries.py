@@ -6,7 +6,7 @@ profile at a chosen frame), with multi-scenario overlay and CSV export.
 This is the app's first non-heatmap analysis surface: everything here is
 a pure in-memory reduction of arrays ScenarioStore already caches -- no
 new data paths, no connection to TimeController (same static-panel
-convention as analytics_panel.py/forecasting_panel.py).
+convention as analytics_panel.py).
 
 Pure computation helpers live at module level so they are unit-testable
 without Qt; the panel widget only wires them to clicks and combos.

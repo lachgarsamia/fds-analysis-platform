@@ -68,8 +68,16 @@ from tour import ANALYSIS_STEPS, ANALYSIS_SETTINGS_KEY, TourOverlay, mark_tour_c
 # - Factors & Sensitivity: "what drives the observed response?"
 # - Spatiotemporal Analysis: "how does a quantity evolve across time
 #   and/or space?"
-# The lower-confidence/exploratory tools (Experimental, collapsed by
-# default) are unchanged from Phase D.
+# Analysis page pruning, item 9 (last of Phase C): the Experimental group
+# (Fire MRI, Attention, Why is it hot?, Forecasting -- each individually
+# gated/heuristic/exploratory) was removed outright, panels and engines
+# both (fire_mri_panel.py/signatures.py, attention_panel.py/attention.py,
+# cause_panel.py/cause_explorer.py, forecasting_panel.py) -- along with
+# _EXPERIMENTAL and the _CollapsibleGroup wrapper that gave it its
+# collapsed-by-default toggle, since nothing else used that mechanism.
+# prediction_store.py stays: it's also used independently by the
+# Experiment Browser's "View model prediction" button (main_window.py's
+# _open_browser_model_eval), not exclusive to the removed Forecasting tab.
 #
 # Reference & Communication (Quantities/Graph/Ask) was removed entirely by
 # direct product decision. Quantities/Graph/Ask are still constructed in
@@ -88,45 +96,12 @@ _GROUPS = [
     ("Factors & Sensitivity", ["Study"]),
     ("Spatiotemporal Analysis", ["Field & Time Explorer", "Space-time", "Smoke-Layer Motion"]),
 ]
-# Fire MRI, Attention, Why is it hot?, and Forecasting are each individually
-# gated/heuristic/exploratory (per-panel disclaimers already say so) --
-# grouped together and collapsed by default rather than competing for
-# attention with the core workflow.
-_EXPERIMENTAL = ["Fire MRI", "Attention", "Why is it hot?", "Forecasting"]
-
-
-class _CollapsibleGroup(QtWidgets.QWidget):
-    """A tab-group that starts collapsed (Phase D: the Experimental group)
-    -- a checkable toggle button shows/hides the inner QTabWidget, instead
-    of it competing for attention with the four always-open groups."""
-
-    def __init__(self, inner_tabs: QtWidgets.QTabWidget, parent=None):
-        super().__init__(parent)
-        self.tabs = inner_tabs
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-        self.toggle = QtWidgets.QPushButton("▶ Show experimental panels")
-        self.toggle.setCheckable(True)
-        self.toggle.setChecked(False)
-        self.toggle.toggled.connect(self._on_toggled)
-        layout.addWidget(self.toggle)
-        inner_tabs.setVisible(False)
-        layout.addWidget(inner_tabs, 1)
-
-    def _on_toggled(self, checked: bool) -> None:
-        self.tabs.setVisible(checked)
-        self.toggle.setText("▼ Hide experimental panels" if checked
-                            else "▶ Show experimental panels")
-
-    def expand(self) -> None:
-        self.toggle.setChecked(True)
 
 
 class _PanelJumpDialog(QtWidgets.QDialog):
     """Ctrl+K-style "type to jump" (roadmap A2): a filterable list of every
     leaf panel AnalysisPage.show_tab() can already reveal, so finding a
-    tool doesn't require remembering which of the 6 groups it lives under.
+    tool doesn't require remembering which of the 5 groups it lives under.
     Pure UI over that existing navigation primitive -- selecting an entry
     just calls show_tab(widget), the same call every other cross-
     navigation hand-off in this app already uses; nothing new is taught
@@ -185,20 +160,15 @@ class _PanelJumpDialog(QtWidgets.QDialog):
 class AnalysisPage(Page):
     title = "Analysis"
     # Phase D: a tab switch at ANY level (outer group, or a group's own
-    # inner tab, or expanding the collapsed Experimental group) must still
-    # trigger the RC-polish "resend the current selection" catch-up
-    # (main_window.py's freeze-while-hidden mechanism) -- previously that
-    # was one flat QTabWidget's currentChanged; grouping adds two more
-    # places a panel can go from hidden to visible.
+    # inner tab) must still trigger the RC-polish "resend the current
+    # selection" catch-up (main_window.py's freeze-while-hidden mechanism)
+    # -- previously that was one flat QTabWidget's currentChanged; grouping
+    # adds one more place a panel can go from hidden to visible.
     tab_shown = QtCore.pyqtSignal()
 
     def __init__(self, on_shown: Optional[Callable[[], None]] = None,
                  history_bar: QtWidgets.QWidget = None,
                  settings: QtCore.QSettings = None,
-                 forecasting_content: QtWidgets.QWidget = None,
-                 fire_mri_content: QtWidgets.QWidget = None,
-                 attention_content: QtWidgets.QWidget = None,
-                 cause_content: QtWidgets.QWidget = None,
                  spatiotemporal_content: QtWidgets.QWidget = None,
                  probe_measure_content: QtWidgets.QWidget = None,
                  compare_presets_content: QtWidgets.QWidget = None,
@@ -245,13 +215,9 @@ class AnalysisPage(Page):
             ("Graph", graph_content),
             ("Quantities", quantities_content),
             ("Ask", ask_content),
-            ("Fire MRI", fire_mri_content),
-            ("Attention", attention_content),
-            ("Why is it hot?", cause_content),
             ("Compare Presets", compare_presets_content),
             ("PCA / Clustering", clustering_content),
             ("Study", study_content),
-            ("Forecasting", forecasting_content),
         ]
         by_label = dict(sections)
         available = [(label, w) for label, w in sections if w is not None]
@@ -304,25 +270,6 @@ class AnalysisPage(Page):
             for group_label, member_labels in _GROUPS:
                 add_group(group_label, member_labels)
 
-            experimental = [(lbl, by_label[lbl]) for lbl in _EXPERIMENTAL
-                            if by_label.get(lbl) is not None]
-            if experimental:
-                inner = QtWidgets.QTabWidget()
-                inner.currentChanged.connect(lambda _i: self.tab_shown.emit())
-                for lbl, w in experimental:
-                    inner.addTab(w, lbl)
-                collapsible = _CollapsibleGroup(inner)
-                collapsible.toggle.toggled.connect(
-                    lambda checked: self.tab_shown.emit() if checked else None)
-                # Breadcrumb-only fix, separate from the tab_shown emit above
-                # on purpose: tab_shown also drives main_window.py's
-                # selection-resend, and collapsing doesn't need that resend
-                # (nothing new became visible) -- so this refreshes just the
-                # breadcrumb's own display, unconditionally on either
-                # direction, without changing what tab_shown itself means.
-                collapsible.toggle.toggled.connect(lambda _checked: self._update_breadcrumb())
-                self.tabs.addTab(collapsible, "Experimental")
-
             layout.addWidget(self.tabs, 1)
             self._update_breadcrumb()  # tab_shown only fires on a *change*; set the initial text now
 
@@ -353,11 +300,11 @@ class AnalysisPage(Page):
         """[(display_name, widget), ...] for every leaf show_tab() can
         reveal -- the enumerate-everything counterpart to _reveal_in's
         find-one-thing, walking the identical structure: a group's own
-        inner QTabWidget, a further sub-tab QTabWidget a panel exposes as
+        inner QTabWidget, or a further sub-tab QTabWidget a panel exposes as
         its own `.tabs` (Study, Spatial Probes, Field & Time Explorer all
-        do -- picked up here for free, not hardcoded per panel), or
-        _CollapsibleGroup's wrapped `.tabs` (Experimental). display_name is
-        "Group › Panel" (and one level deeper for a panel's own sub-tabs),
+        do -- picked up here for free, not hardcoded per panel).
+        display_name is "Group › Panel" (and one level deeper for a panel's
+        own sub-tabs),
         so two identically-named leaves in different places -- none exist
         today -- would still read as distinct entries."""
         out = []
@@ -380,13 +327,7 @@ class AnalysisPage(Page):
         panel owns internally (e.g. Study's own Factor influence/
         Correlation/Factor effects/Sensitivity sub-tabs) aren't reflected
         here -- doing that would mean reaching into each panel's own
-        widget tree, which tab_shown's existing emit sites don't cover.
-        Known gap: collapsing the Experimental group back down doesn't
-        re-emit tab_shown (see its toggle.toggled connection above, `if
-        checked else None`), so the breadcrumb can be briefly stale until
-        the next real tab change -- not fixed here to avoid changing that
-        signal's existing emission behavior for its other listener
-        (main_window.py's selection resend)."""
+        widget tree, which tab_shown's existing emit sites don't cover."""
         tabs = getattr(self, "tabs", None)
         if tabs is None:
             return
@@ -396,11 +337,7 @@ class AnalysisPage(Page):
         group_label = tabs.tabText(group_idx)
         content = tabs.currentWidget()
         panel_label = None
-        if isinstance(content, _CollapsibleGroup):
-            if content.toggle.isChecked():
-                inner = content.tabs
-                panel_label = inner.tabText(inner.currentIndex())
-        elif isinstance(content, QtWidgets.QTabWidget):
+        if isinstance(content, QtWidgets.QTabWidget):
             panel_label = content.tabText(content.currentIndex())
         self._breadcrumb.setText(f"{group_label} › {panel_label}" if panel_label else group_label)
 
@@ -409,10 +346,9 @@ class AnalysisPage(Page):
         Tabs are grouped into an outer QTabWidget of QTabWidgets, some of
         which are themselves thin workspace wrappers over further nested
         QTabWidgets (Compare & Discover/Probe & Measure/... consolidation
-        phases), or a collapsible wrapper (Experimental) -- searches to
-        whatever depth `widget` is actually nested at, selecting every tab
-        along the path and expanding any collapsible wrapper found there,
-        so the revealed tab is actually visible."""
+        phases) -- searches to whatever depth `widget` is actually nested
+        at, selecting every tab along the path, so the revealed tab is
+        actually visible."""
         tabs = getattr(self, "tabs", None)
         if tabs is None or widget is None:
             return
@@ -422,9 +358,11 @@ class AnalysisPage(Page):
     def _reveal_in(container: QtWidgets.QTabWidget, widget: QtWidgets.QWidget) -> bool:
         """Recursively find `widget` inside `container` or any QTabWidget
         nested inside its tabs (directly, or via a wrapper's own `.tabs`
-        attribute -- see _CollapsibleGroup and every Phase 3+ consolidation
-        wrapper). Selects every tab along the path and calls each
-        container's own `expand()` if it has one. Returns True if found."""
+        attribute -- see every Phase 3+ consolidation wrapper). Selects
+        every tab along the path and calls each container's own `expand()`
+        if it has one (no wrapper defines one today; kept generic rather
+        than removed since it costs nothing unused). Returns True if
+        found."""
         idx = container.indexOf(widget)
         if idx >= 0:
             container.setCurrentIndex(idx)

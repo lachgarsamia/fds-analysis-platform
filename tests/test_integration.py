@@ -2340,40 +2340,6 @@ class TestPendingKeyRace:
         window.close()
 
 
-class TestFireMRIPanel:
-    """V3-M1: Fire MRI temporal-signature panel on the Analysis page."""
-
-    def test_panel_channels_probe_and_isochrones(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            assert getattr(window, "fire_mri_panel", None) is None
-            window.close()
-            return
-        panel = window.fire_mri_panel
-        assert panel is not None
-        panel.ensure_loaded()
-        assert panel.scenario_combo.count() == len(sim_data.manifest)
-        # signature channels are populated (peak, dose, arrivals, durations)
-        names = [panel.channel_combo.itemData(i) for i in range(panel.channel_combo.count())]
-        assert "peak" in names and "thermal_dose" in names
-        assert any(n.startswith("first_crossing_") for n in names)
-        # peak channel's maximum equals the trusted per-scenario peak temperature
-        from summary_stats import compute_scenario_summary
-        summary = compute_scenario_summary(sim_data.manifest[0], sim_data.store,
-                                            sim_data.timesteps_per_second)
-        assert float(panel._sig.map("peak").max()) == pytest.approx(summary.max_temp_c, abs=0.5)
-        # isochrone overlay renders without error
-        panel.isochrone_check.setChecked(True)
-        # probe readout populates from a physical point
-        class _Evt:
-            inaxes = panel._ax
-            xdata, ydata = 0.9, 0.1
-        panel._on_move(_Evt())
-        assert "peak" in panel.probe_label.text()
-        window.close()
-
-
 class TestFireStory:
     """V3-M2: Fire Evolution Timeline wired into Live (markers + story +
     click-to-seek)."""
@@ -2483,123 +2449,6 @@ class TestQueryPanel:
         panel._run()
         assert panel.results.count() == 0
         assert "Not understood" in panel.answer_label.text()
-        window.close()
-
-
-class TestAttentionPanel:
-    """V3-M6: physics attention map panel (heuristic saliency)."""
-
-    def test_panel_builds_renders_and_labels_honestly(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            assert getattr(window, "attention_panel", None) is None
-            window.close()
-            return
-        panel = window.attention_panel
-        panel.ensure_loaded()
-        assert panel.scenario_combo.count() == len(sim_data.manifest)
-        assert panel._series is not None and panel._image is not None
-        # values are a normalized saliency in [0, 1]
-        assert 0.0 <= float(panel._series.min()) and float(panel._series.max()) <= 1.0 + 1e-6
-        from attention_panel import _DISCLAIMER
-        assert "not a physical field" in _DISCLAIMER.lower()
-        window.close()
-
-
-class TestCausePanel:
-    """V3-M7: cause explorer panel (gated)."""
-
-    def test_click_produces_a_labelled_cause_chain(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            assert getattr(window, "cause_panel", None) is None
-            window.close()
-            return
-        panel = window.cause_panel
-        panel.ensure_loaded()
-        from cause_panel import _DISCLAIMER
-        assert "not proven causation" in _DISCLAIMER.lower()
-        # click the hottest cell's location -> a chain appears
-        data = np.asarray(sim_data.store.get(sim_data.manifest[0].case_index, DEFAULT_SLICE_KEY))
-        extent = sim_data.store.get_extent(sim_data.manifest[0].case_index, DEFAULT_SLICE_KEY)
-        fi = panel.frame_slider.value()
-        gr, gc = np.unravel_index(int(np.argmax(data[fi])), data[fi].shape)
-        n_z, n_x = data[fi].shape
-
-        class _Evt:
-            inaxes = panel._ax
-            xdata = extent[0] + gc / (n_x - 1) * (extent[1] - extent[0])
-            ydata = extent[3] - gr / (n_z - 1) * (extent[3] - extent[2])
-        panel._on_click(_Evt())
-        assert panel.chain.count() >= 1
-        window.close()
-
-    def test_changing_the_frame_does_not_crash_the_application(self, qapp):
-        """Regression: frame_slider.valueChanged used to be wired directly
-        to _render(self, trace=None) -- QSpinBox.valueChanged(int) passes
-        its new value positionally, so every frame change delivered the
-        raw frame index into `trace`; `if trace and ...: for r, c in
-        trace:` then raised TypeError (`'int' object is not iterable`) for
-        any nonzero frame. This is an ordinary Python exception (confirmed
-        by direct reproduction with faulthandler -- no native frames
-        involved), not a native/segfault crash, so this plain assertion is
-        genuine, full protection against it recurring."""
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            window.close()
-            return
-        panel = window.cause_panel
-        panel.ensure_loaded()
-        for value in (1, 2, panel.frame_slider.maximum(), 0, 5):
-            panel.frame_slider.setValue(value)  # must not raise
-        window.close()
-
-    def test_open_render_close_reopen_cycle(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            window.close()
-            return
-        panel = window.cause_panel
-        window.pages["analysis"].show_tab(panel)
-        panel.ensure_loaded()
-        panel.frame_slider.setValue(3)
-        panel.hide()
-        panel.show()
-        panel.frame_slider.setValue(7)  # still works after hide/reshow
-        window.close()
-
-    def test_switching_analysis_view_away_and_back_still_works(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            window.close()
-            return
-        panel = window.cause_panel
-        window.pages["analysis"].show_tab(panel)
-        panel.ensure_loaded()
-        window.pages["analysis"].show_tab(window.study_panel)  # switch away
-        window.pages["analysis"].show_tab(panel)                # and back
-        panel.frame_slider.setValue(4)
-        assert panel._data is not None
-        window.close()
-
-    def test_changing_scenario_and_timestep_while_visible_keeps_the_app_usable(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            window.close()
-            return
-        panel = window.cause_panel
-        window.pages["analysis"].show_tab(panel)
-        panel.ensure_loaded()
-        panel.scenario_combo.setCurrentIndex(min(2, panel.scenario_combo.count() - 1))
-        panel.frame_slider.setValue(min(6, panel.frame_slider.maximum()))
-        window.selection_bus.update(origin=None, time_s=1.0)
-        assert panel._data is not None
         window.close()
 
 
@@ -4492,21 +4341,24 @@ class TestUnifiedWorkspace:
         assert window.selection_bus.current.scenario == 1
         window.close()
 
-    def test_point_story_combines_measurement_and_cause_chain(self, qapp):
+    def test_point_story_combines_measurement_and_zone_reading(self, qapp):
         """Analysis-improvement roadmap Phase C: the synthesized point-story
-        pulls a local reading (already-cached, no new store read) and the
-        Cause Explorer's last-traced chain (only when it's near the
-        selected point) into one paragraph. UX consolidation pass: the
-        standalone Context tab that used to display this was removed as
-        low-value, but context.gather_context (the data layer) is kept --
-        still exercised directly here, and reusable by future consumers.
-        (Analysis final-polish pass: the "local reading" source used to be
-        a disposable Quick Probe measurement -- now removed, see
+        pulls a local reading (already-cached, no new store read) into one
+        paragraph. UX consolidation pass: the standalone Context tab that
+        used to display this was removed as low-value, but
+        context.gather_context (the data layer) is kept -- still exercised
+        directly here, and reusable by future consumers. (Analysis
+        final-polish pass: the "local reading" source used to be a
+        disposable Quick Probe measurement -- now removed, see
         measurement_panel.py's removal -- so this uses a Zone instead,
         _related_measurements' now-permanent [] falls through to
-        _related_zones exactly as context.py's own fallback order does.)"""
+        _related_zones exactly as context.py's own fallback order does.
+        Analysis page pruning, last item: this test used to also cover a
+        "Cause trace" clause from the Experimental group's cause_panel --
+        removed along with that group and _related_cause_chain() itself,
+        since that state was never session-persisted, just the live
+        panel's last interactive trace.)"""
         import zone_stats as zst
-        from insight import Insight
         from selection import Selection
         from context import gather_context
         window = MainWindow(load_simulation_data())
@@ -4519,16 +4371,6 @@ class TestUnifiedWorkspace:
         sel = Selection(scenario=case_index, point=(1.0, 1.0))
         story = gather_context(window, sel)["point_story"]
         assert 'inside zone "P1"' in story
-        # Cause chain absent until traced near this point -> no cause-trace clause yet.
-        assert "Cause trace" not in story
-        cp = window.cause_panel
-        cp.ensure_loaded()
-        cp._last_point = (1.0, 1.0)
-        cp._last_insights = [Insight("It traces back to the hottest connected point (400 °C).",
-                                     category="cause", quantity="TEMPERATURE")]
-        sel2 = Selection(scenario=case_index, time_s=1.0, point=(1.0, 1.0001))
-        story = gather_context(window, sel2)["point_story"]
-        assert "Cause trace" in story and "hottest connected point" in story
         window.close()
 
     def test_history_ignores_playback_ticks_and_own_replay(self, qapp):
