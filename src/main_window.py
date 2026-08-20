@@ -2001,14 +2001,25 @@ class MainWindow(QtWidgets.QMainWindow):
         volumetric `.s3d` SOOT DENSITY data is present (M2.2), a smoke
         plane (the side view on the app's usual y=0 plane), which *does*
         change where by design. Demo mode has no real .smv to inspect, so
-        it falls back to a single TEMPERATURE entry."""
+        it falls back to a single TEMPERATURE entry.
+
+        Also filters out anything the registry still marks gated=True
+        (e.g. V-VELOCITY), even if it's physically present in the .smv --
+        the M-SIM Stage 1 re-run (fds/sim_stage1_prep/) genuinely has
+        V-VELOCITY on disk now, but it's reserved for the 3D vector
+        overlay (velocity_panel.py's V6-M7 "color by V" toggle), never
+        meant to be a plain selectable heatmap quantity. Registry gating
+        is the single source of truth for that distinction, independent
+        of what a given scenario's raw file inventory happens to contain."""
+        from registry import get_quantity
         if self.sim_data.manifest:
             try:
                 path = self.sim_data.manifest[0].path
                 infos = available_slices(path)
                 matching = [i for i in infos
                             if i.key.direction == DEFAULT_SLICE_KEY.direction
-                            and i.key.offset == DEFAULT_SLICE_KEY.offset]
+                            and i.key.offset == DEFAULT_SLICE_KEY.offset
+                            and not get_quantity(i.key.quantity).gated]
                 if matching:
                     matching.sort(key=lambda i: i.key.quantity != DEFAULT_SLICE_KEY.quantity)
                     return matching + self._discover_soot_planes(path)
