@@ -1186,6 +1186,11 @@ class MainWindow(QtWidgets.QMainWindow):
             # device_panel.py -- this panel has no frame_slider for the
             # generic bind_to_bus sync to hook).
             self.velocity_panel.set_bus(self.selection_bus)
+        if self.streamline_panel is not None:
+            # Analysis dynamic-visualizations pass: same set_bus precedent
+            # as device_panel.py/velocity_panel.py -- this panel has no
+            # other signals to wire (no placed probes).
+            self.streamline_panel.set_bus(self.selection_bus)
         # V6-M4 Investigation History: records every *meaningful* selection
         # (skips its own back/forward replay via the `self.history` sentinel
         # origin, and MainWindow's own playback-tick echo via `self` -- time_s

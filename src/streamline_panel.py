@@ -32,6 +32,13 @@ load_data.py's np.flip(axis=1) and views.py's SliceView docstring.
 ax.streamplot() requires a strictly *increasing* y-coordinate array, so
 each frame is flipped vertically (row reindexing only -- W's sign, and
 therefore its physical up/down meaning, is untouched) before the call.
+
+Live playback (Analysis dynamic-visualizations pass): the whole streamplot
+follows Selection.time_s via set_bus() -- same pattern as
+device_panel.py/velocity_panel.py (state_at()-equivalent frame indexing,
+isVisible()-gated redraw). Unlike those two, there's no separate
+locator-background-vs-overlay split here (no placed probes, nothing to
+click) -- the entire rendered content is the live frame.
 """
 
 from __future__ import annotations
@@ -64,6 +71,8 @@ class StreamlinePanel(QtWidgets.QWidget):
         self._loaded = False
         self._fields: dict = {}         # case_index -> vel.VectorField (successfully computed)
         self._gate_reasons: dict = {}   # case_index -> str
+        self._bus = None
+        self._current_index = 0    # live playback frame -- see set_bus()
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -117,7 +126,30 @@ class StreamlinePanel(QtWidgets.QWidget):
     # ------------------------------------------------------------- lifecycle
     def showEvent(self, event):
         super().showEvent(event)
+        was_loaded = self._loaded
         self.ensure_loaded()
+        if was_loaded:
+            # Not the first show (ensure_loaded already rendered that case):
+            # catch up on whatever frame playback moved to while this tab
+            # was hidden and set_bus()'s isVisible() gate was skipping it.
+            self._render()
+
+    def set_bus(self, bus) -> None:
+        """Follow the shared playback frame (Selection.time_s), same
+        set_bus precedent as device_panel.py/velocity_panel.py -- this
+        panel has no frame_slider for the generic bind_to_bus sync to
+        hook. One-way: this panel never publishes a selection, only
+        reacts."""
+        self._bus = bus
+        bus.changed.connect(self._on_selection)
+        self._on_selection(bus.current, None)
+
+    def _on_selection(self, sel, origin) -> None:
+        if origin is self or sel.time_s is None:
+            return
+        self._current_index = max(0, int(round(sel.time_s * self._fps)))
+        if self._loaded and self.isVisible():
+            self._render()
 
     def ensure_loaded(self) -> None:
         if self._loaded or not self._manifest:
@@ -173,9 +205,10 @@ class StreamlinePanel(QtWidgets.QWidget):
             return
         self.status.setText("")
 
-        # Same fixed-frame convention as VelocityPanel (a representative,
-        # well-developed point in the run, not the cold t=0 frame).
-        frame_index = int(field.n_frames * 0.6)
+        # Live frame (Analysis dynamic-visualizations pass): field.u/w/speed
+        # are indexed directly below (unlike VelocityPanel's quiver_at()/
+        # streamline_at(), which clamp internally), so clamp here.
+        frame_index = min(max(self._current_index, 0), field.n_frames - 1)
         x0, x1, z0, z1 = field.extent
 
         # Row 0 of u/w is the ceiling (z1); streamplot needs an increasing
@@ -211,7 +244,8 @@ class StreamlinePanel(QtWidgets.QWidget):
         ax.set_ylim(z0, z1)
         ax.set_aspect("auto")
         ax.set_xticks([]); ax.set_yticks([])
-        ax.set_title(f"Streamlines · density {self.density_spin.value():.1f}", fontsize=8)
+        t_s = frame_index / self._fps
+        ax.set_title(f"Streamlines · density {self.density_spin.value():.1f} · t={t_s:.1f}s", fontsize=8)
 
         fig.subplots_adjust(top=0.92, bottom=0.03, left=0.03, right=0.97)
         self.canvas.draw_idle()
