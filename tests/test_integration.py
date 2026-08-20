@@ -1623,10 +1623,14 @@ class TestIntegration:
         window.close()
 
     def test_switching_quantity_updates_isotherm_levels(self, qapp):
-        """TEMPERATURE has default hazard-band levels; VELOCITY has speed-
-        band levels (config.ISOTHERM_LEVELS) -- switching quantity on an
-        isotherm-enabled active cell must pick up the new quantity's own
-        levels, not keep the stale ones."""
+        """TEMPERATURE has its own dense, log-spaced contour-overlay levels
+        (Analysis dynamic-visualizations pass, Tier 2:
+        config.CONTOUR_OVERLAY_LEVELS, separate from the coarser
+        config.ISOTHERM_LEVELS hazard bands still used by scenario-report/
+        publication-export); VELOCITY has no dense set of its own, so it
+        falls back to its hazard_levels speed-bands unchanged -- switching
+        quantity on an isotherm-enabled active cell must pick up the new
+        quantity's own levels, not keep the stale ones."""
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo:
@@ -1634,7 +1638,7 @@ class TestIntegration:
         window.isotherms_action.setChecked(True)
         window._set_isotherms_enabled(True)
         cell = window.view_grid.active_cell()
-        assert cell.view._isotherm_levels == [60, 100, 300]
+        assert cell.view._isotherm_levels == [30, 45, 60, 85, 120, 170, 245, 345, 490]
 
         window.quantity_combo.setCurrentIndex(1)  # switch to Air speed (VELOCITY)
 

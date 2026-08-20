@@ -42,7 +42,18 @@ class QuantityInfo:
     slider_min: int
     slider_max: int
     slider_default: int  # initial colour-scale ceiling
-    hazard_levels: tuple = ()   # isotherm/contour bands (empty = none)
+    hazard_levels: tuple = ()   # fire-safety threshold bands (events.py, hazard_spaces.py,
+                                 # query_engine.py, height_panel.py, semantic_diff.py, and the
+                                 # scenario-report/publication-export "labeled isotherms" --
+                                 # never repurpose this for overlay-only density; see
+                                 # contour_overlay_levels below)
+    contour_overlay_levels: tuple = ()   # Analysis dynamic-visualizations pass, Tier 2: dense,
+                                 # log-spaced levels for the *live* View-menu Contour overlay
+                                 # specifically (views.py's _redraw_isotherms) -- separate from
+                                 # hazard_levels on purpose, empty falls back to hazard_levels
+                                 # (see registry.contour_overlay_dict()) so a quantity without
+                                 # its own dense set (VELOCITY today) keeps its existing bands
+                                 # unchanged.
     kind: str = "slice2d"
     interpretation: str = ""    # one-line "what this means" for the Quantities panel
     gated: bool = False         # True -> data not available yet (see gate_reason)
@@ -71,6 +82,18 @@ QUANTITY_REGISTRY = {
         "TEMPERATURE", "Temperature", "°C", "viridis", AMBIENT_C,
         slider_min=50, slider_max=1000, slider_default=int(AMBIENT_C + 150),
         hazard_levels=(60, 100, 300), kind="slice2d",
+        # Analysis dynamic-visualizations pass, Tier 2: log-spaced (not
+        # linear), grounded directly in the real 24-scenario dataset --
+        # 99.4% of sampled cell-values across all 24 scenarios/multiple
+        # frames sit in the bottom 20% of the observed range, so linear
+        # levels would visually crowd into the ambient band and say
+        # nothing about the hot core. np.geomspace(30, 490, 9), rounded:
+        # 30/45 bracket the p75-p90 range (29.3/37.6 C measured), 60/85
+        # bracket p95-p99 (48.0/84.7 C), 120/170/245 bracket p99.9 (244.8
+        # C), 345/490 bracket the true 24-scenario peak (469.3 C, must sit
+        # *inside* the top bracket, not above it, or the hottest cells
+        # lose their contour entirely).
+        contour_overlay_levels=(30, 45, 60, 85, 120, 170, 245, 345, 490),
         interpretation="Gas temperature; drives buoyancy, the smoke layer, and the "
                        "convected-heat hazard (60/100/300 °C bands)."),
     "VELOCITY": QuantityInfo(
@@ -283,6 +306,23 @@ def display_dict() -> dict:
 def isotherm_dict() -> dict:
     """The legacy `config.ISOTHERM_LEVELS` shape, derived from the
     registry -- only quantities that declare hazard bands appear (SOOT has
-    none, so it's absent, matching the pre-registry behaviour)."""
+    none, so it's absent, matching the pre-registry behaviour). Used by
+    the scenario-report/publication-export "labeled isotherms" and every
+    hazard_levels consumer that reads it indirectly this way -- for the
+    live View-menu Contour overlay specifically, see
+    contour_overlay_dict() instead."""
     return {name: list(q.hazard_levels) for name, q in QUANTITY_REGISTRY.items()
             if q.hazard_levels and _is_real(q)}
+
+
+def contour_overlay_dict() -> dict:
+    """Levels for the live View-menu Contour overlay (views.py's
+    _redraw_isotherms) specifically -- a quantity's own
+    contour_overlay_levels if it declares one (TEMPERATURE, Analysis
+    dynamic-visualizations pass: dense, log-spaced, tuned to the real
+    24-scenario dataset -- see its own comment), else falling back to
+    hazard_levels unchanged (VELOCITY today, and any future quantity that
+    doesn't need a denser set than its hazard bands)."""
+    return {name: list(q.contour_overlay_levels or q.hazard_levels)
+            for name, q in QUANTITY_REGISTRY.items()
+            if (q.contour_overlay_levels or q.hazard_levels) and _is_real(q)}

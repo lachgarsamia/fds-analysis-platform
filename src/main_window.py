@@ -26,7 +26,8 @@ import numpy as np
 from PyQt5 import QtCore, QtGui, QtWidgets
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
-from config import DEFAULT_CANDLES, DEFAULT_DOOR, DEFAULT_VOD, DEFAULT_VOC, QUANTITY_DISPLAY, ISOTHERM_LEVELS, AMBIENT_C
+from config import (DEFAULT_CANDLES, DEFAULT_DOOR, DEFAULT_VOD, DEFAULT_VOC, QUANTITY_DISPLAY,
+                    ISOTHERM_LEVELS, CONTOUR_OVERLAY_LEVELS, AMBIENT_C)
 from theme import THEMES, apply_card_shadow, build_qss
 from widgets import CollapsibleSection
 from simulation_controller import SimulationController
@@ -2252,8 +2253,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _apply_contour_overlay_state(self, cell):
         """Sync one cell's contour overlays to their global View-menu
-        toggles and quantity-specific levels (config.ISOTHERM_LEVELS) --
-        called for every cell whenever any toggle changes, and once for
+        toggles and quantity-specific levels (config.CONTOUR_OVERLAY_LEVELS
+        -- Analysis dynamic-visualizations pass, Tier 2: separate from
+        config.ISOTHERM_LEVELS, which stays on the coarser hazard bands
+        for the scenario-report/publication-export "labeled isotherms")
+        -- called for every cell whenever any toggle changes, and once for
         each cell right after its view is first initialized. Three
         independent overlays: the cell's own quantity's isotherms/speed-
         bands (drawn on itself), the opt-in VELOCITY overlay (GUI
@@ -2262,7 +2266,7 @@ class MainWindow(QtWidgets.QMainWindow):
         both of the latter only for a "slice" cell currently showing
         TEMPERATURE."""
         quantity = cell.quantity_key.quantity if cell.quantity_key else None
-        levels = ISOTHERM_LEVELS.get(quantity, [])
+        levels = CONTOUR_OVERLAY_LEVELS.get(quantity, [])
         cell.view.set_isotherm_levels(levels)
         cell.view.set_isotherms_enabled(getattr(self, "_isotherms_enabled", False))
 

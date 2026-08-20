@@ -33,7 +33,13 @@ SCENARIO_CACHE_SIZE = 6
 # it so every existing `config.QUANTITY_DISPLAY[q]['cmap']` /
 # `config.ISOTHERM_LEVELS.get(q)` / `config.AMBIENT_C` call site is
 # unchanged; new code should prefer registry.get_quantity(q).
-from registry import AMBIENT_C, QUANTITY_REGISTRY, display_dict, isotherm_dict  # noqa: E402,F401
+from registry import (AMBIENT_C, QUANTITY_REGISTRY, display_dict, isotherm_dict,  # noqa: E402,F401
+                      contour_overlay_dict)
 
 QUANTITY_DISPLAY = display_dict()
 ISOTHERM_LEVELS = isotherm_dict()
+# Analysis dynamic-visualizations pass, Tier 2: the live View-menu Contour
+# overlay's own levels -- separate from ISOTHERM_LEVELS (still used by the
+# scenario-report/publication-export "labeled isotherms", deliberately
+# left on the coarser hazard bands). See registry.contour_overlay_dict().
+CONTOUR_OVERLAY_LEVELS = contour_overlay_dict()
