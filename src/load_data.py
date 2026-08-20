@@ -21,10 +21,15 @@ SOOT_DISPLAY_SCALE = 1.0e6
 # a human-readable display unit as-is, unlike SOOT DENSITY's kg/m3.
 _VOLUME_QUANTITIES = (SOOT_QUANTITY, HRRPUV_QUANTITY)
 
-# fds/sim/ is resolved relative to this file, not the process cwd, so the
-# loader works regardless of where the application is launched from.
+# fds/sim_stage1_prep/ is resolved relative to this file, not the process
+# cwd, so the loader works regardless of where the application is launched
+# from. Switched from fds/sim/ (2-quantity TEMPERATURE/VELOCITY-only data)
+# to the M-SIM Stage 1 Pleiades re-run, which adds real per-scenario
+# U-VELOCITY/V-VELOCITY/W-VELOCITY/DENSITY/HRRPUV across all 24 scenarios
+# -- see manifest.py's _resolve_scenario_path() for how each scenario's
+# actual output folder (the "_stage1_pleiades" sibling) gets resolved.
 _SRC_DIR = os.path.dirname(os.path.abspath(__file__))
-SIM_ROOT = os.path.join(_SRC_DIR, '..', 'fds', 'sim')
+SIM_ROOT = os.path.join(_SRC_DIR, '..', 'fds', 'sim_stage1_prep')
 
 # Deprecated aliases for DEFAULT_SLICE_KEY's fields -- kept because
 # ScenarioStore's disk-cache filenames were already built from these names

@@ -93,7 +93,7 @@ def scan_scenarios(sim_root: str) -> list:
         entries.append(ScenarioEntry(
             case_index=case_index,
             folder=os.path.basename(os.path.normpath(folder)),
-            path=os.path.abspath(folder),
+            path=os.path.abspath(_resolve_scenario_path(folder)),
             **indices,
         ))
     return entries
@@ -102,6 +102,30 @@ def scan_scenarios(sim_root: str) -> list:
 def _has_smv(directory: str) -> bool:
     import glob
     return bool(glob.glob(os.path.join(directory, '*.smv')))
+
+
+# M-SIM Stage 1 re-run (fds/sim_stage1_prep/, see transfer_all.sh): each
+# scenario folder now exists twice on disk -- the bare c<n>_d<n>_vod<n>_
+# voc<n> name is just the submitted job (the .fds input + start_job.batch,
+# no output), and the actual .smv/.sf/.s3d output scp'd back from the
+# Pleiades cluster lands in a "<name>_stage1_pleiades" sibling. Resolving
+# to the sibling here (rather than renaming/moving anything on disk) keeps
+# factor parsing working off the bare name while pointing ScenarioEntry.path
+# at wherever the readable data actually is.
+_STAGE1_SUFFIX = "_stage1_pleiades"
+
+
+def _resolve_scenario_path(folder: str) -> str:
+    """Prefer `folder + _STAGE1_SUFFIX` when it has real FDS output and the
+    bare `folder` doesn't -- e.g. fds/sim_stage1_prep/'s placeholder job
+    folders. Falls back to `folder` unchanged otherwise (e.g. fds/sim/,
+    where the bare folder already has real output directly, no sibling
+    involved), so this never changes resolution for a dataset that isn't
+    laid out this way."""
+    sibling = folder + _STAGE1_SUFFIX
+    if not _has_smv(folder) and _has_smv(sibling):
+        return sibling
+    return folder
 
 
 def scan_generic_study(root: str) -> list:
@@ -180,7 +204,13 @@ def get_manifest(sim_root: str, manifest_path: str = None, force_regenerate: boo
             # manifest was written under an old checkout path) -- sim_root
             # is what's actually being scanned right now, so it's the one
             # source of truth for where these folders live on this machine.
-            return [replace(e, path=os.path.abspath(os.path.join(sim_root, e.folder)))
+            # Re-applying _resolve_scenario_path (not just os.path.join)
+            # here too: a bare re-join would silently undo the "_stage1_
+            # pleiades sibling" redirect baked into the manifest the first
+            # time it was written, reverting every reload back to the
+            # data-less placeholder folder.
+            return [replace(e, path=os.path.abspath(
+                        _resolve_scenario_path(os.path.join(sim_root, e.folder))))
                     for e in entries]
         except (OSError, ValueError, KeyError, TypeError) as e:
             logger.warning("manifest at %s is unreadable (%s); regenerating", manifest_path, e)
