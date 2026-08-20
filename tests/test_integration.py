@@ -4140,7 +4140,13 @@ class TestTrueVelocity:
     the full non-gated pipeline without fabricating anything in production
     code."""
 
-    def test_placing_a_probe_on_the_real_dataset_is_gated(self, qapp):
+    def test_placing_a_probe_on_the_real_dataset_computes_real_speed(self, qapp):
+        """M-SIM Stage 1 landed real, cross-validated U/W-VELOCITY for all
+        24 scenarios (see manifest.py's dataset-switch commit) -- a probe
+        on the real provider now computes an actual reading instead of
+        being gated. Structural check only (finite, non-negative values);
+        verifying the underlying physics claims is a separate follow-up,
+        not this test's job."""
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo:
@@ -4151,9 +4157,11 @@ class TestTrueVelocity:
         p.ensure_loaded()
         p._place(1.0, 1.0)
         probe = p._probes[0]
-        assert probe.gated is True
-        assert "M-SIM" in probe.results["reason"] or "msim" in probe.results["reason"].lower()
-        assert "M-SIM" in p.status.text() or "msim" in p.status.text().lower()
+        assert probe.gated is False
+        speed = probe.results["speed_m_s"]
+        assert len(speed) > 0
+        assert all(np.isfinite(v) and v >= 0.0 for v in speed)
+        assert p.status.text() == ""
         window.close()
 
     def test_gate_explanation_names_missing_quantities_and_research_value(self, qapp):
@@ -4176,16 +4184,21 @@ class TestTrueVelocity:
         for use in ("Smoke transport", "Ventilation", "Recirculation", "Plume", "Streamlines"):
             assert use in text
 
-    def test_get_vector_still_raises_gated_quantity_error(self, qapp):
-        """V6-M3 must not weaken the gate: the real provider still raises."""
-        from quantity_provider import GatedQuantityError
+    def test_get_vector_now_returns_real_arrays(self, qapp):
+        """M-SIM Stage 1 landed (dataset-switch commit): U-VELOCITY/
+        W-VELOCITY are real and cross-validated for all 24 scenarios now,
+        so the real provider's get_vector() must actually return them,
+        not raise GatedQuantityError -- this used to assert the opposite
+        (the gate holding), back when fds/sim/ had neither component."""
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo:
             window.close()
             return
-        with pytest.raises(GatedQuantityError):
-            window.quantity_provider.get_vector(0)
+        u, w = window.quantity_provider.get_vector(0)
+        assert u.shape == w.shape
+        assert u.shape[0] > 0
+        assert np.all(np.isfinite(u)) and np.all(np.isfinite(w))
         window.close()
 
     def test_synthetic_provider_renders_quiver_and_streamline(self, qapp):
