@@ -4,7 +4,8 @@ import logging
 import numpy as np
 
 import fds.slice.slice as fds
-from slice_key import SliceKey, DEFAULT_SLICE_KEY, SOOT_QUANTITY, DIRECTION_TO_AXIS
+from slice_key import (SliceKey, DEFAULT_SLICE_KEY, SOOT_QUANTITY, HRRPUV_QUANTITY,
+                       DIRECTION_TO_AXIS)
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +15,11 @@ logger = logging.getLogger(__name__)
 # TEMPERATURE's degrees. The low-level fds/s3d reader stays in kg/m3
 # (its cross-validated unit); only this display-facing loader scales.
 SOOT_DISPLAY_SCALE = 1.0e6
+
+# HRRPUV (Analysis dynamic-visualizations pass, Tier 2) has no analogous
+# display-scale need -- its native `.smv`-declared unit is already kW/m3,
+# a human-readable display unit as-is, unlike SOOT DENSITY's kg/m3.
+_VOLUME_QUANTITIES = (SOOT_QUANTITY, HRRPUV_QUANTITY)
 
 # fds/sim/ is resolved relative to this file, not the process cwd, so the
 # loader works regardless of where the application is launched from.
@@ -32,17 +38,18 @@ OFFSET = DEFAULT_SLICE_KEY.offset
 def load_data(root_dir: str, key: SliceKey = DEFAULT_SLICE_KEY) -> np.ndarray:
     """Load one slice for one scenario folder, shape (n_times, n_row, n_col).
 
-    For SOOT DENSITY (M2.2) the data is a plane extracted from the
-    volumetric `.s3d` files (key.plane_pos gives the physical position
-    along key.direction's axis) rather than a `.sf` slice -- already
-    ceiling-first flipped by extract_soot_plane, so it's not re-flipped
-    here, and scaled to mg/m3 for display.
+    For SOOT DENSITY (M2.2) and HRRPUV (Analysis dynamic-visualizations
+    pass, Tier 2) the data is a plane extracted from the volumetric `.s3d`
+    files (key.plane_pos gives the physical position along key.direction's
+    axis) rather than a `.sf` slice -- already ceiling-first flipped by
+    extract_volume_plane, so it's not re-flipped here. Only SOOT DENSITY
+    gets the mg/m3 display rescale; HRRPUV's native kW/m3 needs none.
     """
-    if key.quantity == SOOT_QUANTITY:
-        from fds.s3d.s3d import extract_soot_plane
+    if key.quantity in _VOLUME_QUANTITIES:
+        from fds.s3d.s3d import extract_volume_plane
         axis = DIRECTION_TO_AXIS[key.direction]
-        _times, _extent, frames = extract_soot_plane(root_dir, axis=axis, offset=key.plane_pos)
-        return frames * SOOT_DISPLAY_SCALE
+        _times, _extent, frames = extract_volume_plane(root_dir, key.quantity, axis=axis, offset=key.plane_pos)
+        return frames * SOOT_DISPLAY_SCALE if key.quantity == SOOT_QUANTITY else frames
     data = fds.readDataOnly(root_dir, direction=key.direction, offset=key.offset, quantity=key.quantity)
     data = np.flip(data, axis=1)
     return data
@@ -50,10 +57,10 @@ def load_data(root_dir: str, key: SliceKey = DEFAULT_SLICE_KEY) -> np.ndarray:
 
 def load_slice_geometry(root_dir: str, key: SliceKey = DEFAULT_SLICE_KEY):
     """Return (mesh, extent, mask) for one slice without reading frame data."""
-    if key.quantity == SOOT_QUANTITY:
-        from fds.s3d.s3d import soot_plane_geometry
+    if key.quantity in _VOLUME_QUANTITIES:
+        from fds.s3d.s3d import volume_plane_geometry
         axis = DIRECTION_TO_AXIS[key.direction]
-        return soot_plane_geometry(root_dir, axis=axis, offset=key.plane_pos)
+        return volume_plane_geometry(root_dir, key.quantity, axis=axis, offset=key.plane_pos)
     return fds.readSliceGeometry(root_dir, direction=key.direction, offset=key.offset, quantity=key.quantity)
 
 

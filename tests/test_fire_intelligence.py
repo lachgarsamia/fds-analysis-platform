@@ -959,7 +959,7 @@ class TestQuantityBreadth:
         assert regm.quantity_status("TEMPERATURE RISE") == "derived"
         assert regm.quantity_status("PRESSURE") == "gated"
         assert set(regm.available_quantities()) == {
-            "TEMPERATURE", "VELOCITY", "SOOT DENSITY", "U-VELOCITY", "W-VELOCITY", "DENSITY"}
+            "TEMPERATURE", "VELOCITY", "SOOT DENSITY", "HRRPUV", "U-VELOCITY", "W-VELOCITY", "DENSITY"}
         assert "U-VELOCITY" not in regm.gated_quantities()
         assert "W-VELOCITY" not in regm.gated_quantities()
         assert "V-VELOCITY" in regm.gated_quantities()  # still gated -- no V-VELOCITY output exists
@@ -968,9 +968,9 @@ class TestQuantityBreadth:
     def test_legacy_views_exclude_gated_and_derived(self):
         # config's derived views must still see only the original real quantities
         assert set(regm.display_dict()) == {
-            "TEMPERATURE", "VELOCITY", "SOOT DENSITY", "U-VELOCITY", "W-VELOCITY", "DENSITY"}
+            "TEMPERATURE", "VELOCITY", "SOOT DENSITY", "HRRPUV", "U-VELOCITY", "W-VELOCITY", "DENSITY"}
         assert set(regm.isotherm_dict()) <= {
-            "TEMPERATURE", "VELOCITY", "SOOT DENSITY", "U-VELOCITY", "W-VELOCITY", "DENSITY"}
+            "TEMPERATURE", "VELOCITY", "SOOT DENSITY", "HRRPUV", "U-VELOCITY", "W-VELOCITY", "DENSITY"}
         assert "PRESSURE" not in regm.display_dict()
         assert "TEMPERATURE RISE" not in regm.isotherm_dict()
 

@@ -42,7 +42,7 @@ from inspector import InspectorPanel, InspectorStack
 from export import AnimationExporter, ffmpeg_available
 from load_data import SIM_ROOT
 from slice_key import (SliceInfo, SliceKey, DEFAULT_SLICE_KEY, available_slices,
-                        SOOT_QUANTITY, AXIS_TO_DIRECTION)
+                        SOOT_QUANTITY, HRRPUV_QUANTITY, AXIS_TO_DIRECTION)
 from views import ViewGrid, DifferenceView, EnsembleView
 from cell_sync import sync_cell, sync_ceiling_mask, sync_timeseries_strip
 from summary_stats import build_summary_index, _read_hrr_csv
@@ -504,7 +504,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.isotherms_action = QtWidgets.QAction("Contour overlay", self, checkable=True)
         self.isotherms_action.setToolTip(
             "Draw contour lines at fixed reference levels on every visible "
-            "cell -- hazard-band thresholds (60/100/300 °C) for Temperature, "
+            "cell -- dense, log-spaced bands (30 to 490 °C) for Temperature, "
             "speed bands (1/2/3 m/s) for Air speed. Redraws each frame "
             "instead of blitting while on, so playback is slightly heavier "
             "with this enabled."
@@ -533,6 +533,18 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.soot_overlay_action.triggered.connect(self._set_soot_overlay_enabled)
         view_menu.addAction(self.soot_overlay_action)
+
+        self.hrrpuv_overlay_action = QtWidgets.QAction("Show HRRPUV (active combustion) overlay", self, checkable=True)
+        self.hrrpuv_overlay_action.setToolTip(
+            "Draw a single contour line (solid orange) around cells where real "
+            "volumetric heat release rate exceeds 50 kW/m3, on top of any cell "
+            "currently showing Temperature at the y=0 plane -- marks where "
+            "combustion is actively happening right now, distinct from Temperature's "
+            "broader convected-heat footprint (drifted hot air/smoke). Off by "
+            "default; independent of the Contour overlay toggle above."
+        )
+        self.hrrpuv_overlay_action.triggered.connect(self._set_hrrpuv_overlay_enabled)
+        view_menu.addAction(self.hrrpuv_overlay_action)
         view_menu.addSeparator()
 
         self.cinematic_action = QtWidgets.QAction("Cinematic fire view", self, checkable=True)
@@ -2258,13 +2270,15 @@ class MainWindow(QtWidgets.QMainWindow):
         config.ISOTHERM_LEVELS, which stays on the coarser hazard bands
         for the scenario-report/publication-export "labeled isotherms")
         -- called for every cell whenever any toggle changes, and once for
-        each cell right after its view is first initialized. Three
+        each cell right after its view is first initialized. Four
         independent overlays: the cell's own quantity's isotherms/speed-
         bands (drawn on itself), the opt-in VELOCITY overlay (GUI
-        modernization pass, item 6), and the opt-in real SOOT DENSITY
-        smoke overlay (continuous soot-density visualization pass) --
-        both of the latter only for a "slice" cell currently showing
-        TEMPERATURE."""
+        modernization pass, item 6), the opt-in real SOOT DENSITY smoke
+        overlay (continuous soot-density visualization pass), and the
+        opt-in HRRPUV active-combustion overlay (Analysis dynamic-
+        visualizations pass, Tier 2) -- the latter three only for a
+        "slice" cell currently showing TEMPERATURE (HRRPUV/SOOT further
+        restricted to the y=0 plane both are registered for)."""
         quantity = cell.quantity_key.quantity if cell.quantity_key else None
         levels = CONTOUR_OVERLAY_LEVELS.get(quantity, [])
         cell.view.set_isotherm_levels(levels)
@@ -2287,6 +2301,15 @@ class MainWindow(QtWidgets.QMainWindow):
             if soot_frame is not None:
                 cell.view.show_frame(cell.view.heatmap.get_array(),
                                      soot_frame=soot_frame, soot_ceiling=soot_ceiling)
+
+        hrrpuv_overlay_on = getattr(self, "_hrrpuv_overlay_enabled", False)
+        hrrpuv_applies_here = hrrpuv_overlay_on and self._hrrpuv_supported_for_cell(cell)
+        cell.view.set_hrrpuv_overlay_levels(ISOTHERM_LEVELS.get("HRRPUV", []))
+        cell.view.set_hrrpuv_overlay_enabled(hrrpuv_applies_here)
+        if hrrpuv_applies_here and cell.view.heatmap is not None:
+            hrrpuv_frame = self._hrrpuv_overlay_frame_for_cell(cell, self.time_controller.index)
+            if hrrpuv_frame is not None:
+                cell.view.show_frame(cell.view.heatmap.get_array(), hrrpuv_frame=hrrpuv_frame)
 
     def _soot_supported_for_cell(self, cell) -> bool:
         """Whether real SOOT DENSITY can meaningfully be fetched for
@@ -2334,6 +2357,41 @@ class MainWindow(QtWidgets.QMainWindow):
             self._soot_ceiling_cache[cache_key] = smoke_density.soot_ceiling(data)
         idx = min(index, data.shape[0] - 1)
         return data[idx], self._soot_ceiling_cache[cache_key]
+
+    def _hrrpuv_supported_for_cell(self, cell) -> bool:
+        """Whether real HRRPUV can meaningfully be fetched for `cell` at
+        all (Analysis dynamic-visualizations pass, Tier 2) -- a "slice"
+        cell currently showing TEMPERATURE at the y=0 plane (offset 0),
+        the one plane HRRPUV is confirmed (empirically, against the real
+        dataset, via the same extract_volume_plane path SOOT DENSITY
+        uses) to share TEMPERATURE's exact grid/frame-count for every
+        scenario. Same condition as _soot_supported_for_cell -- kept as
+        its own method rather than shared, matching this app's existing
+        convention of not coupling independently-evolving quantities'
+        gating logic (see e.g. velocity_panel.py/streamline_panel.py's
+        own duplicated _ensure_field)."""
+        quantity = cell.quantity_key.quantity if cell.quantity_key else None
+        return (cell.cell_type == "slice" and quantity == "TEMPERATURE"
+               and cell.quantity_key.direction == AXIS_TO_DIRECTION['y']
+               and cell.quantity_key.offset == 0)
+
+    def _hrrpuv_overlay_frame_for_cell(self, cell, index: int):
+        """The HRRPUV frame to overlay on `cell` at timeline `index`, or
+        None -- only ever called for a "slice" cell showing TEMPERATURE at
+        the y=0 plane (see _hrrpuv_supported_for_cell). Unlike the soot
+        overlay, no normalization ceiling is needed -- this overlay draws
+        a single fixed threshold contour (registry.py's HRRPUV
+        hazard_levels), not a continuous opacity map, so there's nothing
+        to cache beyond the store's own normal per-scenario cache."""
+        store = self._store_for_cell(cell)
+        hrrpuv_key = SliceKey(HRRPUV_QUANTITY, cell.quantity_key.direction, cell.quantity_key.offset, 0.0)
+        try:
+            data = store.get(cell.case_index, hrrpuv_key)
+        except Exception as e:  # noqa: BLE001 - overlay is a nice-to-have, must not blank the cell
+            logger.warning("hrrpuv overlay: failed to fetch HRRPUV for case %s: %s", cell.case_index, e)
+            return None
+        idx = min(index, data.shape[0] - 1)
+        return data[idx]
 
     def _velocity_overlay_frame_for_cell(self, cell, index: int):
         """The VELOCITY frame to overlay on `cell` at timeline `index` --
@@ -3206,6 +3264,21 @@ class MainWindow(QtWidgets.QMainWindow):
         the velocity overlay (see _apply_contour_overlay_state) -- any
         other cell/quantity/plane is a no-op, not an error."""
         self._soot_overlay_enabled = checked
+        for cell in self.view_grid.visible_cells():
+            self._apply_contour_overlay_state(cell)
+        if not self.time_controller.is_playing():
+            self._on_time_changed(self.time_controller.index)
+
+    def _set_hrrpuv_overlay_enabled(self, checked: bool):
+        """View -> Show HRRPUV (active combustion) overlay toggle (Analysis
+        dynamic-visualizations pass, Tier 2). Same "every visible cell"
+        reach and the same "only applies to a slice cell currently showing
+        TEMPERATURE at the y=0 plane" gating as the soot overlay (see
+        _apply_contour_overlay_state/_hrrpuv_supported_for_cell) -- any
+        other cell/quantity/plane is a no-op, not an error. Independent of
+        the isotherm/velocity/soot overlay toggles -- none of the overlays
+        in this app gate on another being on."""
+        self._hrrpuv_overlay_enabled = checked
         for cell in self.view_grid.visible_cells():
             self._apply_contour_overlay_state(cell)
         if not self.time_controller.is_playing():

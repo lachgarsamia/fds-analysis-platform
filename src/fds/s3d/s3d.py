@@ -221,12 +221,15 @@ def boundary_mesh_ids(mesh_collection, axis: str, offset: float, tol: float = 1e
     return max_matches, -1
 
 
-def _plane_layout(root_dir: str, axis: str, offset: float):
-    """Shared geometry setup for extract_soot_plane / soot_plane_geometry
-    (M2.2): resolves the target submeshes, plane axes, physical extent,
-    grid spacings, and cell counts -- everything except the (expensive)
-    per-submesh RLE data decode. Returns a dict of the pieces both
-    callers need."""
+def _plane_layout(root_dir: str, axis: str, offset: float, quantity: str = 'SOOT DENSITY'):
+    """Shared geometry setup for extract_volume_plane / volume_plane_geometry
+    (M2.2; Analysis dynamic-visualizations pass, Tier 2: generalized from
+    SOOT-only to any SMOKF3D/SMOKG3D quantity -- HRRPUV lives in the exact
+    same `.s3d`/`.sz` file family, verified directly against the real
+    dataset, not assumed): resolves the target submeshes, plane axes,
+    physical extent, grid spacings, and cell counts -- everything except
+    the (expensive) per-submesh RLE data decode. Returns a dict of the
+    pieces both callers need."""
     if axis not in _AXIS_INDEX:
         raise ValueError(f"axis must be one of {sorted(_AXIS_INDEX)}, got {axis!r}")
 
@@ -242,9 +245,9 @@ def _plane_layout(root_dir: str, axis: str, offset: float):
     target_mesh_ids = set(mesh_ids)
 
     infos = [info for info in read_smoke3d_infos(smv_path)
-              if info.quantity == 'SOOT DENSITY' and info.mesh_id in target_mesh_ids]
+              if info.quantity == quantity and info.mesh_id in target_mesh_ids]
     if not infos:
-        raise ValueError(f"no SOOT DENSITY SMOKF3D data found at {axis}={offset} in {root_dir}")
+        raise ValueError(f"no {quantity} SMOKF3D data found at {axis}={offset} in {root_dir}")
 
     row_axis, col_axis = _PLANE_AXES[axis]
     row0 = min(mesh_collection.meshes[i.mesh_id].ranges[row_axis][0] for i in infos)
@@ -267,37 +270,57 @@ def _plane_layout(root_dir: str, axis: str, offset: float):
 
 
 def soot_plane_geometry(root_dir: str, axis: str = 'y', offset: float = 0.0) -> tuple:
-    """(mesh, extent, mask)-shaped geometry for a SOOT plane, matching
+    """Back-compat alias for volume_plane_geometry(root_dir, 'SOOT DENSITY',
+    axis, offset) -- M2.2's original entry point, kept so existing
+    callers/tests are unaffected by the Tier 2 generalization below."""
+    return volume_plane_geometry(root_dir, 'SOOT DENSITY', axis, offset)
+
+
+def volume_plane_geometry(root_dir: str, quantity: str, axis: str = 'y', offset: float = 0.0) -> tuple:
+    """(mesh, extent, mask)-shaped geometry for a volumetric-quantity plane
+    (M2.2, SOOT-only; Analysis dynamic-visualizations pass, Tier 2:
+    generalized to any SMOKF3D/SMOKG3D quantity -- HRRPUV today), matching
     fds.slice.slice.readSliceGeometry's return shape so ScenarioStore's
-    get_extent() can consume it unchanged (M2.2). extent = [col0, col1,
-    row0, row1] physical meters. Computed from `.smv` mesh metadata only
-    -- no `.s3d` data decode -- so probe/isotherm coordinate mapping
-    never forces a cold volumetric read just to learn the axes, same
-    philosophy as readSliceGeometry vs readSlice."""
-    layout = _plane_layout(root_dir, axis, offset)
+    get_extent() can consume it unchanged. extent = [col0, col1, row0,
+    row1] physical meters. Computed from `.smv` mesh metadata only -- no
+    `.s3d` data decode -- so probe/isotherm coordinate mapping never
+    forces a cold volumetric read just to learn the axes, same philosophy
+    as readSliceGeometry vs readSlice."""
+    layout = _plane_layout(root_dir, axis, offset, quantity)
     c0, c1, r0, r1 = layout['extent']
     return None, [c0, c1, r0, r1], None
 
 
 def extract_soot_plane(root_dir: str, axis: str = 'y', offset: float = 0.0) -> tuple:
-    """SOOT DENSITY at an arbitrary axis-aligned plane for one scenario
-    (M2.2 -- any-plane slicing, generalizing M2.1's fixed y=0 extraction).
-    `offset` must land exactly on a mesh boundary (no interpolation
-    between mesh faces) -- same scope limit M2.1 already had for y=0,
-    now stated for any axis rather than being implicit.
+    """Back-compat alias for extract_volume_plane(root_dir, 'SOOT DENSITY',
+    axis, offset) -- M2.2's original entry point, kept so existing
+    callers/tests are unaffected by the Tier 2 generalization below."""
+    return extract_volume_plane(root_dir, 'SOOT DENSITY', axis, offset)
+
+
+def extract_volume_plane(root_dir: str, quantity: str, axis: str = 'y', offset: float = 0.0) -> tuple:
+    """`quantity` at an arbitrary axis-aligned plane for one scenario (M2.2
+    -- any-plane slicing, generalizing M2.1's fixed y=0 extraction;
+    Analysis dynamic-visualizations pass, Tier 2: generalized from
+    SOOT-only to any SMOKF3D/SMOKG3D quantity -- verified directly against
+    the real dataset that HRRPUV shares the exact same file/record format,
+    not assumed). `offset` must land exactly on a mesh boundary (no
+    interpolation between mesh faces) -- same scope limit M2.1 already had
+    for y=0, now stated for any axis rather than being implicit.
 
     Returns (times, extent, frames): extent = (col_min, col_max,
     row_min, row_max) in physical meters; frames: float32, shape
-    (n_times, n_row, n_col), kg/m3, row 0 = the row axis's *max*
-    coordinate (matches load_data.py's ceiling-first convention when
-    the row axis is z; for axis='z' slices the row axis is y and "row 0
-    = y max" is the equivalent flip, kept for consistency rather than
-    physical meaning).
+    (n_times, n_row, n_col), in `quantity`'s own native unit (kg/m3 for
+    SOOT DENSITY, kW/m3 for HRRPUV -- no unit conversion happens here),
+    row 0 = the row axis's *max* coordinate (matches load_data.py's
+    ceiling-first convention when the row axis is z; for axis='z' slices
+    the row axis is y and "row 0 = y max" is the equivalent flip, kept
+    for consistency rather than physical meaning).
 
     Stitches by physical-coordinate placement (mirrors
     fds.slice.slice.combineSliceGeometry), same as M2.1.
     """
-    layout = _plane_layout(root_dir, axis, offset)
+    layout = _plane_layout(root_dir, axis, offset, quantity)
     mesh_collection = layout['mesh_collection']
     infos = layout['infos']
     local_index = layout['local_index']

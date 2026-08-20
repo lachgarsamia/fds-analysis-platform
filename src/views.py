@@ -171,6 +171,20 @@ class SliceView:
         self._velocity_overlay_enabled = False
         self._velocity_contour_artist = None
         self._velocity_frame = None
+        # HRRPUV overlay (Analysis dynamic-visualizations pass, Tier 2): a
+        # third, independently-tracked contour -- a single "actively
+        # burning right now" boundary drawn on top of a TEMPERATURE
+        # heatmap. Same "own artist, own frame, own enabled flag, never
+        # fights over shared state" shape as the velocity overlay above,
+        # and independent of both it and the isotherm overlay -- every
+        # overlay in this app toggles on its own, none gates another.
+        # Solid orange/red (distinct from isotherms' white and velocity's
+        # dashed blue) so a viewer never confuses "the flame is here" with
+        # a temperature or speed band.
+        self._hrrpuv_overlay_levels: list = []
+        self._hrrpuv_overlay_enabled = False
+        self._hrrpuv_contour_artist = None
+        self._hrrpuv_frame = None
         # Real soot-density smoke overlay (continuous soot-density
         # visualization pass): a second, always-present-but-empty imshow
         # over the temperature heatmap, same "always present, empty by
@@ -413,7 +427,8 @@ class SliceView:
 
     def show_frame(self, frame: np.ndarray, velocity_frame: np.ndarray = None,
                     next_frame: np.ndarray = None, bloom_intensity: float = 1.0,
-                    soot_frame: np.ndarray = None, soot_ceiling: float = None) -> None:
+                    soot_frame: np.ndarray = None, soot_ceiling: float = None,
+                    hrrpuv_frame: np.ndarray = None) -> None:
         """velocity_frame (GUI modernization pass, item 6): this cell's
         VELOCITY data at the same timestep -- meaningful when the velocity
         overlay is on (drives the contour overlay) and/or cinematic mode
@@ -443,7 +458,13 @@ class SliceView:
         Inside cinematic mode, the fire pipeline's own smoke layer (see
         cinema/smoke.py) -- a visually-enhanced (smoothed) rendering of
         that same real field, not a separate/fabricated effect. Both None
-        outside either case, the default for every pre-existing caller."""
+        outside either case, the default for every pre-existing caller.
+
+        hrrpuv_frame (Analysis dynamic-visualizations pass, Tier 2): this
+        cell's real HRRPUV data at the same timestep, driving the
+        independent HRRPUV contour overlay (see set_hrrpuv_overlay_enabled)
+        -- meaningful only when that overlay is on. None otherwise, the
+        default for every pre-existing caller."""
         self._last_frame = frame
         if self._cinematic_enabled:
             self._interp_bloom_intensity = bloom_intensity
@@ -476,9 +497,11 @@ class SliceView:
                 self._update_soot_overlay(soot_frame, soot_ceiling)
         self.heatmap.set_data(display_data)
         self._velocity_frame = velocity_frame
+        self._hrrpuv_frame = hrrpuv_frame
         overlay_active = (
             (self._isotherms_enabled and self._isotherm_levels)
             or (self._velocity_overlay_enabled and self._velocity_overlay_levels and velocity_frame is not None)
+            or (self._hrrpuv_overlay_enabled and self._hrrpuv_overlay_levels and hrrpuv_frame is not None)
         )
         if overlay_active:
             # Contours redrawn per frame, full draw (blit bypass while
@@ -489,6 +512,7 @@ class SliceView:
             # exist in matplotlib's contour API.
             self._redraw_isotherms()
             self._redraw_velocity_overlay()
+            self._redraw_hrrpuv_overlay()
             self.canvas.draw_idle()
             self.canvas.capture_background()
         else:
@@ -968,6 +992,49 @@ class SliceView:
         else:
             self._velocity_contour_artist = self.ax.contour(frame, levels=levels, **style)
 
+    # ------------------------------- HRRPUV overlay (Tier 2, dynamic-vis)
+    def set_hrrpuv_overlay_levels(self, levels: list) -> None:
+        self._hrrpuv_overlay_levels = list(levels)
+
+    def set_hrrpuv_overlay_enabled(self, enabled: bool) -> None:
+        if enabled == self._hrrpuv_overlay_enabled:
+            return
+        self._hrrpuv_overlay_enabled = enabled
+        if not enabled:
+            self._clear_hrrpuv_overlay()
+            self.canvas.capture_background()
+        # else: left to the next show_frame(..., hrrpuv_frame=...) call to
+        # actually draw it -- there's no "current" HRRPUV frame to redraw
+        # from until MainWindow supplies one (same as the velocity overlay).
+
+    @property
+    def hrrpuv_overlay_enabled(self) -> bool:
+        return self._hrrpuv_overlay_enabled
+
+    def _clear_hrrpuv_overlay(self) -> None:
+        if self._hrrpuv_contour_artist is not None:
+            self._hrrpuv_contour_artist.remove()
+            self._hrrpuv_contour_artist = None
+
+    def _redraw_hrrpuv_overlay(self) -> None:
+        self._clear_hrrpuv_overlay()
+        if not self._hrrpuv_overlay_enabled or not self._hrrpuv_overlay_levels or self._hrrpuv_frame is None:
+            return
+        frame = self._hrrpuv_frame
+        levels = sorted(set(self._hrrpuv_overlay_levels))
+        # Solid orange/red, distinct from isotherms' white and velocity's
+        # dashed blue -- reads as "the flame is here", never confusable
+        # with a temperature or speed band.
+        style = dict(colors="#FF5A1F", linewidths=1.4, linestyles="solid")
+        if self._extent is not None:
+            x0, x1, z0, z1 = self._extent
+            n_z, n_x = frame.shape
+            xs = np.linspace(x0, x1, n_x)
+            zs = np.linspace(z1, z0, n_z)
+            self._hrrpuv_contour_artist = self.ax.contour(xs, zs, frame, levels=levels, **style)
+        else:
+            self._hrrpuv_contour_artist = self.ax.contour(frame, levels=levels, **style)
+
     # ------------------------ real soot-density smoke overlay ("smoke" pass)
     def set_soot_overlay_enabled(self, enabled: bool) -> None:
         if enabled == self._soot_overlay_enabled:
@@ -1194,6 +1261,19 @@ class DifferenceView:
     def velocity_overlay_enabled(self) -> bool:
         return self._inner.velocity_overlay_enabled
 
+    # HRRPUV overlay (Tier 2, dynamic-vis pass): same "never actually
+    # applies to this cell type, but delegate straight through" reasoning
+    # as the velocity overlay above.
+    def set_hrrpuv_overlay_levels(self, levels: list) -> None:
+        self._inner.set_hrrpuv_overlay_levels(levels)
+
+    def set_hrrpuv_overlay_enabled(self, enabled: bool) -> None:
+        self._inner.set_hrrpuv_overlay_enabled(enabled)
+
+    @property
+    def hrrpuv_overlay_enabled(self) -> bool:
+        return self._inner.hrrpuv_overlay_enabled
+
     # Real soot-density smoke overlay: same "never actually applies to
     # this cell type, but delegate straight through rather than crash on
     # a missing attribute" reasoning as the velocity overlay above -- see
@@ -1350,6 +1430,19 @@ class EnsembleView:
     @property
     def velocity_overlay_enabled(self) -> bool:
         return self._inner.velocity_overlay_enabled
+
+    # HRRPUV overlay (Tier 2, dynamic-vis pass): same "never actually
+    # applies to this cell type, but delegate straight through" reasoning
+    # as the velocity overlay above.
+    def set_hrrpuv_overlay_levels(self, levels: list) -> None:
+        self._inner.set_hrrpuv_overlay_levels(levels)
+
+    def set_hrrpuv_overlay_enabled(self, enabled: bool) -> None:
+        self._inner.set_hrrpuv_overlay_enabled(enabled)
+
+    @property
+    def hrrpuv_overlay_enabled(self) -> bool:
+        return self._inner.hrrpuv_overlay_enabled
 
     # Real soot-density smoke overlay: same "never actually applies to
     # this cell type, but delegate straight through rather than crash on

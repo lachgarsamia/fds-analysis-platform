@@ -137,6 +137,34 @@ QUANTITY_REGISTRY = {
         hazard_levels=(), kind="volume",
         interpretation="Soot mass concentration from the volumetric field; a proxy "
                        "for smoke obscuration."),
+    "HRRPUV": QuantityInfo(
+        # Analysis dynamic-visualizations pass, Tier 2: same volumetric
+        # `.s3d` SMOKF3D family as SOOT DENSITY (fds/s3d/s3d.py's
+        # extract_volume_plane, generalized from SOOT-only). Not surfaced
+        # as a selectable quantity anywhere -- main_window.py's
+        # _discover_quantities() only adds SOOT DENSITY's own explicit
+        # _discover_soot_planes() step, nothing analogous calls an
+        # HRRPUV-discovery step, so this entry is reachable only through
+        # the dedicated overlay path (views.py's _redraw_hrrpuv_overlay),
+        # by design -- an "actively burning right now" marker layered on
+        # the TEMPERATURE view, not a browsable field in its own right.
+        # hazard_levels is a single threshold (50 kW/m3), not a dense
+        # ladder: this overlay answers one binary question ("is
+        # combustion happening here"), not a gradient to explore -- same
+        # role VELOCITY's own hazard_levels already plays for its speed-
+        # band overlay. Grounded directly in the real 24-scenario dataset:
+        # peak is 1195.3 kW/m3, identical across every scenario sampled
+        # (the .sz sidecar's declared quantization ceiling, not a
+        # physical per-scenario variance); active-cell values cluster
+        # 56-85 kW/m3 across the sample, so 50 sits just below that
+        # cluster -- comfortably above the zero-noise floor without
+        # excluding real combustion.
+        "HRRPUV", "Heat release rate (per volume)", "kW/m³", "viridis", 0.0,
+        slider_min=50, slider_max=1200, slider_default=200,
+        hazard_levels=(50.0,), kind="volume",
+        interpretation="Volumetric heat release rate -- marks where combustion is "
+                       "actively happening right now, distinct from TEMPERATURE's "
+                       "broader convected-heat footprint."),
 
     # --- Derived quantities (computable now from the fields above) ----------
     "TEMPERATURE RISE": QuantityInfo(

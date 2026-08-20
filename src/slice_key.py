@@ -56,6 +56,11 @@ DataKey = SliceKey
 # original `.sf` slice quantities. Axis letter <-> SliceKey.direction,
 # matching fds.slice.slice's own 0=x/1=y/2=z convention.
 SOOT_QUANTITY = 'SOOT DENSITY'
+# Volumetric HRRPUV (Analysis dynamic-visualizations pass, Tier 2): same
+# `.s3d` SMOKF3D format/file family as SOOT DENSITY -- verified directly,
+# not assumed (see fds/s3d/s3d.py's extract_volume_plane) -- just a
+# different quantity name in the same on-disk records.
+HRRPUV_QUANTITY = 'HRRPUV'
 DIRECTION_TO_AXIS = {0: 'x', 1: 'y', 2: 'z'}
 AXIS_TO_DIRECTION = {v: k for k, v in DIRECTION_TO_AXIS.items()}
 
