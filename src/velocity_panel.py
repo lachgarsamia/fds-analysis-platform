@@ -24,6 +24,14 @@ The background heatmap always shows a real quantity (VELOCITY speed or
 TEMPERATURE, both non-gated) regardless of whether the vector overlay
 itself is available, so gating never blanks the canvas.
 
+Live playback (Analysis dynamic-visualizations pass): the quiver/
+streamlines overlay and the readout follow Selection.time_s via set_bus()
+-- the same pattern device_panel.py already uses (state_at(), isVisible()
+-gated redraw) -- so scrubbing/playing the pinned playback bar updates
+them. The background heatmap stays a fixed representative frame (0.6 *
+n_frames), same as device_panel.py's own locator: it's a "click to place
+a probe" reference image, not meant to represent "now".
+
 Reuses QuantityProvider (vector reads via get_vector), velocity.py
 (VectorField/VectorProbe engine), the registry, the Insight model
 (jump-to navigation), and timeseries.write_series_csv (CSV export).
@@ -83,6 +91,8 @@ class VelocityPanel(QtWidgets.QWidget):
         self._probes: list = []
         self._counter = 0
         self._loc_ax = None
+        self._bus = None
+        self._current_index = 0    # live playback frame -- see set_bus()
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -239,7 +249,29 @@ class VelocityPanel(QtWidgets.QWidget):
     # ------------------------------------------------------------- lifecycle
     def showEvent(self, event):
         super().showEvent(event)
+        was_loaded = self._loaded
         self.ensure_loaded()
+        if was_loaded:
+            # Not the first show (ensure_loaded already rendered that case):
+            # catch up on whatever frame playback moved to while this tab
+            # was hidden and set_bus()'s isVisible() gate was skipping it.
+            self._render()
+
+    def set_bus(self, bus) -> None:
+        """Follow the shared playback frame (Selection.time_s), same
+        set_bus precedent as device_panel.py -- this panel has no
+        frame_slider for the generic bind_to_bus sync to hook. One-way:
+        this panel never publishes a selection, only reacts."""
+        self._bus = bus
+        bus.changed.connect(self._on_selection)
+        self._on_selection(bus.current, None)
+
+    def _on_selection(self, sel, origin) -> None:
+        if origin is self or sel.time_s is None:
+            return
+        self._current_index = max(0, int(round(sel.time_s * self._fps)))
+        if self._loaded and self.isVisible():
+            self._render()
 
     def ensure_loaded(self) -> None:
         if self._loaded or not self._manifest:
@@ -393,6 +425,20 @@ class VelocityPanel(QtWidgets.QWidget):
         vel.export_csv(p, path)
 
     # --------------------------------------------------------------- render
+    def _live_readout(self, p: "vel.VectorProbe") -> str:
+        """This probe's reading at the currently active playback frame
+        (VectorProbe.state_at() -- an index into the already-computed
+        series, never a recompute), so scrubbing/playing the pinned
+        playback bar updates this line -- unlike _headline()'s
+        run-aggregate peak."""
+        if p.gated:
+            return ""
+        speed = p.state_at(self._current_index).get("speed_m_s")
+        if speed is None:
+            return ""
+        t_s = self._current_index / self._fps
+        return f"{speed:.1f} m/s at t={t_s:.1f}s"
+
     def _headline(self, p: "vel.VectorProbe") -> str:
         if p.gated:
             return "gated -- needs U/V/W velocity (M-SIM re-run)"
@@ -425,7 +471,7 @@ class VelocityPanel(QtWidgets.QWidget):
         gate_reason = self._gate_reasons.get(case_index)
         if field is not None:
             ax.set_title(f"{_MODE_LABELS[self.mode]} · density {self.density_spin.value()}", fontsize=8)
-            frame_index = int(field.n_frames * 0.6)
+            frame_index = self._current_index    # live -- quiver_at/streamline_at clamp internally
             if self.mode in ("quiver", "both"):
                 if self.show_3d_check.isChecked() and field.has_3d:
                     # V6-M7: colour by the through-plane V component --
@@ -466,7 +512,9 @@ class VelocityPanel(QtWidgets.QWidget):
         self.canvas.draw_idle()
         p = self._current()
         if p is not None:
+            live = self._live_readout(p)
+            prefix = f"{p.name}: {live} · " if live else f"{p.name}: "
             tail = (p.results or {}).get("reason") if p.gated else (p.results or {}).get("basis", "")
-            self.readout.setText(f"{p.name}: {self._headline(p)}  ·  {tail}")
+            self.readout.setText(f"{prefix}{self._headline(p)}  ·  {tail}")
         else:
             self.readout.setText("")
