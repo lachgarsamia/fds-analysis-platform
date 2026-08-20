@@ -29,6 +29,20 @@ SelectionBus (M1): scenario_combo is bound by main_window; clicking the locator
 publishes the point, and a point selected elsewhere moves the cross-sections.
 Reuses the provider (not the raw store) so plane gating is honest, and the
 extent/coordinate convention.
+
+Live playback cursor (Analysis dynamic-visualizations pass): a horizontal
+line at the current playback time on both the x-time and z-time maps --
+the whole timeline is already on each plot's own axis, so "dynamic" here
+means a moving cursor, not a live-recomputed frame (there's no per-frame
+data to swap; every t is already drawn). Tracked independently of
+sel.point -- _reload() already defaults the cross-section to the array's
+center regardless of whether any point has ever been picked, so the
+cursor follows the same "always has something to show" rule. Adding
+per-tick time reactivity also meant adding an isVisible() gate that
+_on_selection previously lacked (point picks are rare/deliberate, but a
+playback tick fires constantly) -- a hidden panel now defers to
+showEvent's catch-up re-render instead of redrawing while unseen, same
+convention as every other panel in this pass.
 """
 
 from __future__ import annotations
@@ -65,6 +79,7 @@ class SpaceTimePanel(QtWidgets.QWidget):
         self._loc_ax = None
         self._gate_reason = None
         self._mode = "temperature"
+        self._current_index = 0    # live playback cursor -- see _on_selection
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -152,18 +167,35 @@ class SpaceTimePanel(QtWidgets.QWidget):
     def set_bus(self, bus) -> None:
         self._bus = bus
         bus.changed.connect(self._on_selection)
+        self._on_selection(bus.current, None)
 
     def _on_selection(self, sel, origin) -> None:
-        if origin is self or sel.point is None or self._data is None or self._extent is None:
+        if origin is self:
             return
-        self._row, self._col = phys_to_index(self._extent, self._data.shape[1:],
-                                             sel.point[0], sel.point[1])
-        self._render()
+        changed = False
+        if sel.time_s is not None:
+            new_index = max(0, int(round(sel.time_s * self._fps)))
+            if new_index != self._current_index:
+                self._current_index = new_index
+                changed = True
+        if sel.point is not None and self._data is not None and self._extent is not None:
+            self._row, self._col = phys_to_index(self._extent, self._data.shape[1:],
+                                                 sel.point[0], sel.point[1])
+            changed = True
+        if changed and self._loaded and self.isVisible():
+            self._render()
 
     # ------------------------------------------------------------- lifecycle
     def showEvent(self, event):
         super().showEvent(event)
+        was_loaded = self._loaded
         self.ensure_loaded()
+        if was_loaded:
+            # Not the first show (ensure_loaded already rendered that case):
+            # catch up on whatever frame playback moved to (or a point
+            # picked elsewhere) while this tab was hidden and
+            # _on_selection's isVisible() gate was skipping it.
+            self._render()
 
     def ensure_loaded(self) -> None:
         if self._loaded or not self._manifest:
@@ -311,23 +343,33 @@ class SpaceTimePanel(QtWidgets.QWidget):
         lfig.subplots_adjust(top=0.90, bottom=0.03, left=0.03, right=0.97)
         self.loc_canvas.draw_idle()
 
+        # Live playback cursor: a horizontal line at the current time,
+        # clamped to this data's own range (a stale index from a
+        # longer-running scenario must never draw off the plot).
+        current_t = min(max(self._current_index / self._fps, 0.0), t_end)
+
         # --- x-time at the point's height ---
         xt = self._data[:, self._row, :]        # (n_t, n_x)
         self._heatmap(self.xt_canvas, xt, (x0, x1, t_end, 0.0), cmap, vmin, vmax,
                       f"axis-b–time at fixed axis-a={pz:.2f} m" if self._direction != 1
-                      else f"x–time at z={pz:.2f} m", col_axis_label)
+                      else f"x–time at z={pz:.2f} m", col_axis_label, current_t)
         # --- z-time at the point's column (row 0 = ceiling) ---
         zt = self._data[:, :, self._col]        # (n_t, n_z)
         self._heatmap(self.zt_canvas, zt, (z1, z0, t_end, 0.0), cmap, vmin, vmax,
                       f"axis-a–time at fixed axis-b={px:.2f} m" if self._direction != 1
-                      else f"z–time at x={px:.2f} m", row_axis_label)
+                      else f"z–time at x={px:.2f} m", row_axis_label, current_t)
 
     @staticmethod
-    def _heatmap(canvas, arr, extent, cmap, vmin, vmax, title, xlabel) -> None:
+    def _heatmap(canvas, arr, extent, cmap, vmin, vmax, title, xlabel, current_t: float = None) -> None:
         fig = canvas.fig
         fig.clear()
         ax = fig.add_subplot(111)
         ax.imshow(arr, cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto", extent=extent)
+        if current_t is not None:
+            # Live playback cursor (Analysis dynamic-visualizations pass):
+            # time is this plot's own y-axis, so "now" is a horizontal
+            # line, not a redrawn frame -- see module docstring.
+            ax.axhline(current_t, color="#00E5FF", linewidth=1.2, linestyle="--")
         ax.set_xlabel(xlabel, fontsize=8)
         ax.set_ylabel("time (s)", fontsize=8)
         ax.set_title(title, fontsize=8)
