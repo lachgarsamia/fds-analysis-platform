@@ -1751,7 +1751,11 @@ class TestIntegration:
         DENSITY share the exact same grid/extent at y=0 for a real
         scenario (empirically confirmed against fds/sim/), so the
         overlay's displayed array must be the SAME scenario's real SOOT
-        DENSITY at the SAME frame the temperature heatmap is showing."""
+        DENSITY at the SAME real time the temperature heatmap is showing
+        -- at frame 0 that's a direct index (see
+        test_soot_overlay_frame_matches_real_time_at_the_end_of_playback
+        for the non-trivial case, where the two quantities' frame counts
+        diverge)."""
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo:
@@ -1770,6 +1774,30 @@ class TestIntegration:
             cell.case_index, SliceKey(SOOT_QUANTITY, cell.quantity_key.direction, cell.quantity_key.offset, 0.0),
         )[window.time_controller.index]
         np.testing.assert_array_equal(cell.view.soot_overlay.get_array(), expected)
+        window.close()
+
+    # SOOT DENSITY overlay frame alignment: same bug class as HRRPUV's (see
+    # test_hrrpuv_overlay_frame_matches_real_time_at_the_end_of_playback) --
+    # SOOT DENSITY's `.s3d` dump cadence doesn't match TEMPERATURE's `.sf`
+    # cadence on fds/sim_stage1_prep/ either (1001 frames vs 481 over the
+    # same 0-120s run). Index 0 (the test above) trivially aligns under
+    # any scheme, so this checks a real, non-zero index.
+    def test_soot_overlay_frame_matches_real_time_at_the_end_of_playback(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        cell = window.view_grid.active_cell()
+        if not window._soot_supported_for_cell(cell):
+            pytest.skip("active cell doesn't support the SOOT DENSITY overlay")
+
+        from slice_key import SliceKey, SOOT_QUANTITY
+        n_temp = window._current_n_frames
+        soot_key = SliceKey(SOOT_QUANTITY, cell.quantity_key.direction, cell.quantity_key.offset, 0.0)
+        soot_data = window.controller.store.get(cell.case_index, soot_key)
+
+        last_frame, _ceiling = window._soot_overlay_frame_for_cell(cell, n_temp - 1)
+        np.testing.assert_array_equal(last_frame, soot_data[-1])
         window.close()
 
     def test_soot_overlay_alpha_follows_the_continuous_mapping_function(self, qapp):
@@ -1798,7 +1826,13 @@ class TestIntegration:
         soot_series = window.controller.store.get(
             cell.case_index, SliceKey(SOOT_QUANTITY, cell.quantity_key.direction, cell.quantity_key.offset, 0.0),
         )
-        expected_frame = soot_series[window.time_controller.index]
+        # A raw time_controller.index lookup assumes SOOT DENSITY shares
+        # TEMPERATURE's frame count -- not guaranteed (see
+        # _soot_overlay_frame_for_cell), so remap the same way production
+        # code does rather than reintroducing that assumption here.
+        n_temp = window._current_n_frames
+        expected_idx = MainWindow._remap_frame_index(window.time_controller.index, n_temp, soot_series.shape[0])
+        expected_frame = soot_series[expected_idx]
         expected_ceiling = smd.soot_ceiling(soot_series)
         expected_alpha = smd.soot_alpha(expected_frame, expected_ceiling)
 

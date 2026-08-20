@@ -2339,8 +2339,9 @@ class MainWindow(QtWidgets.QMainWindow):
         `cell` at all -- a "slice" cell currently showing TEMPERATURE at
         the y=0 plane (offset 0), the one plane SOOT DENSITY is confirmed
         (empirically, against the real dataset) to share TEMPERATURE's
-        exact grid/frame-count for every scenario. Shared by both the
-        opt-in scientific overlay toggle and cinematic mode's smoke layer
+        exact grid for every scenario (frame count is not shared -- see
+        _soot_overlay_frame_for_cell's _remap_frame_index use). Shared by
+        both the opt-in scientific overlay toggle and cinematic mode's smoke layer
         (see _apply_cinematic_state / _on_time_changed) so the two paths
         agree on exactly when real soot data is usable."""
         quantity = cell.quantity_key.quantity if cell.quantity_key else None
@@ -2353,14 +2354,22 @@ class MainWindow(QtWidgets.QMainWindow):
         (None, None) -- only ever called for a "slice" cell showing
         TEMPERATURE at the y=0 plane (offset 0), the one plane SOOT
         DENSITY is confirmed (empirically, against the real dataset, not
-        assumed) to share TEMPERATURE's exact grid and frame count for
-        every scenario. Other planes (e.g. the x=0.25 doorway plane) are
-        not currently supported here -- SOOT DENSITY's `plane_pos` is a
-        physical position that must land exactly on a registered mesh
-        boundary, and only y=0/x=0.25 are pre-verified anywhere in this
-        app (see main_window.py's own raw "Smoke" quantity options); a
-        different plane would need that same verification first rather
-        than being assumed to align.
+        assumed) to share TEMPERATURE's exact grid for every scenario.
+        Other planes (e.g. the x=0.25 doorway plane) are not currently
+        supported here -- SOOT DENSITY's `plane_pos` is a physical
+        position that must land exactly on a registered mesh boundary,
+        and only y=0/x=0.25 are pre-verified anywhere in this app (see
+        main_window.py's own raw "Smoke" quantity options); a different
+        plane would need that same verification first rather than being
+        assumed to align.
+
+        SOOT DENSITY's `.s3d` dump cadence is not guaranteed to match
+        TEMPERATURE's `.sf` cadence -- confirmed diverging on the M-SIM
+        Stage 1 re-run the same way HRRPUV's does (see
+        _hrrpuv_overlay_frame_for_cell): 1001 frames over the same 0-120s
+        run TEMPERATURE covers in 481. `index` is a TEMPERATURE-cadence
+        frame index, so it's remapped via the same _remap_frame_index
+        rather than indexed directly.
 
         The normalization ceiling (smoke_density.soot_ceiling) is
         computed once per (scenario, plane) and cached -- it's a
@@ -2378,7 +2387,9 @@ class MainWindow(QtWidgets.QMainWindow):
         cache_key = (cell.case_index, soot_key)
         if cache_key not in self._soot_ceiling_cache:
             self._soot_ceiling_cache[cache_key] = smoke_density.soot_ceiling(data)
-        idx = min(index, data.shape[0] - 1)
+        temp_key = SliceKey("TEMPERATURE", cell.quantity_key.direction, cell.quantity_key.offset)
+        n_temp_frames = store.get(cell.case_index, temp_key).shape[0]
+        idx = self._remap_frame_index(index, n_temp_frames, data.shape[0])
         return data[idx], self._soot_ceiling_cache[cache_key]
 
     def _hrrpuv_supported_for_cell(self, cell) -> bool:
