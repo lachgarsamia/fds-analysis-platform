@@ -13,6 +13,7 @@ from analytics.features import (
     compute_scenario_features,
 )
 from load_data import SIM_ROOT, load_data
+from conftest import real_scenario_dir
 from slice_key import DEFAULT_SLICE_KEY
 
 requires_real_dataset = pytest.mark.skipif(
@@ -152,8 +153,8 @@ class TestFeaturesRealData:
 
     def test_matches_direct_computation_on_known_scenario(self):
         key = DEFAULT_SLICE_KEY
-        data = load_data(os.path.join(SIM_ROOT, "c1_d0_vod0_voc0"), key)
-        entry = ScenarioEntry(0, "c1_d0_vod0_voc0", os.path.join(SIM_ROOT, "c1_d0_vod0_voc0"), 0, 0, 0, 0)
+        data = load_data(real_scenario_dir("c1_d0_vod0_voc0"), key)
+        entry = ScenarioEntry(0, "c1_d0_vod0_voc0", real_scenario_dir("c1_d0_vod0_voc0"), 0, 0, 0, 0)
         store = FakeStore({0: data})
         features = compute_scenario_features(entry, store, fps=4)
 

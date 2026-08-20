@@ -24,6 +24,22 @@ def fixtures_dir():
     return os.path.join(os.path.dirname(__file__), "fixtures", "c1_d0_vod0_voc0")
 
 
+def real_scenario_dir(folder_name: str) -> str:
+    """Absolute path to a named scenario folder under the app's current
+    SIM_ROOT, resolved the same way manifest.scan_scenarios() resolves it
+    (manifest._resolve_scenario_path) -- so a real-data test that hardcodes
+    a scenario name (e.g. "c1_d0_vod0_voc0") gets wherever that scenario's
+    actual readable output lives, not necessarily the bare SIM_ROOT/name
+    path itself. Needed since fds/sim_stage1_prep/ (the M-SIM Stage 1
+    re-run) lays each scenario out as a bare placeholder folder (just the
+    submitted .fds job, no output) plus a "<name>_stage1_pleiades" sibling
+    that actually has the .smv/.sf/.s3d data; fds/sim/ has no such split
+    and this is a no-op there."""
+    from load_data import SIM_ROOT
+    from manifest import _resolve_scenario_path
+    return _resolve_scenario_path(os.path.join(SIM_ROOT, folder_name))
+
+
 @pytest.fixture(autouse=True)
 def _isolated_qsettings(tmp_path, monkeypatch):
     """Redirect every QSettings(org, app) construction (main_window.py's

@@ -14,6 +14,7 @@ from PyQt5 import QtCore, QtWidgets
 from views import SliceView, DifferenceView, EnsembleView, GridCell, ViewGrid
 from slice_key import SliceKey
 from load_data import SIM_ROOT, load_data
+from conftest import real_scenario_dir
 
 
 FRAME = np.ones((49, 101), dtype=np.float32) * 42.0
@@ -307,7 +308,7 @@ class TestSliceViewProbeRealData:
 
     def test_known_pixel_matches_real_data(self):
         key = SliceKey("TEMPERATURE", 1, 0)
-        case_dir = os.path.join(SIM_ROOT, "c1_d0_vod0_voc0")
+        case_dir = real_scenario_dir("c1_d0_vod0_voc0")
         data = load_data(case_dir, key)
         view = SliceView()
         view.init_plot(data[300], cmap="gist_heat", interpolation="nearest",
@@ -316,7 +317,7 @@ class TestSliceViewProbeRealData:
 
     def test_all_four_corners_match_real_data(self):
         key = SliceKey("TEMPERATURE", 1, 0)
-        case_dir = os.path.join(SIM_ROOT, "c1_d0_vod0_voc0")
+        case_dir = real_scenario_dir("c1_d0_vod0_voc0")
         data = load_data(case_dir, key)
         frame = data[300]
         view = SliceView()
@@ -599,8 +600,8 @@ class TestDifferenceViewRealData:
     without a visible test failure.
     """
 
-    DOOR_CASE_NARROW = os.path.join(SIM_ROOT, "c1_d0_vod0_voc0")
-    DOOR_CASE_WIDE = os.path.join(SIM_ROOT, "c1_d1_vod0_voc0")
+    DOOR_CASE_NARROW = real_scenario_dir("c1_d0_vod0_voc0")
+    DOOR_CASE_WIDE = real_scenario_dir("c1_d1_vod0_voc0")
 
     @pytest.fixture(scope="class")
     def temperature_diff(self):
@@ -799,7 +800,7 @@ class TestEnsembleViewRealData:
     @pytest.fixture(scope="class")
     def arrays(self):
         key = SliceKey("TEMPERATURE", 1, 0)
-        loaded = [load_data(os.path.join(SIM_ROOT, case), key) for case in self.CASES]
+        loaded = [load_data(real_scenario_dir(case), key) for case in self.CASES]
         n = min(a.shape[0] for a in loaded)
         return [a[:n] for a in loaded]
 

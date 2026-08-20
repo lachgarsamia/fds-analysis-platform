@@ -2195,9 +2195,8 @@ class TestMultiStudyGuestStudy:
     to open)."""
 
     def _guest_case_dir(self):
-        import os
-        from load_data import SIM_ROOT
-        return os.path.join(SIM_ROOT, "c1_d0_vod0_voc0")
+        from conftest import real_scenario_dir
+        return real_scenario_dir("c1_d0_vod0_voc0")
 
     def test_degenerate_study_builds_with_candle_ui_hidden(self, qapp):
         import os
@@ -2236,10 +2235,9 @@ class TestFactorEffectsPanel:
         assert window.factor_effects_panel is not None
         window.close()
         # A generic guest study (degenerate single case) has no factor axes.
-        import os
         from data_provider import load_study
-        from load_data import SIM_ROOT
-        case_dir = os.path.join(SIM_ROOT, "c1_d0_vod0_voc0")
+        from conftest import real_scenario_dir
+        case_dir = real_scenario_dir("c1_d0_vod0_voc0")
         guest = MainWindow(load_study(case_dir))
         assert guest.factor_effects_panel is None
         guest.close()

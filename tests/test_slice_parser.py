@@ -118,7 +118,17 @@ class TestSliceParser:
 
 
 import os  # noqa: E402
-from load_data import SIM_ROOT  # noqa: E402
+
+# TestOuterEdgeColumn/TestVelocityCrossValidation/TestVectorVelocityCrossValidation
+# below pin exact values from fds/sim/ specifically (parser-regression
+# guards -- see each class's docstring), not "whatever the app's current
+# live default happens to be". They used to import load_data.SIM_ROOT as a
+# shortcut to "a real dataset on disk", back when that was always fds/sim/;
+# now that SIM_ROOT points at fds/sim_stage1_prep/ (a different re-run,
+# different pinned values), importing it here would silently point these
+# regression guards at the wrong dataset -- so this hardcodes the specific
+# reference dataset directly instead, independent of the app's own default.
+SIM_ROOT = os.path.join(os.path.dirname(__file__), '..', 'fds', 'sim')  # noqa: E402
 
 requires_real_dataset = pytest.mark.skipif(
     not os.path.isdir(SIM_ROOT), reason="real fds/sim/ dataset not present")
