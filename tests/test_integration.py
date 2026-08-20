@@ -164,16 +164,12 @@ class TestIntegration:
         assert not image.isNull()
         window.close()
 
-    def test_bilinear_is_the_fresh_install_interpolation_default(self, qapp, monkeypatch):
+    def test_bilinear_is_the_fresh_install_interpolation_default(self, qapp):
         """GUI modernization pass, item 7: a never-configured install
         (nothing in QSettings yet) must default to bilinear, not the
-        blocky "nearest" default matplotlib itself would use. Forces a
-        clean QSettings.value() -- always returns the fallback -- rather
-        than assuming this machine's real, persisted QSettings happens to
-        be unconfigured (it may well already have a saved preference from
-        another test run)."""
-        from PyQt5 import QtCore
-        monkeypatch.setattr(QtCore.QSettings, "value", lambda self, key, default=None, **kw: default)
+        blocky "nearest" default matplotlib itself would use. Relies on
+        conftest.py's _isolated_qsettings fixture for a guaranteed-empty
+        QSettings (a per-test scratch file, never the real persisted one)."""
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         assert window.current_interpolation == "bilinear"
@@ -355,18 +351,14 @@ class TestIntegration:
         # minimum floor the dominant term (the aspect-based term shrinks to
         # near nothing), isolating what set_ui_scale actually controls from
         # the real layout's own (test-environment-dependent) current width.
-        # Pinned to a known baseline first -- ui_scale persists in QSettings
-        # across runs, so a prior manual session could leave it non-default.
-        window._set_ui_scale(1.0)
+        # window.ui_scale already starts at the coded default (1.0) --
+        # conftest.py's _isolated_qsettings fixture guarantees a fresh
+        # QSettings, never a prior manual session's persisted value.
         before = window.schematic.heightForWidth(1)
         window._set_ui_scale(2.0)
         after = window.schematic.heightForWidth(1)
         assert after > before
         assert window.schematic._ui_scale == 2.0
-        # QSettings is shared with the real app (not test-isolated) --
-        # restore the default so this test doesn't leave the real app at
-        # 2x scale the next time someone actually launches it.
-        window._set_ui_scale(1.0)
         window.close()
 
     def test_room_outline_drawn_on_default_y_normal_slice(self, qapp):
@@ -479,7 +471,6 @@ class TestIntegration:
         assert canvas.fig.dpi == pytest.approx(MplCanvas.DEFAULT_DPI)
         window._set_ui_scale(2.0)
         assert canvas.fig.dpi == pytest.approx(MplCanvas.DEFAULT_DPI * 2.0)
-        window._set_ui_scale(1.0)  # QSettings is shared with the real app -- restore default
         window.close()
 
     def test_plain_language_labels_present_no_bare_jargon(self, qapp):
