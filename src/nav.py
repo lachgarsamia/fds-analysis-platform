@@ -40,6 +40,21 @@ class NavRail(QtWidgets.QWidget):
     def __init__(self, entries: list, parent=None):
         super().__init__(parent)
         self.setObjectName("navRail")
+        # Nav rail opacity fix (user testing feedback, round 2, item 1): a
+        # plain QWidget does not paint its own stylesheet background by
+        # default in Qt -- only WA_StyledBackground makes it do so (QFrame/
+        # QMainWindow paint theirs regardless; QWidget doesn't). Without
+        # this, theme.py's QWidget#navRail { background-color: ... } rule
+        # was declared but never actually rendered, so the rail -- parented
+        # directly onto page_stack without a layout, floating above page
+        # content by design (see module docstring) -- was fully transparent
+        # whenever expanded, letting whatever page content sat underneath
+        # bleed straight through. Not a color/opacity value problem (every
+        # theme's bg_sunken is already a solid, alpha-free hex color); this
+        # one attribute is the whole fix, and it's theme-independent by
+        # construction -- confirmed via a real before/after render in both
+        # light and dark, not assumed from the mechanism alone.
+        self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
         self._buttons: dict = {}
         self._labels: dict = {}
         self._expanded = False
