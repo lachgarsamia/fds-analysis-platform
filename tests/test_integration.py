@@ -1852,6 +1852,36 @@ class TestIntegration:
         assert cell.view.heatmap.get_array().shape[-1] == 4  # RGBA cinematic output, rendered without crashing
         window.close()
 
+    # HRRPUV overlay frame alignment: HRRPUV's `.s3d` dump cadence doesn't
+    # match TEMPERATURE's `.sf` cadence on fds/sim_stage1_prep/ (1001
+    # frames vs 481 over the same 0-120s run) -- a direct index lookup
+    # would show an earlier real time than what the base heatmap displays,
+    # growing more wrong toward the end of playback. index 0 trivially
+    # aligns under any scheme, so this checks a real, non-zero index.
+    def test_hrrpuv_overlay_frame_matches_real_time_at_the_end_of_playback(self, qapp):
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        cell = window.view_grid.active_cell()
+        if not window._hrrpuv_supported_for_cell(cell):
+            pytest.skip("active cell doesn't support the HRRPUV overlay")
+
+        from slice_key import SliceKey, HRRPUV_QUANTITY
+        n_temp = window._current_n_frames
+        hrrpuv_key = SliceKey(HRRPUV_QUANTITY, cell.quantity_key.direction, cell.quantity_key.offset, 0.0)
+        hrrpuv_data = window.controller.store.get(cell.case_index, hrrpuv_key)
+
+        last_frame = window._hrrpuv_overlay_frame_for_cell(cell, n_temp - 1)
+        np.testing.assert_array_equal(last_frame, hrrpuv_data[-1])
+        window.close()
+
+    def test_remap_frame_index_boundaries(self):
+        assert MainWindow._remap_frame_index(0, 481, 1001) == 0
+        assert MainWindow._remap_frame_index(480, 481, 1001) == 1000
+        assert MainWindow._remap_frame_index(240, 481, 1001) == 500
+
+
     # ------------------------------------------------ M3.1 ensemble analytics
     def test_analytics_panel_present_for_real_data(self, qapp):
         sim_data = load_simulation_data()

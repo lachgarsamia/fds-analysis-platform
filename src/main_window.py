@@ -2405,7 +2405,17 @@ class MainWindow(QtWidgets.QMainWindow):
         overlay, no normalization ceiling is needed -- this overlay draws
         a single fixed threshold contour (registry.py's HRRPUV
         hazard_levels), not a continuous opacity map, so there's nothing
-        to cache beyond the store's own normal per-scenario cache."""
+        to cache beyond the store's own normal per-scenario cache.
+
+        HRRPUV's `.s3d` dump cadence is not guaranteed to match
+        TEMPERATURE's `.sf` cadence -- confirmed diverging on the M-SIM
+        Stage 1 re-run (HRRPUV: 1001 frames over the same 0-120s run
+        TEMPERATURE covers in 481), even though both start/end at the same
+        real time. `index` is a TEMPERATURE-cadence frame index, so it's
+        remapped proportionally onto HRRPUV's own frame count via
+        _remap_frame_index rather than indexed directly -- a direct index
+        would silently show an earlier real time than what's on screen,
+        growing more wrong as playback progresses."""
         store = self._store_for_cell(cell)
         hrrpuv_key = SliceKey(HRRPUV_QUANTITY, cell.quantity_key.direction, cell.quantity_key.offset, 0.0)
         try:
@@ -2413,8 +2423,22 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:  # noqa: BLE001 - overlay is a nice-to-have, must not blank the cell
             logger.warning("hrrpuv overlay: failed to fetch HRRPUV for case %s: %s", cell.case_index, e)
             return None
-        idx = min(index, data.shape[0] - 1)
+        temp_key = SliceKey("TEMPERATURE", cell.quantity_key.direction, cell.quantity_key.offset)
+        n_temp_frames = store.get(cell.case_index, temp_key).shape[0]
+        idx = self._remap_frame_index(index, n_temp_frames, data.shape[0])
         return data[idx]
+
+    @staticmethod
+    def _remap_frame_index(index: int, n_from: int, n_to: int) -> int:
+        """Proportionally remap a frame index from a timeline with
+        `n_from` frames to one with `n_to` frames spanning the same real
+        time range (both starting at t=0) -- e.g. TEMPERATURE's `.sf`
+        cadence -> HRRPUV's independent `.s3d` cadence, which is not
+        guaranteed to match (see _hrrpuv_overlay_frame_for_cell)."""
+        if n_from <= 1 or n_to <= 1:
+            return min(max(index, 0), max(n_to - 1, 0))
+        frac = min(max(index, 0), n_from - 1) / (n_from - 1)
+        return min(int(round(frac * (n_to - 1))), n_to - 1)
 
     def _velocity_overlay_frame_for_cell(self, cell, index: int):
         """The VELOCITY frame to overlay on `cell` at timeline `index` --
