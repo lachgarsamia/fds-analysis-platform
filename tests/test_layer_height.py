@@ -148,3 +148,25 @@ def test_unknown_method_raises():
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+# ------------------------------------------------------- gradient_simple
+
+def test_gradient_simple_locates_a_sharp_step_interface():
+    n_z = 20
+    data = np.full((1, n_z, 4), 20.0)
+    data[0, :8, :] = 150.0  # step at row 8
+    heights = smoke_layer_height_series(data, EXTENT, ambient_c=20.0, method="gradient_simple")
+    assert 0.45 < heights[0] < 0.75
+
+
+def test_gradient_simple_flat_profile_returns_a_room_extreme_not_garbage():
+    # No fire: flat at ambient -> ceiling.
+    no_fire = np.full((2, 10, 4), 20.0)
+    heights = smoke_layer_height_series(no_fire, EXTENT, ambient_c=20.0, method="gradient_simple")
+    np.testing.assert_allclose(heights, 1.0)
+
+    # Fully engulfed: flat and hot -> floor.
+    engulfed = np.full((2, 10, 4), 300.0)
+    heights = smoke_layer_height_series(engulfed, EXTENT, ambient_c=20.0, method="gradient_simple")
+    np.testing.assert_allclose(heights, 0.0)

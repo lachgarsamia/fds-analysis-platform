@@ -88,13 +88,17 @@ def smoke_layer_height_series(data: np.ndarray, extent: tuple, ambient_c: float,
     is the ceiling (z1) per the app's existing origin='upper' + vertical-
     flip convention (see views.py's SliceView docstring).
 
-    method: "gradient" (default, see module docstring) or "half_integral"
-    (the original method, kept for comparison/tests)."""
+    method: "gradient" (default, see module docstring), "gradient_simple"
+    (same definition, no smoothing/sub-cell refinement -- see
+    _steepest_gradient_simple_height_series), or "half_integral" (the
+    original method, kept for comparison/tests)."""
     if method == "gradient":
         return _steepest_gradient_height_series(data, extent, ambient_c)
+    if method == "gradient_simple":
+        return _steepest_gradient_simple_height_series(data, extent, ambient_c)
     if method == "half_integral":
         return _half_integral_height_series(data, extent, ambient_c)
-    raise ValueError(f"unknown method: {method!r} (expected 'gradient' or 'half_integral')")
+    raise ValueError(f"unknown method: {method!r} (expected 'gradient', 'gradient_simple', or 'half_integral')")
 
 
 def _half_integral_height_series(data: np.ndarray, extent: tuple, ambient_c: float) -> np.ndarray:
@@ -153,6 +157,40 @@ def _parabolic_peak_refine(g: np.ndarray, idx: np.ndarray) -> np.ndarray:
     delta[safe] = 0.5 * (y_minus[safe] - y_plus[safe]) / denom[safe]
     offset[interior] = np.clip(delta, -0.5, 0.5)
     return offset
+
+
+def _steepest_gradient_simple_height_series(data: np.ndarray, extent: tuple, ambient_c: float) -> np.ndarray:
+    """Steckler, Quintiere & Rinkinen, NBSIR 82-2520 (1982): thermal
+    interface height = elevation of maximum |d(excess temperature)/dz|,
+    unsmoothed, unrefined. Minimal variant of "gradient"; no median
+    filter, no sub-cell interpolation. A flat/uniform profile has no
+    interface to find, so it's reported at a room extreme instead of an
+    arbitrary argmax tie-break: no excess anywhere -> ceiling (z1);
+    uniformly hot (fully engulfed) -> floor (z0)."""
+    x0, x1, z0, z1 = extent
+    n_t, n_z, n_x = data.shape
+    if n_z < 2:
+        return np.full(n_t, z1, dtype=float)
+
+    z_desc = np.linspace(z1, z0, n_z)
+    excess = np.clip(np.asarray(data, dtype=float) - ambient_c, 0.0, None)
+    mean_excess = excess.mean(axis=2)
+
+    z_asc = z_desc[::-1]
+    mean_excess_asc = mean_excess[:, ::-1]
+    grad = np.gradient(mean_excess_asc, z_asc, axis=1)
+
+    peak_excess = mean_excess.max(axis=1)
+    excess_range = peak_excess - mean_excess.min(axis=1)
+    heights = np.full(n_t, z1, dtype=float)
+    has_signal = peak_excess >= _MIN_EXCESS_C
+    saturated = has_signal & (excess_range < _MIN_EXCESS_C)
+    heights[saturated] = z0
+    findable = has_signal & ~saturated
+    if np.any(findable):
+        idx = np.argmax(grad[findable], axis=1)
+        heights[findable] = z_asc[idx]
+    return heights
 
 
 def _steepest_gradient_height_series(data: np.ndarray, extent: tuple, ambient_c: float) -> np.ndarray:
