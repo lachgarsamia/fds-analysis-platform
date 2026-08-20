@@ -1459,6 +1459,13 @@ class MainWindow(QtWidgets.QMainWindow):
         root_layout.addWidget(self.splitter, 1)
 
         self.splitter.addWidget(self._build_control_panel())
+        # Built here, before _build_plot_panel() (not where it's *added* to
+        # root_layout, further below) -- _build_plot_panel()'s ViewGrid
+        # needs self.quantity_infos (via _quantity_options()) immediately,
+        # the same ordering requirement _build_control_panel() satisfied
+        # inline before this bar's contents moved out of it (user testing
+        # feedback, round 2, item 3).
+        self.display_control_bar = self._build_display_control_bar()
         self.splitter.addWidget(self._build_plot_panel())
         self.splitter.addWidget(self._build_inspector_panel())
         # Control panel and inspector get fixed-ish starting shares; plot
@@ -1468,14 +1475,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.splitter.setStretchFactor(2, 0)
         self.splitter.setSizes([380, 700, 280])
 
-        # Vent 1/Vent 2/Number of candles (Live Viewer layout pass): a bar
-        # docked below the whole splitter row, spanning full width -- not
-        # nested in any one splitter column, so it can't crowd the room
-        # diagram (control panel) or the inspector on a narrower window the
-        # way adding more sidebar cards would have. See
-        # _build_scenario_control_bar().
+        # Vent 1/Vent 2/Number of candles (Live Viewer layout pass), plus
+        # Room diagram/Door opening width (user testing feedback, round 2,
+        # item 3): a bar docked below the whole splitter row, spanning
+        # full width -- not nested in any one splitter column, so it can't
+        # crowd the (now much emptier) control panel or the inspector on a
+        # narrower window. See _build_scenario_control_bar().
         self.scenario_control_bar = self._build_scenario_control_bar()
         root_layout.addWidget(self.scenario_control_bar)
+        # Data shown/Display scale (same pass): a second bar, docked below
+        # the first -- never factorial-gated, unlike everything in
+        # scenario_control_bar, so it's its own bar rather than sharing
+        # one visibility toggle. Built earlier (see above), added to the
+        # layout here so it still lands in the right visual position.
+        root_layout.addWidget(self.display_control_bar)
         return central
 
     def _build_inspector_panel(self) -> QtWidgets.QWidget:
@@ -1528,6 +1541,19 @@ class MainWindow(QtWidgets.QMainWindow):
             self._on_seek_requested(min(max(fi, 0), self._current_n_frames - 1))
 
     def _build_control_panel(self) -> QtWidgets.QWidget:
+        """User testing feedback, round 2, item 3: Room diagram, Data shown,
+        Door opening width, and Display scale -- the last sidebar cards
+        remaining after B2 already moved Vent 1/Vent 2/Number of candles
+        out -- are now built by _build_scenario_control_bar() (Room
+        diagram/Door, same factorial gate as Vent/Candle) and
+        _build_display_control_bar() (Data shown/Display scale, never
+        gated -- these two stay active in demo/guest-study mode, unlike
+        the other four) instead of here. What's left in this column is
+        just the title and the Quit button (already redundant with the
+        global Ctrl+Q shortcut -- see _build_shell()) -- deliberately not
+        addressed in this pass; collapsing or removing this now-mostly-
+        empty column is a separate, bigger call about the 3-way splitter,
+        not folded into "move 4 controls.\""""
         panel = QtWidgets.QWidget()
         panel.setObjectName("controlPanel")
         panel.setMinimumWidth(220)
@@ -1547,128 +1573,6 @@ class MainWindow(QtWidgets.QMainWindow):
         title.setWordWrap(True)
         outer.addWidget(title)
 
-        # --- Room diagram ----------------------------------------------------
-        # A live schematic for non-specialist users: shows the room, door,
-        # vents, and candle(s) matching the toggles below, proportioned from
-        # the scenario's real parsed .smv mesh extent (see schematic.py).
-        schematic_section = CollapsibleSection("Room diagram")
-        schematic_section.setToolTip(
-            "A simplified top-down diagram of the room, proportioned to match "
-            "the real physical layout. It updates automatically as you change "
-            "the candles, vents, and door below."
-        )
-        self.schematic = SchematicWidget()
-        schematic_section.add_row(self.schematic)
-        outer.addWidget(schematic_section)
-        room_extent = resolve_room_extent(self.controller.store, self.controller.current_case_index())
-        self.schematic.set_room_extent(room_extent)
-        self.schematic.update_state(DEFAULT_CANDLES, DEFAULT_DOOR, DEFAULT_VOD, DEFAULT_VOC)
-
-        # --- Scenario sections ----------------------------------------------
-        # (Playback transport used to live here as its own sidebar card --
-        # UI overhaul, global chrome pass: it's now self.playback_bar, one
-        # shared instance in MainWindow's persistent header, visible on
-        # every page instead of just Live Viewer's sidebar. See
-        # playback_bar.py and _build_shell()'s header construction.
-        #
-        # Vent 1/Vent 2/Number of candles used to live here too, as their
-        # own sidebar cards -- Live Viewer layout pass: they're now in
-        # self.scenario_control_bar, docked below the plot/inspector row
-        # instead of competing with the room diagram/quantity selector for
-        # this narrow column. See _build_scenario_control_bar(). Door
-        # opening width stays here -- only vents/candles were asked to
-        # move.)
-
-        door_section = CollapsibleSection("Door opening width")
-        # Options list is [("Wide open", 1), ("Narrow", 0)]; DEFAULT_DOOR=1 is
-        # at position 0, so default_index=0 correctly preselects "Wide open".
-        self.door_toggle = DoorWidget(
-            [("Wide open", 1), ("Narrow", 0)], default_index=0,
-            accessible_name="Door state",
-        )
-        self.door_toggle.setToolTip(
-            "Sets how wide the door opening is. A wider opening lets more "
-            "air, smoke, and heat move in and out of the room; 'Narrow' "
-            "restricts the flow."
-        )
-        self.door_toggle.value_changed.connect(self._on_door_changed)
-        door_section.add_row(self.door_toggle)
-        outer.addWidget(door_section)
-
-        # M2.5: these sections describe the candle factorial's scenario
-        # parameters; a generic guest study has no such axes, so hide them
-        # (their handlers/widgets still exist, just operate on hidden
-        # widgets harmlessly if ever driven). The grid, timeline, quantity
-        # selector, display scale, and analysis panels below stay active.
-        # Vent 1/Vent 2/Number of candles get the same gate applied to
-        # self.scenario_control_bar (built separately -- see
-        # _build_scenario_control_bar()) instead of here.
-        if not self.is_factorial:
-            for section in (schematic_section, door_section):
-                section.setVisible(False)
-
-        outer.addWidget(self._divider())
-
-        # --- Quantity selector (M2.1) ----------------------------------------
-        quantity_section = CollapsibleSection("Data shown")
-        self.quantity_infos = self._discover_quantities()
-        # V6-M1.5: the Live combo shows native quantities + computed
-        # (derived/calculated) fields; quantity_infos stays native so the
-        # analysis panels and _quantity_options are unchanged.
-        self._combo_quantity_list = list(self.quantity_infos) + self._computed_quantity_infos()
-        self.quantity_combo = QtWidgets.QComboBox()
-        self.quantity_combo.setAccessibleName("Quantity shown in the heatmap")
-        multiple_available = len(self._combo_quantity_list) > 1
-        tooltip = "Choose what the color map shows (including calculated fields)."
-        if not multiple_available:
-            tooltip += " (Only temperature is available in demo-data mode.)"
-        self.quantity_combo.setToolTip(tooltip)
-        for i, info in enumerate(self._combo_quantity_list):
-            self.quantity_combo.addItem(self._quantity_label(info))
-            item_tip = self._quantity_tooltip(info)
-            if item_tip:
-                self.quantity_combo.setItemData(i, item_tip, QtCore.Qt.ToolTipRole)
-        self.quantity_combo.setEnabled(multiple_available)
-        self.quantity_combo.currentIndexChanged.connect(self._on_quantity_changed)
-        quantity_section.add_row(self.quantity_combo)
-        # RC polish (§3): the quantity selector sits directly below the room
-        # diagram (playback moved to the global header -- see above) so
-        # changing what's shown is immediately accessible, instead of being
-        # buried below the scenario controls.
-        outer.insertWidget(outer.indexOf(schematic_section) + 1, quantity_section)
-        # Layout-declutter pass, round 2: kept this sidebar card (matches
-        # where Candles/Door/Vents already live) as the *one* visible
-        # quantity control and removed the per-cell toolbar combo instead
-        # (views.py's GridCell headers) -- having both was the original
-        # complaint; hiding this one first turned out to be the wrong half
-        # to hide, since it left multi-cell grids with no quantity control
-        # at all once the toolbar one goes too. To change a non-active
-        # cell's quantity in a multi-cell grid now: click the cell to
-        # activate it, then use this combo.
-
-        # --- Display controls -------------------------------------------------
-        # Range/default/label come from QUANTITY_DISPLAY for the starting
-        # quantity (current_quantity_key, set in __init__); switching
-        # quantity later re-applies these via _apply_quantity_display_defaults.
-        initial_display = self._display_for(self.current_quantity_key.quantity)
-        temp_section = CollapsibleSection("Display scale (max)")
-        temp_row = QtWidgets.QHBoxLayout()
-        self.temp_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.temp_slider.setRange(initial_display['slider_min'], initial_display['slider_max'])
-        self.temp_slider.setValue(initial_display['slider_default'])
-        self.temp_slider.setAccessibleName(
-            f"Maximum {initial_display['label'].lower()} scale, {initial_display['unit']}")
-        self.temp_slider.setToolTip(
-            f"Adjust the maximum {initial_display['label'].lower()} shown on the color scale")
-        self.temp_slider.valueChanged.connect(self._on_temp_changed)
-        self.temp_label = QtWidgets.QLabel(f"{initial_display['slider_default']} {initial_display['unit']}")
-        self.temp_label.setProperty("role", "value")
-        self.temp_label.setMinimumWidth(60)
-        temp_row.addWidget(self.temp_slider, 1)
-        temp_row.addWidget(self.temp_label)
-        temp_section.add_row(self._wrap(temp_row))
-        outer.addWidget(temp_section)
-
         outer.addStretch(1)
 
         quit_button = QtWidgets.QPushButton("Quit")
@@ -1680,14 +1584,22 @@ class MainWindow(QtWidgets.QMainWindow):
         return scroll
 
     def _build_scenario_control_bar(self) -> QtWidgets.QWidget:
-        """Vent 1/Vent 2/Number of candles (Live Viewer layout pass): moved
-        out of the left sidebar into a bar docked below the plot/inspector
-        row (_build_central_widget), instead of competing with the room
-        diagram/quantity selector for the sidebar's narrow column. Same
-        VentWidget/CandleCard instances, same value_changed wiring, same
-        tooltips as the sidebar cards they replace -- a relocation, not a
-        behavior change. Door opening width stays in the sidebar (only
-        vents/candles were asked to move)."""
+        """Vent 1/Vent 2/Number of candles (Live Viewer layout pass), plus
+        Room diagram/Door opening width (user testing feedback, round 2,
+        item 3): moved out of the left sidebar into a bar docked below the
+        plot/inspector row (_build_central_widget), instead of competing
+        for the sidebar's narrow column. Same widget instances, same
+        value_changed wiring, same tooltips as the sidebar cards they
+        replace -- a relocation, not a behavior change. All five share the
+        same factorial gate below (a generic guest study has no candle/
+        door/vent factor axes) -- Data shown/Display scale do NOT belong
+        here despite also having moved out of the sidebar: they stay
+        active in demo/guest-study mode, so they're built by the separate,
+        never-gated _build_display_control_bar() instead. Room diagram is
+        not squeezed into _group()'s compact button-row shape -- it keeps
+        whatever height its own SchematicWidget.heightForWidth() wants
+        (see schematic.py), so this row grows taller than the others to
+        fit it rather than cramping it below its own minimum."""
         bar = QtWidgets.QWidget()
         bar.setObjectName("scenarioControlBar")
         row = QtWidgets.QHBoxLayout(bar)
@@ -1704,6 +1616,23 @@ class MainWindow(QtWidgets.QMainWindow):
             col.addWidget(label)
             col.addWidget(control)
             return wrap
+
+        # Room diagram first (user testing feedback, round 2, item 3): the
+        # primary "what am I looking at" visual, same leading position it
+        # held at the top of the old sidebar. A live schematic for non-
+        # specialist users: shows the room, door, vents, and candle(s)
+        # matching the toggles in this same row, proportioned from the
+        # scenario's real parsed .smv mesh extent (see schematic.py).
+        self.schematic = SchematicWidget()
+        self.schematic.setToolTip(
+            "A simplified top-down diagram of the room, proportioned to match "
+            "the real physical layout. It updates automatically as you change "
+            "the candles, vents, and door in this row."
+        )
+        room_extent = resolve_room_extent(self.controller.store, self.controller.current_case_index())
+        self.schematic.set_room_extent(room_extent)
+        self.schematic.update_state(DEFAULT_CANDLES, DEFAULT_DOOR, DEFAULT_VOD, DEFAULT_VOC)
+        row.addWidget(_group("Room diagram", self.schematic))
 
         # Ventilation first (user feedback): the vents are the primary
         # thing people compare, so they sit before candles, with short
@@ -1745,13 +1674,103 @@ class MainWindow(QtWidgets.QMainWindow):
         self.candle_toggle.value_changed.connect(self._on_candle_changed)
         row.addWidget(_group("Number of candles", self.candle_toggle))
 
+        self.door_toggle = DoorWidget(
+            [("Wide open", 1), ("Narrow", 0)], default_index=0,
+            accessible_name="Door state",
+        )
+        self.door_toggle.setToolTip(
+            "Sets how wide the door opening is. A wider opening lets more "
+            "air, smoke, and heat move in and out of the room; 'Narrow' "
+            "restricts the flow."
+        )
+        self.door_toggle.value_changed.connect(self._on_door_changed)
+        row.addWidget(_group("Door opening width", self.door_toggle))
+
         row.addStretch(1)
 
-        # M2.5: same gate _build_control_panel applies to the room diagram/
-        # door sections -- a generic guest study has no candle/vent factor
-        # axes, so hide this whole bar (nothing else lives in it).
+        # M2.5: a generic guest study has no candle/door/vent factor axes,
+        # so hide this whole bar -- Room diagram/Door opening width joined
+        # Vent 1/Vent 2/Number of candles here (user testing feedback,
+        # round 2, item 3), all five sharing this same gate. Data shown/
+        # Display scale deliberately do NOT live in this bar -- see
+        # _build_display_control_bar(), never gated.
         if not self.is_factorial:
             bar.setVisible(False)
+
+        return bar
+
+    def _build_display_control_bar(self) -> QtWidgets.QWidget:
+        """Data shown/Display scale (user testing feedback, round 2, item
+        3): moved out of the left sidebar into a second bar, docked below
+        _build_scenario_control_bar()'s bar -- not merged into that one,
+        because these two stay active in demo/guest-study mode (M2.5:
+        "the grid, timeline, quantity selector, display scale, and
+        analysis panels below stay active") while Room diagram/Vent/
+        Candle/Door are factorial-only. One shared gate per bar keeps that
+        real visibility distinction instead of hiding these two along with
+        the factorial-only controls."""
+        bar = QtWidgets.QWidget()
+        bar.setObjectName("displayControlBar")
+        row = QtWidgets.QHBoxLayout(bar)
+        row.setContentsMargins(16, 10, 16, 10)
+        row.setSpacing(28)
+
+        def _group(title: str, control: QtWidgets.QWidget) -> QtWidgets.QWidget:
+            wrap = QtWidgets.QWidget()
+            col = QtWidgets.QVBoxLayout(wrap)
+            col.setContentsMargins(0, 0, 0, 0)
+            col.setSpacing(4)
+            label = QtWidgets.QLabel(title)
+            label.setProperty("role", "section-title")
+            col.addWidget(label)
+            col.addWidget(control)
+            return wrap
+
+        self.quantity_infos = self._discover_quantities()
+        # V6-M1.5: the Live combo shows native quantities + computed
+        # (derived/calculated) fields; quantity_infos stays native so the
+        # analysis panels and _quantity_options are unchanged.
+        self._combo_quantity_list = list(self.quantity_infos) + self._computed_quantity_infos()
+        self.quantity_combo = QtWidgets.QComboBox()
+        self.quantity_combo.setAccessibleName("Quantity shown in the heatmap")
+        multiple_available = len(self._combo_quantity_list) > 1
+        tooltip = "Choose what the color map shows (including calculated fields)."
+        if not multiple_available:
+            tooltip += " (Only temperature is available in demo-data mode.)"
+        self.quantity_combo.setToolTip(tooltip)
+        for i, info in enumerate(self._combo_quantity_list):
+            self.quantity_combo.addItem(self._quantity_label(info))
+            item_tip = self._quantity_tooltip(info)
+            if item_tip:
+                self.quantity_combo.setItemData(i, item_tip, QtCore.Qt.ToolTipRole)
+        self.quantity_combo.setEnabled(multiple_available)
+        self.quantity_combo.currentIndexChanged.connect(self._on_quantity_changed)
+        # Layout-declutter pass, round 2: kept as the *one* visible quantity
+        # control and removed the per-cell toolbar combo instead (views.py's
+        # GridCell headers) -- having both was the original complaint. To
+        # change a non-active cell's quantity in a multi-cell grid: click
+        # the cell to activate it, then use this combo.
+        row.addWidget(_group("Data shown", self.quantity_combo))
+
+        # Range/default/label come from QUANTITY_DISPLAY for the starting
+        # quantity (current_quantity_key, set in __init__); switching
+        # quantity later re-applies these via _apply_quantity_display_defaults.
+        initial_display = self._display_for(self.current_quantity_key.quantity)
+        temp_row = QtWidgets.QHBoxLayout()
+        self.temp_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.temp_slider.setRange(initial_display['slider_min'], initial_display['slider_max'])
+        self.temp_slider.setValue(initial_display['slider_default'])
+        self.temp_slider.setAccessibleName(
+            f"Maximum {initial_display['label'].lower()} scale, {initial_display['unit']}")
+        self.temp_slider.setToolTip(
+            f"Adjust the maximum {initial_display['label'].lower()} shown on the color scale")
+        self.temp_slider.valueChanged.connect(self._on_temp_changed)
+        self.temp_label = QtWidgets.QLabel(f"{initial_display['slider_default']} {initial_display['unit']}")
+        self.temp_label.setProperty("role", "value")
+        self.temp_label.setMinimumWidth(60)
+        temp_row.addWidget(self.temp_slider, 1)
+        temp_row.addWidget(self.temp_label)
+        row.addWidget(_group("Display scale (max)", self._wrap(temp_row)), 1)
 
         return bar
 
@@ -1943,13 +1962,6 @@ class MainWindow(QtWidgets.QMainWindow):
     def _build_status_bar(self):
         self.setStatusBar(QtWidgets.QStatusBar())
         self.statusBar().showMessage("Ready.")
-
-    @staticmethod
-    def _divider() -> QtWidgets.QFrame:
-        line = QtWidgets.QFrame()
-        line.setObjectName("divider")
-        line.setFrameShape(QtWidgets.QFrame.HLine)
-        return line
 
     @staticmethod
     def _wrap(layout: QtWidgets.QLayout) -> QtWidgets.QWidget:

@@ -419,8 +419,19 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
 
     /* Live Viewer layout pass: Vent 1/Vent 2/Number of candles, docked
        below the plot/inspector row -- see main_window.py's
-       _build_scenario_control_bar(). */
+       _build_scenario_control_bar(). User testing feedback, round 2, item
+       3: Room diagram/Door opening width joined this same bar. */
     QWidget#scenarioControlBar {{
+        background-color: {p.bg_sunken};
+        border-top: 1px solid {p.border};
+    }}
+
+    /* User testing feedback, round 2, item 3: Data shown/Display scale,
+       docked below scenarioControlBar -- see main_window.py's
+       _build_display_control_bar(). Never factorial-gated, unlike
+       scenarioControlBar, so it's a second bar rather than sharing one
+       visibility toggle. */
+    QWidget#displayControlBar {{
         background-color: {p.bg_sunken};
         border-top: 1px solid {p.border};
     }}
