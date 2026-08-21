@@ -96,3 +96,23 @@ def detect_events(desc, quantity: str = "TEMPERATURE", ambient_c: float = AMBIEN
 
     events.sort(key=lambda e: e.primary_time())
     return events
+
+
+def current_story_text(events: list, fps: int, index: int) -> str:
+    """The "Now: ..." line for `index` (a frame index at `fps`): the most
+    recent event at or before it, or "Now: before ignition" if events exist
+    but none has happened yet, or "" if there are no events at all (no
+    scenario story to tell -- e.g. a difference/ensemble cell, or nothing
+    detected). Extracted from inspector.py's own set_story_index (Devices-
+    panel narrative pass) so callers that aren't the Inspector widget --
+    device_panel.py's own narrative panel -- can show the identical text
+    without importing Inspector or duplicating the selection logic; the
+    Inspector call site now calls this too, single source of truth."""
+    if not events:
+        return ""
+    current = None
+    for ev in events:
+        fi = ev.frame_index(fps)
+        if fi is not None and fi <= index:
+            current = ev
+    return f"Now: {current.statement}" if current is not None else "Now: before ignition"

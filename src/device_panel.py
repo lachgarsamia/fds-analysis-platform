@@ -44,6 +44,8 @@ from slice_key import SliceKey, AXIS_TO_DIRECTION
 from registry import get_quantity
 from analysis_panel_base import populate_scenario_combo
 from schematic import ROOM_X, ROOM_Z
+from descriptors import compute_descriptors
+from events import detect_events, current_story_text
 import devices as dv
 
 _PLANE_AXES = ("y", "x", "z")   # y first: the app's default/verified plane
@@ -72,6 +74,7 @@ class DevicePanel(QtWidgets.QWidget):
         self._loc_ax = None
         self._bus = None
         self._current_index = 0    # live playback frame -- see set_bus()
+        self._fire_events_cache: dict = {}   # case_index -> Insight list, see _fire_events_for_case
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -144,7 +147,24 @@ class DevicePanel(QtWidgets.QWidget):
 
         self.canvas = MplCanvas(self)
         self.canvas.setAccessibleName("Device placement canvas")
-        layout.addWidget(self.canvas, 1)
+        # Layout split (Devices-panel narrative pass): heatmap 70% / fire-
+        # story narrative 30%, the same "Now: ..." text the Inspector's
+        # per-cell story already shows (events.py's current_story_text,
+        # single source of truth -- see _fire_events_for_case below),
+        # scoped to whichever scenario is selected here rather than the
+        # active grid cell's. Stretch factors (7:3), not a QSplitter --
+        # this panel doesn't offer user-resizable panes anywhere else.
+        plot_row = QtWidgets.QHBoxLayout()
+        plot_row.setContentsMargins(0, 0, 0, 0)
+        plot_row.setSpacing(12)
+        plot_row.addWidget(self.canvas, 7)
+        self.story_label = QtWidgets.QLabel("")
+        self.story_label.setAccessibleName("Fire story for the current scenario and frame")
+        self.story_label.setWordWrap(True)
+        self.story_label.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
+        self.story_label.setProperty("role", "value")
+        plot_row.addWidget(self.story_label, 3)
+        layout.addLayout(plot_row, 1)
 
         self.readout = QtWidgets.QLabel("")
         self.readout.setProperty("role", "value")
@@ -238,6 +258,27 @@ class DevicePanel(QtWidgets.QWidget):
         self._data = np.asarray(self._provider.get(case_index, key))
         self._extent = self._provider.get_extent(case_index, key)
         self._render()
+
+    def _fire_events_for_case(self, case_index: int) -> list:
+        """The scenario's detected fire events (events.py), computed once
+        and cached -- same pipeline as MainWindow._fire_events_for_case
+        (provider.get() -> compute_descriptors() -> detect_events()),
+        duplicated here rather than imported from MainWindow so this panel
+        stays independent of it (same convention this app already follows
+        for velocity_panel.py/streamline_panel.py's own duplicated
+        _ensure_field). Always TEMPERATURE-based, regardless of what the
+        locator canvas is currently showing."""
+        cache = self._fire_events_cache
+        if case_index not in cache:
+            key = SliceKey("TEMPERATURE")
+            try:
+                data = self._provider.get(case_index, key)
+                extent = self._provider.get_extent(case_index, key)
+                table = compute_descriptors(data, extent, self._fps)
+                cache[case_index] = detect_events(table, key.quantity)
+            except Exception:  # noqa: BLE001 - the story is a nice-to-have, never fatal
+                return []
+        return cache[case_index]
 
     # -------------------------------------------------- session hooks (V6-M2)
     def get_devices(self) -> list:
@@ -478,6 +519,8 @@ class DevicePanel(QtWidgets.QWidget):
         ax.set_xticks([]); ax.set_yticks([])
         ax.set_title("Click to place a device", fontsize=8)
         case_index = self.scenario_combo.currentData()
+        events = self._fire_events_for_case(case_index) if case_index is not None else []
+        self.story_label.setText(current_story_text(events, self._fps, self._current_index))
         selected = self._current()
         for d in self._devices:
             if d.scenario != case_index:

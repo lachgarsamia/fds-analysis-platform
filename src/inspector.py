@@ -24,6 +24,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 from auto_summary import narrate_frame
 from insight import InsightList
+from events import current_story_text
 
 AMBIENT_DEFAULT_C = 20.0
 
@@ -346,17 +347,10 @@ class InspectorPanel(QtWidgets.QWidget):
 
     def set_story_index(self, index: int) -> None:
         """Update the live "current phase" line to the most recent event at
-        or before the current frame."""
-        if not self._events:
-            self.phase_label.setText("")
-            return
-        current = None
-        for ev in self._events:
-            fi = ev.frame_index(self._events_fps)
-            if fi is not None and fi <= index:
-                current = ev
-        self.phase_label.setText(f"Now: {current.statement}" if current is not None
-                                 else "Now: before ignition")
+        or before the current frame -- events.py's current_story_text() is
+        the single source of truth for this selection (device_panel.py's
+        narrative panel calls the same function)."""
+        self.phase_label.setText(current_story_text(self._events, self._events_fps, index))
 
     def set_scenario(self, peak_temp_by_frame: list, ambient_c: float, door_wide_open: bool,
                      hrr_by_frame: list = None) -> None:
