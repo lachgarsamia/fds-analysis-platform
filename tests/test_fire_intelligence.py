@@ -146,6 +146,89 @@ class TestInspectorStory:
         panel.deleteLater()
 
 
+class TestCurrentStoryText:
+    """Devices-panel narrative pass: events.current_story_text() is the
+    single source of truth both Inspector.set_story_index and
+    DevicePanel's own narrative label call -- pinned directly so a future
+    edit that has one call site diverge from the other (e.g. reimplements
+    the selection inline instead of calling this) breaks a test."""
+
+    def test_no_events_returns_empty_string(self):
+        assert ev.current_story_text([], fps=4, index=10) == ""
+
+    def test_before_first_event_says_before_ignition(self):
+        events = [Insight("Ignition.", time_s=5.0)]
+        assert ev.current_story_text(events, fps=4, index=0) == "Now: before ignition"
+
+    def test_at_or_after_an_event_shows_its_statement(self):
+        events = [Insight("Ignition.", time_s=0.5), Insight("Peak 400 C.", time_s=10.0)]
+        # 0.5s -> frame 2 at fps=4
+        assert ev.current_story_text(events, fps=4, index=2) == "Now: Ignition."
+        assert ev.current_story_text(events, fps=4, index=100) == "Now: Peak 400 C."
+
+
+class TestDevicePanelNarrative:
+    """Devices-panel narrative pass: the 70/30 canvas/story split, and
+    that the story label's text matches current_story_text() exactly for
+    the panel's own detected events -- not a separately-maintained copy."""
+
+    def _ramp_provider(self):
+        from slice_key import SliceKey
+
+        class _FakeEntry:
+            def __init__(self, ci):
+                self.case_index = ci
+                self.folder = f"case_{ci}"
+                self.candles = self.door = self.vod = self.voc = 0
+
+        class _FakeProvider:
+            def get(self, case_index, key):
+                return _ramp_data()
+
+            def get_extent(self, case_index, key):
+                return EXTENT
+
+        return _FakeProvider(), [_FakeEntry(0)]
+
+    def test_story_label_uses_the_shared_extraction(self, qapp):
+        from device_panel import DevicePanel
+        from descriptors import compute_descriptors
+
+        provider, manifest = self._ramp_provider()
+        panel = DevicePanel(provider, manifest, fps=2)
+        panel.ensure_loaded()
+
+        table = compute_descriptors(_ramp_data(), EXTENT, fps=2)
+        expected_events = ev.detect_events(table, "TEMPERATURE")
+        panel._current_index = 3
+        panel._render()
+
+        assert panel.story_label.text() == ev.current_story_text(expected_events, fps=2, index=3)
+        panel.deleteLater()
+
+    def test_canvas_and_story_label_split_seventy_thirty(self, qapp):
+        from device_panel import DevicePanel
+
+        provider, manifest = self._ramp_provider()
+        panel = DevicePanel(provider, manifest, fps=2)
+        # plot_row isn't kept as an attribute -- find the sub-layout that
+        # actually holds canvas + story_label rather than assuming it's
+        # panel.layout() itself (that's the outer QVBoxLayout).
+        plot_row = None
+        outer = panel.layout()
+        for i in range(outer.count()):
+            sub = outer.itemAt(i).layout()
+            if sub is not None and sub.indexOf(panel.canvas) != -1:
+                plot_row = sub
+                break
+        assert plot_row is not None, "expected to find the canvas/story_label row layout"
+        idx_canvas = plot_row.indexOf(panel.canvas)
+        idx_story = plot_row.indexOf(panel.story_label)
+        assert plot_row.stretch(idx_canvas) == 7
+        assert plot_row.stretch(idx_story) == 3
+        panel.deleteLater()
+
+
 import semantic_diff as sd  # noqa: E402
 
 
