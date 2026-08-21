@@ -185,6 +185,20 @@ class SliceView:
         self._hrrpuv_overlay_enabled = False
         self._hrrpuv_contour_artist = None
         self._hrrpuv_frame = None
+        # Isoline render mode (Temperature (Isolines)): filled contour
+        # bands + isotherm lines in place of the normal continuous imshow
+        # gradient, for the SAME field the (hidden-but-still-updated)
+        # heatmap artist holds -- own state, deliberately separate from
+        # _isotherm_levels/_isotherms_enabled above (the independent
+        # View-menu overlay toggle): switching in or out of isoline mode
+        # must never fight that toggle's own on/off state.
+        self._isoline_mode_enabled = False
+        self._isoline_levels: list = []
+        self._isoline_cmap = "viridis"
+        self._isoline_vmin = None
+        self._isoline_vmax = None
+        self._isoline_fill_artist = None
+        self._isoline_line_artist = None
         # Real soot-density smoke overlay (continuous soot-density
         # visualization pass): a second, always-present-but-empty imshow
         # over the temperature heatmap, same "always present, empty by
@@ -502,6 +516,7 @@ class SliceView:
             (self._isotherms_enabled and self._isotherm_levels)
             or (self._velocity_overlay_enabled and self._velocity_overlay_levels and velocity_frame is not None)
             or (self._hrrpuv_overlay_enabled and self._hrrpuv_overlay_levels and hrrpuv_frame is not None)
+            or self._isoline_mode_enabled
         )
         if overlay_active:
             # Contours redrawn per frame, full draw (blit bypass while
@@ -509,10 +524,13 @@ class SliceView:
             # primitive the way set_data() gives the image artist, and
             # ROADMAP.md's M2.6 spec explicitly accepts this cost at this
             # grid size rather than asking for a fast-path that doesn't
-            # exist in matplotlib's contour API.
+            # exist in matplotlib's contour API. Isoline mode's contourf
+            # base layer pays the exact same "no cheap update" cost, so it
+            # rides this same accepted-cost branch rather than a new one.
             self._redraw_isotherms()
             self._redraw_velocity_overlay()
             self._redraw_hrrpuv_overlay()
+            self._redraw_isoline_mode()
             self.canvas.draw_idle()
             self.canvas.capture_background()
         else:
@@ -1041,6 +1059,87 @@ class SliceView:
         else:
             self._hrrpuv_contour_artist = self.ax.contour(frame, levels=levels, **style)
 
+    # ------------------------------------------- isoline render mode
+    def set_isoline_mode(self, enabled: bool, levels: list = None, cmap: str = None,
+                          vmin: float = None, vmax: float = None) -> None:
+        """Temperature (Isolines): filled contour bands (ax.contourf) +
+        isotherm lines (ax.contour) on the SAME field the heatmap image
+        already holds, in place of its continuous gradient -- the
+        heatmap artist itself is only hidden, not removed, so hover/
+        probe/colorbar (all of which read it) keep working unchanged.
+        Redraws immediately from `self._last_frame` (mirrors
+        set_isotherms_enabled) since, unlike the velocity/HRRPUV
+        overlays, this never needs a frame from outside what show_frame()
+        already stores. No-op if nothing actually changed -- called for
+        every cell on every quantity/scenario resync (main_window.py's
+        _apply_contour_overlay_state), so the overwhelmingly common case
+        (already disabled, called with enabled=False again) must stay
+        cheap, not redo a full contour redraw + background recapture."""
+        changed = (
+            enabled != self._isoline_mode_enabled
+            or (levels is not None and sorted(set(levels)) != self._isoline_levels)
+            or (cmap is not None and cmap != self._isoline_cmap)
+            or (vmin is not None and vmin != self._isoline_vmin)
+            or (vmax is not None and vmax != self._isoline_vmax)
+        )
+        if not changed:
+            return
+        self._isoline_mode_enabled = enabled
+        if levels is not None:
+            self._isoline_levels = sorted(set(levels))
+        if cmap is not None:
+            self._isoline_cmap = cmap
+        if vmin is not None:
+            self._isoline_vmin = vmin
+        if vmax is not None:
+            self._isoline_vmax = vmax
+        if self.heatmap is not None:
+            self.heatmap.set_visible(not enabled)
+        if enabled:
+            self._redraw_isoline_mode()
+        else:
+            self._clear_isoline_mode()
+        self.canvas.capture_background()
+
+    @property
+    def isoline_mode_enabled(self) -> bool:
+        return self._isoline_mode_enabled
+
+    def _clear_isoline_mode(self) -> None:
+        if self._isoline_fill_artist is not None:
+            self._isoline_fill_artist.remove()
+            self._isoline_fill_artist = None
+        if self._isoline_line_artist is not None:
+            self._isoline_line_artist.remove()
+            self._isoline_line_artist = None
+
+    def _redraw_isoline_mode(self) -> None:
+        self._clear_isoline_mode()
+        if not self._isoline_mode_enabled or not self._isoline_levels or self.heatmap is None:
+            return
+        frame = self._last_frame if self._last_frame is not None else self.heatmap.get_array()
+        levels = self._isoline_levels
+        # extend="both": the fixed levels don't span the field's full
+        # possible range at either end on purpose (e.g. TEMPERATURE's
+        # levels start at 30, well above ambient, and ambient dominates
+        # most of the room -- see registry.py's own comment) -- without
+        # extend, contourf leaves anything outside [levels[0], levels[-1]]
+        # unfilled, which would blank out most of the room rather than
+        # showing its lowest/highest band.
+        fill_kwargs = dict(levels=levels, cmap=self._isoline_cmap,
+                            vmin=self._isoline_vmin, vmax=self._isoline_vmax, extend="both")
+        line_kwargs = dict(levels=levels, colors="white", linewidths=0.6)
+        if self._extent is not None:
+            x0, x1, z0, z1 = self._extent
+            n_z, n_x = frame.shape
+            xs = np.linspace(x0, x1, n_x)
+            zs = np.linspace(z1, z0, n_z)  # row 0 = z1 (top), matching origin='upper'
+            self._isoline_fill_artist = self.ax.contourf(xs, zs, frame, **fill_kwargs)
+            self._isoline_line_artist = self.ax.contour(xs, zs, frame, **line_kwargs)
+        else:
+            self._isoline_fill_artist = self.ax.contourf(frame, **fill_kwargs)
+            self._isoline_line_artist = self.ax.contour(frame, **line_kwargs)
+
     # ------------------------ real soot-density smoke overlay ("smoke" pass)
     def set_soot_overlay_enabled(self, enabled: bool) -> None:
         if enabled == self._soot_overlay_enabled:
@@ -1280,6 +1379,13 @@ class DifferenceView:
     def hrrpuv_overlay_enabled(self) -> bool:
         return self._inner.hrrpuv_overlay_enabled
 
+    # Isoline render mode: same "never actually applies to this cell
+    # type, but delegate straight through rather than crash on a missing
+    # attribute" reasoning as the overlays above.
+    def set_isoline_mode(self, enabled: bool, levels: list = None, cmap: str = None,
+                          vmin: float = None, vmax: float = None) -> None:
+        self._inner.set_isoline_mode(enabled, levels=levels, cmap=cmap, vmin=vmin, vmax=vmax)
+
     # Real soot-density smoke overlay: same "never actually applies to
     # this cell type, but delegate straight through rather than crash on
     # a missing attribute" reasoning as the velocity overlay above -- see
@@ -1449,6 +1555,13 @@ class EnsembleView:
     @property
     def hrrpuv_overlay_enabled(self) -> bool:
         return self._inner.hrrpuv_overlay_enabled
+
+    # Isoline render mode: same "never actually applies to this cell
+    # type, but delegate straight through rather than crash on a missing
+    # attribute" reasoning as the overlays above.
+    def set_isoline_mode(self, enabled: bool, levels: list = None, cmap: str = None,
+                          vmin: float = None, vmax: float = None) -> None:
+        self._inner.set_isoline_mode(enabled, levels=levels, cmap=cmap, vmin=vmin, vmax=vmax)
 
     # Real soot-density smoke overlay: same "never actually applies to
     # this cell type, but delegate straight through rather than crash on

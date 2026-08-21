@@ -963,7 +963,8 @@ class TestQuantityBreadth:
         assert "U-VELOCITY" not in regm.gated_quantities()
         assert "W-VELOCITY" not in regm.gated_quantities()
         assert "V-VELOCITY" in regm.gated_quantities()  # still gated -- no V-VELOCITY output exists
-        assert set(regm.derived_quantity_names()) == {"TEMPERATURE RISE", "DYNAMIC PRESSURE"}
+        assert set(regm.derived_quantity_names()) == {
+            "TEMPERATURE RISE", "DYNAMIC PRESSURE", "TEMPERATURE (ISOLINES)"}
 
     def test_legacy_views_exclude_gated_and_derived(self):
         # config's derived views must still see only the original real quantities

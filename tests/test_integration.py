@@ -3987,6 +3987,31 @@ class TestCalculatedFieldsInLiveViewer:
         assert window.quantity_provider.get(0, SliceKey("TEMPERATURE RISE")) is not a
         window.close()
 
+    def test_temperature_isolines_selectable_and_renders(self, qapp):
+        """Temperature (Isolines) is a static registry entry, so (unlike
+        a Field Calculator field) it's already in the Live combo from
+        construction -- selecting it must put the active cell's view
+        into isoline render mode without crashing, and selecting plain
+        Temperature afterward must turn that mode back off."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        labels = [window.quantity_combo.itemText(i) for i in range(window.quantity_combo.count())]
+        assert "Temperature (Isolines)" in labels
+        window.quantity_combo.setCurrentIndex(labels.index("Temperature (Isolines)"))
+        QtWidgets.QApplication.processEvents()
+        assert window.current_quantity_key.quantity == "TEMPERATURE (ISOLINES)"
+        cell = window.view_grid.active_cell()
+        assert cell.view.isoline_mode_enabled
+        assert cell.view._isoline_fill_artist is not None
+
+        window.quantity_combo.setCurrentIndex(labels.index("Temperature"))
+        QtWidgets.QApplication.processEvents()
+        assert not cell.view.isoline_mode_enabled
+        window.close()
+
     def test_native_quantity_still_reads_store(self, qapp):
         import numpy as np
         from slice_key import SliceKey

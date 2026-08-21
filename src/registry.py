@@ -174,6 +174,27 @@ QUANTITY_REGISTRY = {
         hazard_levels=(40, 80, 280), kind="derived",
         interpretation="Temperature above ambient (T − 20 °C); isolates the fire's "
                        "contribution. Derived from TEMPERATURE."),
+    "TEMPERATURE (ISOLINES)": QuantityInfo(
+        # Isolines/roadmap follow-up: same TEMPERATURE field as the plain
+        # heatmap (derived_quantities.identity -- no value transform), a
+        # distinct *render style* (filled contour bands + isotherm lines,
+        # see views.py's set_isoline_mode/_redraw_isoline_mode) rather
+        # than a new sibling panel, following this same registry/PlotView
+        # pattern DENSITY/HRRPUV already use. vmin/slider_* deliberately
+        # mirror TEMPERATURE's own fixed clim (not reset to raw 0-max) so
+        # switching between the two reads as "same data, different view",
+        # not a second, uncalibrated color scale.
+        #
+        # Contour levels are NOT set here -- rendering code reads
+        # TEMPERATURE's own contour_overlay_levels directly (already
+        # data-driven: see that entry's comment for the real 24-scenario
+        # percentile/peak grounding), so the two stay identical by
+        # construction instead of two hand-kept copies drifting apart.
+        "TEMPERATURE (ISOLINES)", "Temperature (Isolines)", "°C", "viridis", AMBIENT_C,
+        slider_min=50, slider_max=1000, slider_default=int(AMBIENT_C + 150), kind="derived",
+        interpretation="The same gas-temperature field as Temperature, shown as filled "
+                       "contour bands with isotherm lines instead of a continuous "
+                       "gradient -- easier to read off specific thresholds."),
     "DYNAMIC PRESSURE": QuantityInfo(
         # "viridis" (was "fds_flow", VELOCITY's own colormap -- the two
         # were previously indistinguishable in the View menu).

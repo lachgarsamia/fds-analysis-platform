@@ -45,10 +45,20 @@ def dynamic_pressure(speed_frame, density_frame=None, rho: float = RHO_AIR) -> n
     return 0.5 * d * v * v
 
 
+def identity(frame) -> np.ndarray:
+    """Pass-through: the source field unchanged. TEMPERATURE (ISOLINES)
+    reuses TEMPERATURE's own values under a distinct render-style
+    registry entry (filled contour bands + isotherm lines instead of a
+    continuous imshow gradient -- see views.py's set_isoline_mode) --
+    there is nothing to derive, only how it's drawn differs."""
+    return np.asarray(frame, dtype=float)
+
+
 # derived quantity name -> (source quantity, function)
 DERIVED = {
     "TEMPERATURE RISE": ("TEMPERATURE", temperature_rise),
     "DYNAMIC PRESSURE": ("VELOCITY", dynamic_pressure),
+    "TEMPERATURE (ISOLINES)": ("TEMPERATURE", identity),
 }
 
 

@@ -411,6 +411,91 @@ class TestSliceViewIsotherms:
         assert view._contour_artist is not None
 
 
+class TestSliceViewIsolineMode:
+    """Temperature (Isolines): filled contour bands + isotherm lines in
+    place of the continuous imshow gradient, for the same TEMPERATURE
+    field -- a render style (registry.py's TEMPERATURE (ISOLINES) entry),
+    not a new panel type."""
+
+    def test_disabled_by_default(self, qapp):
+        view = SliceView()
+        view.init_plot(FRAME, cmap="viridis", interpolation="nearest",
+                        vmin=20.0, vmax=170.0, colorbar_label="x")
+        assert not view.isoline_mode_enabled
+        assert view.heatmap.get_visible()
+
+    def test_enabling_draws_filled_bands_and_lines_and_hides_the_heatmap(self, qapp):
+        view = SliceView()
+        view.init_plot(FRAME, cmap="viridis", interpolation="nearest",
+                        vmin=20.0, vmax=170.0, colorbar_label="x", extent=(0.0, 1.0, 0.0, 0.48))
+        view.set_isoline_mode(True, levels=[30, 45, 60, 85], cmap="viridis", vmin=20.0, vmax=170.0)
+        assert view.isoline_mode_enabled
+        assert view._isoline_fill_artist is not None
+        assert view._isoline_line_artist is not None
+        # The heatmap image is hidden, not removed -- hover/probe/colorbar
+        # (all of which read it) must keep working unchanged.
+        assert not view.heatmap.get_visible()
+        assert view.heatmap.get_array() is not None
+
+    def test_disabling_clears_bands_and_lines_and_restores_the_heatmap(self, qapp):
+        view = SliceView()
+        view.init_plot(FRAME, cmap="viridis", interpolation="nearest",
+                        vmin=20.0, vmax=170.0, colorbar_label="x", extent=(0.0, 1.0, 0.0, 0.48))
+        view.set_isoline_mode(True, levels=[30, 45, 60], cmap="viridis", vmin=20.0, vmax=170.0)
+        view.set_isoline_mode(False)
+        assert not view.isoline_mode_enabled
+        assert view._isoline_fill_artist is None
+        assert view._isoline_line_artist is None
+        assert view.heatmap.get_visible()
+
+    def test_show_frame_redraws_bands_each_call_while_enabled(self, qapp):
+        view = SliceView()
+        view.init_plot(FRAME, cmap="viridis", interpolation="nearest",
+                        vmin=20.0, vmax=170.0, colorbar_label="x", extent=(0.0, 1.0, 0.0, 0.48))
+        view.set_isoline_mode(True, levels=[30, 45, 60], cmap="viridis", vmin=20.0, vmax=170.0)
+        first_fill = view._isoline_fill_artist
+        new_frame = np.full((49, 101), 75.0, dtype=np.float32)
+        view.show_frame(new_frame)
+        assert view._isoline_fill_artist is not None
+        assert view._isoline_fill_artist is not first_fill, "contourf must be a fresh artist each frame, not reused"
+
+    def test_independent_of_the_view_menu_isotherm_overlay(self, qapp):
+        """Switching isoline mode on/off must never touch the separate,
+        independently-toggleable View-menu isotherm overlay's own state."""
+        view = SliceView()
+        view.init_plot(FRAME, cmap="viridis", interpolation="nearest",
+                        vmin=20.0, vmax=170.0, colorbar_label="x", extent=(0.0, 1.0, 0.0, 0.48))
+        view.set_isotherm_levels([60, 100])
+        view.set_isotherms_enabled(True)
+        view.set_isoline_mode(True, levels=[30, 45, 60], cmap="viridis", vmin=20.0, vmax=170.0)
+        assert view.isotherms_enabled  # unchanged by isoline mode
+        view.set_isoline_mode(False)
+        assert view.isotherms_enabled  # still unchanged
+
+
+class TestTemperatureIsolineLevelsRealData:
+    """Temperature (Isolines) reuses TEMPERATURE's own contour_overlay_levels
+    (registry.py) rather than deriving new ones -- confirms those levels
+    are still sensibly calibrated against real data, not stale numbers
+    left over from an earlier dataset."""
+
+    @requires_real_dataset
+    def test_levels_bracket_the_real_temperature_range(self):
+        from registry import contour_overlay_dict
+        key = SliceKey("TEMPERATURE", 1, 0)
+        case_dir = real_scenario_dir("c1_d0_vod0_voc0")
+        data = load_data(case_dir, key)
+        levels = contour_overlay_dict()["TEMPERATURE"]
+        # Above ambient (an isotherm at the floor is meaningless) but
+        # still low enough that real data actually crosses it somewhere
+        # in the run -- otherwise the lowest band would never trigger.
+        assert 20.0 < levels[0] < float(data.max())
+        # At or above the real observed peak -- otherwise the hottest
+        # real cells would fall outside every band (see registry.py's own
+        # comment: the top level must sit *inside* the top bracket).
+        assert levels[-1] >= float(data.max())
+
+
 class TestSliceViewVelocityOverlay:
     """Item 6 (GUI modernization pass): VELOCITY speed-band contours drawn
     on top of a TEMPERATURE heatmap. Own artist/state, independent of the

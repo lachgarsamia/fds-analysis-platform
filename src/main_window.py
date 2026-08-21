@@ -2341,6 +2341,22 @@ class MainWindow(QtWidgets.QMainWindow):
             if hrrpuv_frame is not None:
                 cell.view.show_frame(cell.view.heatmap.get_array(), hrrpuv_frame=hrrpuv_frame)
 
+        # Temperature (Isolines): a render style, not an opt-in overlay --
+        # on exactly when this is the cell's current quantity, using
+        # TEMPERATURE's own (already data-driven) contour levels since
+        # this quantity is that same field under a different registry
+        # entry (see registry.py's TEMPERATURE (ISOLINES) comment).
+        isoline_applies = quantity == "TEMPERATURE (ISOLINES)"
+        if isoline_applies:
+            display = self._display_for(quantity)
+            is_active = cell is self.view_grid.active_cell()
+            vmax = self.temp_slider.value() if is_active else display['slider_default']
+            cell.view.set_isoline_mode(
+                True, levels=CONTOUR_OVERLAY_LEVELS.get("TEMPERATURE", []),
+                cmap=display['cmap'], vmin=display['vmin'], vmax=vmax)
+        else:
+            cell.view.set_isoline_mode(False)
+
     def _soot_supported_for_cell(self, cell) -> bool:
         """Whether real SOOT DENSITY can meaningfully be fetched for
         `cell` at all -- a "slice" cell currently showing TEMPERATURE at
