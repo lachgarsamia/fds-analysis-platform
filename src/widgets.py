@@ -674,6 +674,17 @@ class TimeSeriesStrip(QtWidgets.QWidget):
             path.closeSubpath()
             painter.drawPath(path)
 
+        # The brush set above is still active here -- drawPath() fills *any*
+        # path it's given, even an open one (Qt implicitly closes it for
+        # filling purposes, connecting the last point straight back to the
+        # first). Without resetting to NoBrush, this "line" path silently
+        # got filled too: a second, spurious translucent triangle from the
+        # series' last value straight back to its first value, stacked on
+        # top of the real fill above wherever they overlap (visible as a
+        # smooth diagonal band unrelated to the actual data, confirmed via
+        # a real DYNAMIC PRESSURE strip whose series starts near the axis
+        # minimum and ends far above it).
+        painter.setBrush(QtCore.Qt.NoBrush)
         for series, color in zip(self._series, self._colors):
             path = QtGui.QPainterPath()
             path.moveTo(point(series, 0))
