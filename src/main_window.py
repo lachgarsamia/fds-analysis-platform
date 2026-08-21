@@ -130,6 +130,13 @@ APP_NAME = "FDSSLCFVisualizer"
 #   design (that band covers very little area for these candle fires --
 #   see hazard_fraction_series' docstring for why fraction, not peak
 #   temperature, is plotted at all).
+# Bottom control bar (row 1 + row 2, _build_central_widget's
+# bottom_bar_splitter): drag-handle bounds so the bar can't be resized to
+# zero or off the bottom of the window. Not tuned to any one row's exact
+# content height -- just sane floor/ceiling on the drag range.
+_BOTTOM_BAR_MIN_HEIGHT = 80
+_BOTTOM_BAR_MAX_HEIGHT = 500
+
 _HAZARD_FRACTION_RANGE = (0.0, 0.22)
 _HAZARD_THRESHOLDS_C = (60.0, 100.0, 300.0)
 _HAZARD_COLORS = ("#F59E0B", "#E8622C", "#DC2626")  # amber -> orange -> red, escalating severity
@@ -1456,7 +1463,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self.splitter.setChildrenCollapsible(True)  # user can fully collapse the panel
-        root_layout.addWidget(self.splitter, 1)
 
         self.splitter.addWidget(self._build_control_panel())
         # Built here, before _build_plot_panel() (not where it's *added* to
@@ -1482,13 +1488,41 @@ class MainWindow(QtWidgets.QMainWindow):
         # crowd the (now much emptier) control panel or the inspector on a
         # narrower window. See _build_scenario_control_bar().
         self.scenario_control_bar = self._build_scenario_control_bar()
-        root_layout.addWidget(self.scenario_control_bar)
         # Data shown/Display scale (same pass): a second bar, docked below
         # the first -- never factorial-gated, unlike everything in
         # scenario_control_bar, so it's its own bar rather than sharing
-        # one visibility toggle. Built earlier (see above), added to the
-        # layout here so it still lands in the right visual position.
-        root_layout.addWidget(self.display_control_bar)
+        # one visibility toggle. Built earlier (see above); stacked in here
+        # so it still lands in the right visual position.
+        bottom_bar = QtWidgets.QWidget()
+        bottom_bar.setObjectName("bottomControlBar")
+        bottom_bar_layout = QtWidgets.QVBoxLayout(bottom_bar)
+        bottom_bar_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_bar_layout.setSpacing(0)
+        bottom_bar_layout.addWidget(self.scenario_control_bar)
+        bottom_bar_layout.addWidget(self.display_control_bar)
+        # Drag-resizable bottom control bar: min/max keep the handle from
+        # being dragged to zero height or off the bottom of the window --
+        # QSplitter clamps its handle to a child's min/maxHeight, so these
+        # bound the drag range without touching row 1/row 2's own contents.
+        bottom_bar.setMinimumHeight(_BOTTOM_BAR_MIN_HEIGHT)
+        bottom_bar.setMaximumHeight(_BOTTOM_BAR_MAX_HEIGHT)
+
+        # Vertical splitter between the page content (self.splitter, the
+        # former direct root_layout child) and the combined bottom bar --
+        # gives a real drag handle instead of the bars' fixed sizeHint
+        # height. Not collapsible on the bottom side: dragging to the
+        # limit should hit _BOTTOM_BAR_MIN_HEIGHT, not vanish entirely.
+        self.bottom_bar_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        self.bottom_bar_splitter.addWidget(self.splitter)
+        self.bottom_bar_splitter.addWidget(bottom_bar)
+        self.bottom_bar_splitter.setStretchFactor(0, 1)
+        self.bottom_bar_splitter.setStretchFactor(1, 0)
+        self.bottom_bar_splitter.setCollapsible(1, False)
+        # Starting height matches the bars' own natural sizeHint (the old
+        # fixed-height look) unless _restore_window_state() overrides it
+        # with a persisted drag position.
+        self.bottom_bar_splitter.setSizes([10_000, bottom_bar.sizeHint().height()])
+        root_layout.addWidget(self.bottom_bar_splitter, 1)
         return central
 
     def _build_inspector_panel(self) -> QtWidgets.QWidget:
@@ -4698,9 +4732,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if splitter_state is not None:
             self.splitter.restoreState(splitter_state)
 
+        bottom_bar_splitter_state = self.settings.value("bottom_bar_splitter_state")
+        if bottom_bar_splitter_state is not None:
+            self.bottom_bar_splitter.restoreState(bottom_bar_splitter_state)
+
     def closeEvent(self, event: QtGui.QCloseEvent):
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("splitter_state", self.splitter.saveState())
+        self.settings.setValue("bottom_bar_splitter_state", self.bottom_bar_splitter.saveState())
         # V4-M6: autosave a draft session so an unsaved investigation is
         # recoverable next launch (best-effort; never blocks close). Gated
         # only on having a manifest -- not on the (now-removed, Analysis UX

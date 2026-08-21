@@ -182,6 +182,24 @@ class TestIntegration:
         assert "nearest" in values
         assert "bilinear" in values
 
+    def test_bottom_control_bar_height_persists_across_restart(self, qapp):
+        """Drag-resizable bottom control bar (row 1 + row 2): the chosen
+        split position must round-trip through QSettings the same way
+        splitter_state already does, not reset to the default sizeHint
+        height on next launch. tests/conftest.py's _isolated_qsettings
+        fixture routes both windows' QSettings(ORG_NAME, APP_NAME) to the
+        same per-test scratch file, so a second MainWindow in this same
+        test genuinely simulates a restart rather than a fresh install."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        window.bottom_bar_splitter.setSizes([600, 200])
+        chosen_state = bytes(window.bottom_bar_splitter.saveState())
+        window.close()  # closeEvent persists bottom_bar_splitter_state
+
+        restarted = MainWindow(sim_data)
+        assert bytes(restarted.bottom_bar_splitter.saveState()) == chosen_state
+        restarted.close()
+
     def test_interpolation_toggle_persists(self, qapp):
         """Verify the interpolation toggle (M1.3.4) applies and persists.
 
