@@ -65,6 +65,19 @@ DEFAULT_CMAP = "viridis"  # perceptually uniform sequential -- never jet
 LINEWIDTH_BASE = 1.0
 LINEWIDTH_SCALE = 2.5
 
+# Frame-to-frame stability fix: streamplot()'s automatic seeding
+# (density=...) picks new seed locations independently on every call, so
+# the rendered pattern reshuffled discontinuously between frames even
+# though the underlying U/W field itself evolves smoothly -- the seeds
+# moved, not the flow. Fixed explicit start_points (see _seed_points)
+# sidesteps this: the same seed grid drives every frame, so the pattern
+# now shifts continuously with the field instead of jumping. NX:NZ
+# roughly matches the room's ~2:1 x:z extent ratio; 12x6=72 seeds is
+# comparable in on-screen density to the old density=1.8 auto-seeding,
+# not excessive.
+_SEED_GRID_NX = 12
+_SEED_GRID_NZ = 6
+
 
 class StreamlinePanel(QtWidgets.QWidget):
     """Analysis-page tab: a whole-plane matplotlib streamplot of the
@@ -84,6 +97,7 @@ class StreamlinePanel(QtWidgets.QWidget):
         self._gate_reasons: dict = {}   # case_index -> str
         self._bus = None
         self._current_index = 0    # live playback frame -- see set_bus()
+        self._seed_cache: dict = {}   # extent tuple -> fixed start_points array, see _seed_points
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -195,6 +209,22 @@ class StreamlinePanel(QtWidgets.QWidget):
         self._fields[case_index] = f
         return f
 
+    # ---------------------------------------------------------- seed points
+    def _seed_points(self, x0: float, x1: float, z0: float, z1: float) -> np.ndarray:
+        """Fixed start_points grid for streamplot(), generated once per
+        distinct plot extent and cached -- reused for every frame of that
+        extent rather than regenerated, which is the actual fix (see the
+        _SEED_GRID_NX/NZ comment)."""
+        key = (x0, x1, z0, z1)
+        seeds = self._seed_cache.get(key)
+        if seeds is None:
+            xs = np.linspace(x0, x1, _SEED_GRID_NX)
+            zs = np.linspace(z0, z1, _SEED_GRID_NZ)
+            xx, zz = np.meshgrid(xs, zs)
+            seeds = np.column_stack([xx.ravel(), zz.ravel()])
+            self._seed_cache[key] = seeds
+        return seeds
+
     # --------------------------------------------------------------- render
     def _render(self) -> None:
         if not self._loaded:
@@ -245,6 +275,7 @@ class StreamlinePanel(QtWidgets.QWidget):
             color=speed_frame, cmap=self._cmap,
             density=self.density_spin.value(),
             linewidth=linewidth,
+            start_points=self._seed_points(x0, x1, z0, z1),
         )
         self.canvas.fig.colorbar(strm.lines, ax=ax, fraction=0.046, pad=0.04, label="Speed (m/s)")
 
