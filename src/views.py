@@ -548,38 +548,44 @@ class SliceView:
             self.canvas.capture_background()
             return
         self.room_walls.set_segments([[(x0, z0), (x1, z1)] for x0, z0, x1, z1 in geometry["walls"]])
-        # Layout-tightening pass (extended -- room-fit follow-up): the
-        # y-normal mesh domain reaches well beyond the room on both axes,
-        # not just above the real ceiling -- the real dataset's domain is
-        # 1.00 x 0.48 m against a 0.73 x 0.22 m room (73%/46% of the raw
-        # domain), a FDS door-corridor buffer on x and ambient air on z,
-        # neither of which this app visualizes. Originally only z was
-        # cropped ("mostly empty sky above the room"); x was left at the
-        # full domain, leaving the equivalent gap along the door-corridor
-        # side uncropped. Crop both to the room's own wall bounds plus a
-        # small margin -- not the full `extent` itself (that stays
-        # untouched: probes/pixel math/colorbar all still address the real
-        # mesh coordinates, only the camera moves). The margin still keeps
-        # the door opening (HOLE XB starts at 0.25, just outside ROOM_X[0]
-        # =0.27) fully in view -- see room_overlay_geometry's docstring.
-        wall_xs = [x for x0, _z0, x1, _z1 in geometry["walls"] for x in (x0, x1)]
-        wall_zs = [z for _x0, z0, _x1, z1 in geometry["walls"] for z in (z0, z1)]
-        x_left, x_right = min(wall_xs), max(wall_xs)
-        z_bottom, z_top = min(wall_zs), max(wall_zs)
-        x_margin = (x_right - x_left) * 0.05
-        z_margin = (z_top - z_bottom) * 0.05
-        self.ax.set_xlim(x_left - x_margin, x_right + x_margin)
-        self.ax.set_ylim(z_bottom - z_margin, z_top + z_margin)
+        # Room-wall crop reverted (Live Viewer feedback pass, round 2): B1
+        # cropped both axes to the room's own wall bounds -- 1.00 x 0.48 m
+        # raw domain down to a 0.73 x 0.22 m room, 73%/46% of it -- to hide
+        # the FDS door-corridor buffer (x) and ambient-air buffer (z)
+        # neither of which this app otherwise visualizes. That crop's own
+        # W:H ratio (3.32:1) turned out to be a much more extreme shape than
+        # this cell's actual plot canvas (~2:1), so aspect="equal" (kept --
+        # see init_plot's own comment; "auto" is the pre-B1 distortion this
+        # session already fixed once) had to letterbox it -- a follow-up
+        # attempt to reshape the canvas itself to compensate (widgets.
+        # AspectRatioBox) was verified against real renders and reverted:
+        # it shrank the colorbar as a side effect and barely changed
+        # anything visible in light theme. Un-cropping back to the full raw
+        # mesh domain sidesteps the mismatch differently -- that domain's
+        # own 1.00:0.48 (~2.08:1) ratio is close to this cell's canvas
+        # shape already, so aspect="equal" should letterbox barely at all,
+        # no extra machinery required. Accepted tradeoff: the door corridor
+        # and ambient-air buffer are back in view (exactly what both crops
+        # existed to hide) -- `self._extent` itself was never touched by
+        # either crop (probes/pixel math/colorbar always addressed the real
+        # mesh coordinates; only the camera moved), so these limits just
+        # echo it directly now instead of a narrower wall-bound subset.
+        if self._extent is not None:
+            x0, x1, z0, z1 = self._extent
+            self.ax.set_xlim(x0, x1)
+            self.ax.set_ylim(z0, z1)
         dx0, dz0, dx1, dz1 = geometry["door"]
         self.room_door.set_segments([[(dx0, dz0), (dx1, dz1)]])
-        # "Door" (colormap expressiveness follow-up; room-fit follow-up:
-        # the exterior corridor this label originally explained is now
-        # cropped out of view entirely -- see the x-crop above -- but the
-        # door opening itself sits right at the room's cropped left edge,
-        # so the label stays to identify it). A small fixed offset to the
-        # right of the line, in the same physical (meter) units as
-        # everything else this method places, keeps it just inside the
-        # room instead of overlapping the door line itself.
+        # "Door" (colormap expressiveness follow-up): the door line sits
+        # right where the room's real exterior domain space begins (see
+        # ROOM_X/ROOM_Z in schematic.py) -- with the raw domain back in
+        # view (room-wall crop reverted above), that exterior space is the
+        # door corridor/ambient-air buffer, not a rendering gap; named so
+        # it reads as "outside the room" rather than looking like one. A
+        # small fixed offset to the right of the line, in the same
+        # physical (meter) units as everything else this method places,
+        # keeps it just inside the room instead of overlapping the door
+        # line itself.
         self.room_door_label.set_position((dx0 + 0.02, (dz0 + dz1) / 2))
         self.room_door_label.set_text("Door")
         self.room_door_label.set_visible(True)

@@ -62,6 +62,22 @@ class TestSliceView:
                         vmin=0.0, vmax=10.0, colorbar_label="x")
         assert view.value_at(5, 5) is None, "no extent means no meaningful physical-coordinate lookup"
 
+    def test_room_outline_shows_full_domain_not_wall_bound_crop(self, qapp):
+        """Room-wall crop reverted (Live Viewer feedback pass, round 2):
+        set_room_outline must leave the axes at the full raw mesh extent
+        (1.00 x 0.48 m) rather than cropping to the room's own wall
+        bounds (0.73 x 0.22 m, schematic.ROOM_X/ROOM_Z) -- the one
+        behavior nothing else pins."""
+        from schematic import room_overlay_geometry
+
+        extent = (0.0, 1.0, 0.0, 0.48)
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=0.0, vmax=10.0, colorbar_label="x", extent=extent)
+        view.set_room_outline(room_overlay_geometry(door=1, vod=0, voc=0))
+        assert view.ax.get_xlim() == (0.0, 1.0)
+        assert view.ax.get_ylim() == (0.0, 0.48)
+
 
 class TestSliceViewCinematicMode:
     """FireLab roadmap Phase 2.1: cinematic mode is opt-in and reversible,
