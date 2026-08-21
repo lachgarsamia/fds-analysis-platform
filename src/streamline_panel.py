@@ -51,8 +51,19 @@ from quantity_provider import GatedQuantityError
 from analysis_panel_base import populate_scenario_combo
 import velocity as vel
 
-DEFAULT_DENSITY = 1.0  # matplotlib's own streamplot default
+# Visual clarity pass: matplotlib's own streamplot default (1.0) reads
+# thin and sparse against this app's real (coherent, post-ignition) U/W
+# data -- compared several density/linewidth combos rendered against real
+# t=30/60/90s frames (scenario 0) before picking these; 2.5 density got
+# visually tangled in the recirculating eddies, this is the balance point.
+DEFAULT_DENSITY = 1.8
 DEFAULT_CMAP = "viridis"  # perceptually uniform sequential -- never jet
+# Linewidth-scales-with-speed formula (see _render): base + scale * ratio,
+# ratio = local speed / this frame's peak speed. Same comparison pass --
+# bumped from 0.5-2.5px to 1.0-3.5px so the peak-speed jet reads clearly
+# bolder than ambient recirculation without the whole plot feeling heavy.
+LINEWIDTH_BASE = 1.0
+LINEWIDTH_SCALE = 2.5
 
 
 class StreamlinePanel(QtWidgets.QWidget):
@@ -227,7 +238,7 @@ class StreamlinePanel(QtWidgets.QWidget):
         if self.linewidth_check.isChecked():
             peak = float(speed_frame.max())
             if peak > 1e-9:
-                linewidth = 0.5 + 2.0 * (speed_frame / peak)
+                linewidth = LINEWIDTH_BASE + LINEWIDTH_SCALE * (speed_frame / peak)
 
         strm = ax.streamplot(
             x, z, u_frame, w_frame,

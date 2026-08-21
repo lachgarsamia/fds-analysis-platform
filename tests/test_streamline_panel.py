@@ -104,8 +104,13 @@ def test_uses_perceptually_uniform_colormap_not_jet(panel):
     assert coll.cmap.name != "jet"
 
 
-def test_density_control_default_matches_matplotlib_default(panel):
-    assert panel.density_spin.value() == pytest.approx(1.0)
+def test_density_control_default_matches_app_default(panel):
+    """1.8, not matplotlib's own 1.0 default -- visual clarity pass:
+    compared several density/linewidth combos against real coherent
+    post-ignition data (t=30/60/90s) before picking this balance point
+    (dense enough to read clearly, short of 2.5 where the recirculating
+    eddies got visually tangled). See streamline_panel.py's DEFAULT_DENSITY."""
+    assert panel.density_spin.value() == pytest.approx(1.8)
 
 
 def test_density_is_a_tunable_constructor_parameter(qapp, provider, manifest):
