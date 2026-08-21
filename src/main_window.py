@@ -92,7 +92,7 @@ from evidence_notebook_panel import EvidenceNotebookDock
 from evidence_notebook import EvidenceNotebook
 from diff_analysis import DifferenceOverTimeDialog
 from session import build_session_dict, read_session, write_session
-from nav import NavRail
+from nav import NavRail, COLLAPSED_WIDTH
 from playback_bar import PlaybackBar
 from pages.live import LivePage
 from pages.home import HomePage
@@ -1087,6 +1087,18 @@ class MainWindow(QtWidgets.QMainWindow):
             ("about", "About"),
         ]
         self.page_stack = QtWidgets.QStackedWidget()
+        # Nav rail overlap fix: every page used to start flush at x=0,
+        # directly underneath the nav rail's own floating footprint --
+        # invisible while the rail was transparent (the bug fixed by the
+        # WA_StyledBackground change), but a real permanent left-edge crop
+        # on every page now that it's correctly opaque. Reserving exactly
+        # COLLAPSED_WIDTH here keeps the rail's *collapsed* state in
+        # genuinely empty space; its *expanded* (hover) state still floats
+        # OVER page content beyond that reserved strip, unaffected -- the
+        # rail is positioned via raw setGeometry (_layout_nav_rail), not
+        # this layout, so this margin only shifts where child pages sit
+        # inside page_stack's own stacked layout, not the rail itself.
+        self.page_stack.setContentsMargins(COLLAPSED_WIDTH, 0, 0, 0)
         for key, _label in nav_entries:
             self.page_stack.addWidget(self.pages[key])
 
@@ -1103,6 +1115,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.nav_rail = NavRail(nav_entries, parent=self.page_stack)
         self.nav_rail.page_selected.connect(self._navigate_to)
         self.nav_rail.theme_toggle_requested.connect(self._toggle_theme)
+        self.nav_rail.quit_requested.connect(self.close)
         self.nav_rail.expanded_changed.connect(lambda _expanded: self._layout_nav_rail())
 
         # self.playback_bar was already built (and wired) earlier in this
@@ -1464,22 +1477,25 @@ class MainWindow(QtWidgets.QMainWindow):
         self.splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self.splitter.setChildrenCollapsible(True)  # user can fully collapse the panel
 
-        self.splitter.addWidget(self._build_control_panel())
-        # Built here, before _build_plot_panel() (not where it's *added* to
+        # The control panel (title + Quit button, all that was left of it
+        # after round 2's item 3 moved everything else out into the bottom
+        # bars) is gone -- Quit moved to the nav rail (always-visible
+        # utility action, next to the theme toggle) and the title was
+        # purely decorative (the OS window/app title already carries "FDS
+        # SLCF Visualizer"). Deferred at the time ("a separate, bigger call
+        # about the 3-way splitter") -- this is that follow-up. Built
+        # before _build_plot_panel() (not where it's *added* to
         # root_layout, further below) -- _build_plot_panel()'s ViewGrid
-        # needs self.quantity_infos (via _quantity_options()) immediately,
-        # the same ordering requirement _build_control_panel() satisfied
-        # inline before this bar's contents moved out of it (user testing
-        # feedback, round 2, item 3).
+        # needs self.quantity_infos (via _quantity_options()) immediately.
         self.display_control_bar = self._build_display_control_bar()
         self.splitter.addWidget(self._build_plot_panel())
         self.splitter.addWidget(self._build_inspector_panel())
-        # Control panel and inspector get fixed-ish starting shares; plot
-        # gets the rest and does the growing when the window resizes.
-        self.splitter.setStretchFactor(0, 0)
-        self.splitter.setStretchFactor(1, 1)
-        self.splitter.setStretchFactor(2, 0)
-        self.splitter.setSizes([380, 700, 280])
+        # Inspector gets a fixed-ish starting share; plot gets the rest
+        # (including the width freed by the removed control panel) and
+        # does the growing when the window resizes.
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 0)
+        self.splitter.setSizes([1080, 280])
 
         # Vent 1/Vent 2/Number of candles (Live Viewer layout pass), plus
         # Room diagram/Door opening width (user testing feedback, round 2,
@@ -1573,49 +1589,6 @@ class MainWindow(QtWidgets.QMainWindow):
         fi = insight.frame_index(self.time_controller.timesteps_per_second)
         if fi is not None and self._current_n_frames > 0:
             self._on_seek_requested(min(max(fi, 0), self._current_n_frames - 1))
-
-    def _build_control_panel(self) -> QtWidgets.QWidget:
-        """User testing feedback, round 2, item 3: Room diagram, Data shown,
-        Door opening width, and Display scale -- the last sidebar cards
-        remaining after B2 already moved Vent 1/Vent 2/Number of candles
-        out -- are now built by _build_scenario_control_bar() (Room
-        diagram/Door, same factorial gate as Vent/Candle) and
-        _build_display_control_bar() (Data shown/Display scale, never
-        gated -- these two stay active in demo/guest-study mode, unlike
-        the other four) instead of here. What's left in this column is
-        just the title and the Quit button (already redundant with the
-        global Ctrl+Q shortcut -- see _build_shell()) -- deliberately not
-        addressed in this pass; collapsing or removing this now-mostly-
-        empty column is a separate, bigger call about the 3-way splitter,
-        not folded into "move 4 controls.\""""
-        panel = QtWidgets.QWidget()
-        panel.setObjectName("controlPanel")
-        panel.setMinimumWidth(220)
-        panel.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
-
-        scroll = QtWidgets.QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(panel)
-        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
-
-        outer = QtWidgets.QVBoxLayout(panel)
-        outer.setContentsMargins(16, 16, 16, 16)
-        outer.setSpacing(18)
-
-        title = QtWidgets.QLabel("FDS SLCF Visualizer")
-        title.setProperty("role", "title")
-        title.setWordWrap(True)
-        outer.addWidget(title)
-
-        outer.addStretch(1)
-
-        quit_button = QtWidgets.QPushButton("Quit")
-        quit_button.setAccessibleName("Quit application")
-        quit_button.setToolTip("Close the application (Ctrl+Q)")
-        quit_button.clicked.connect(self.close)
-        outer.addWidget(quit_button)
-
-        return scroll
 
     def _build_scenario_control_bar(self) -> QtWidgets.QWidget:
         """Vent 1/Vent 2/Number of candles (Live Viewer layout pass), plus
@@ -1822,8 +1795,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _quantity_options(self) -> list:
         """[(label, SliceKey), ...] for a grid cell's per-cell quantity
-        combo -- same entries/labels as the control panel's own quantity
-        combo (self.quantity_infos, computed in _build_control_panel).
+        combo -- same entries/labels as the "Data shown" quantity combo
+        (self.quantity_infos, computed in _build_display_control_bar).
 
         Native quantities only -- calculated/derived fields are computed via the
         QuantityProvider and most analysis panels still read the store directly,

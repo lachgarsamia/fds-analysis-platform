@@ -254,16 +254,6 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
         background-color: {p.surface};
     }}
 
-    /* Streamlit's defining trait: a sidebar in a flat, slightly muted
-    tone next to a brighter main content area -- no hard dividing line,
-    the tone difference alone reads as a separate region. Section "cards"
-    inside the sidebar (CollapsibleSection, widgets.py) then sit on top in
-    `surface` white so they pop against the muted sidebar background. */
-    QWidget#controlPanel {{
-        background-color: {p.bg_base};
-        border: none;
-    }}
-
     QLabel {{
         color: {p.text_secondary};
         background: transparent;
@@ -467,6 +457,22 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
     }}
 
     QPushButton#navThemeButton:hover {{
+        background-color: {p.bg_elevated};
+        color: {p.text_primary};
+    }}
+
+    /* Same treatment as navThemeButton -- a persistent utility action
+    beside it, not styled as destructive (Quit is not data loss here). */
+    QPushButton#navQuitButton {{
+        background-color: transparent;
+        border: none;
+        border-radius: {r_md};
+        text-align: left;
+        padding: {pad_sm} {pad_md};
+        color: {p.text_secondary};
+    }}
+
+    QPushButton#navQuitButton:hover {{
         background-color: {p.bg_elevated};
         color: {p.text_primary};
     }}

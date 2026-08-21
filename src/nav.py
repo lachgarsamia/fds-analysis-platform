@@ -35,6 +35,7 @@ class NavRail(QtWidgets.QWidget):
 
     page_selected = QtCore.pyqtSignal(str)  # page key
     theme_toggle_requested = QtCore.pyqtSignal()
+    quit_requested = QtCore.pyqtSignal()
     expanded_changed = QtCore.pyqtSignal(bool)  # hover state, not a persisted preference
 
     def __init__(self, entries: list, parent=None):
@@ -105,6 +106,20 @@ class NavRail(QtWidgets.QWidget):
         self._theme_button.setToolTip("Switch to light mode")
         layout.addWidget(self._theme_button)
 
+        # Quit (Live Viewer control-panel removal follow-up): that column's
+        # only remaining content was a title (purely decorative -- the OS
+        # window/app title already carries "FDS SLCF Visualizer") and this
+        # button, already redundant with the global Ctrl+Q shortcut but
+        # kept as a persistent, always-visible affordance -- same reasoning
+        # as the theme toggle just above, so it lives right beside it
+        # rather than vanishing along with the rest of that column.
+        self._quit_button = QtWidgets.QPushButton()
+        self._quit_button.setObjectName("navQuitButton")
+        self._quit_button.setAccessibleName("Quit application")
+        self._quit_button.setToolTip("Close the application (Ctrl+Q)")
+        self._quit_button.clicked.connect(self.quit_requested.emit)
+        layout.addWidget(self._quit_button)
+
         self._relabel()
         if entries:
             self._buttons[entries[0][0]].setChecked(True)
@@ -164,3 +179,4 @@ class NavRail(QtWidgets.QWidget):
             button.setText(full if self._expanded else full.split(None, 1)[0])
         self._theme_button.setText(
             f"{self._theme_icon}  {self._theme_full_label}" if self._expanded else self._theme_icon)
+        self._quit_button.setText("⏻  Quit" if self._expanded else "⏻")
