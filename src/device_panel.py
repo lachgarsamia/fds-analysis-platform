@@ -147,60 +147,66 @@ class DevicePanel(QtWidgets.QWidget):
 
         self.canvas = MplCanvas(self)
         self.canvas.setAccessibleName("Device placement canvas")
-        # Layout split (Devices-panel narrative pass): heatmap 70% / fire-
-        # story narrative 30%, the same "Now: ..." text the Inspector's
-        # per-cell story already shows (events.py's current_story_text,
-        # single source of truth -- see _fire_events_for_case below),
-        # scoped to whichever scenario is selected here rather than the
-        # active grid cell's. Stretch factors (7:3), not a QSplitter --
-        # this panel doesn't offer user-resizable panes anywhere else.
+        # Layout split (Devices-panel narrative pass, follow-up: bumped
+        # from 70/30 to 80/20 -- the side panel is text (narrative/
+        # readout/list), which doesn't need as much width as the actual
+        # visualization): heatmap 80% / side panel 20% (fire-story
+        # narrative -- events.py's current_story_text, single source of
+        # truth, see _fire_events_for_case below -- plus the readout and
+        # devices list, scoped to whichever scenario is selected here
+        # rather than the active grid cell's). Stretch factors (8:2), not
+        # a QSplitter -- this panel doesn't offer user-resizable panes
+        # anywhere else.
         plot_row = QtWidgets.QHBoxLayout()
         plot_row.setContentsMargins(0, 0, 0, 0)
         plot_row.setSpacing(12)
-        plot_row.addWidget(self.canvas, 7)
+        plot_row.addWidget(self.canvas, 8)
+
+        # Side panel (Devices-panel narrative pass, follow-up): the fire
+        # story, the placed-device readout, and the devices list all live
+        # here now, beside the heatmap, instead of stacked full-width
+        # below it -- the heatmap column is then free to use all the
+        # vertical space the panel has, not just whatever's left after
+        # readout/list/(formerly) buttons ate their own full-width rows.
+        side_panel = QtWidgets.QVBoxLayout()
+        side_panel.setContentsMargins(0, 0, 0, 0)
+        side_panel.setSpacing(8)
+
         self.story_label = QtWidgets.QLabel("")
         self.story_label.setAccessibleName("Fire story for the current scenario and frame")
         self.story_label.setWordWrap(True)
         self.story_label.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
         self.story_label.setProperty("role", "value")
-        plot_row.addWidget(self.story_label, 3)
-        layout.addLayout(plot_row, 1)
+        side_panel.addWidget(self.story_label)
 
         self.readout = QtWidgets.QLabel("")
         self.readout.setProperty("role", "value")
         self.readout.setWordWrap(True)
-        layout.addWidget(self.readout)
+        side_panel.addWidget(self.readout)
 
-        list_row = QtWidgets.QHBoxLayout()
+        # Devices-panel narrative pass, follow-up: the six action buttons
+        # used to sit in their own column attached to the list -- since
+        # that column's natural height (6 stacked buttons) exceeds the
+        # list's own 140px cap, it was forcing this whole row taller than
+        # the list needs, eating into the heatmap/narrative row above (the
+        # only row in this panel with a stretch factor, so any row forced
+        # taller than necessary steals space from it directly). Moved to a
+        # right-click context menu on the list instead -- same
+        # CustomContextMenu/QMenu pattern views.py's GridCell already uses
+        # for its own per-item actions -- so the list goes back to its own
+        # natural ~140px and that reclaimed height goes to the
+        # visualization above.
         self.list = QtWidgets.QListWidget()
         self.list.setAccessibleName("Devices list")
         self.list.setMaximumHeight(140)
         self.list.currentRowChanged.connect(lambda _i: self._render())
-        list_row.addWidget(self.list, 1)
-        btns = QtWidgets.QVBoxLayout()
-        _TOOLTIPS = {
-            "device-rename": "Rename the selected device",
-            "device-edit": "Edit RTI/activation-temperature parameters and recompute",
-            "device-jump": "Reveal this device's result across the app (Live Viewer, Graph, Context)",
-            "device-compare": "Evaluate this device across every scenario",
-            "device-export": "Export this device's time series as CSV",
-            "device-delete": "Delete the selected device",
-        }
-        for text, slot, name in (
-                ("Rename", self._rename, "device-rename"),
-                ("Edit parameters", self._edit_parameters, "device-edit"),
-                ("Jump to", self._jump_to, "device-jump"),
-                ("Compare", self._compare_across_scenarios, "device-compare"),
-                ("Export CSV", self._export, "device-export"),
-                ("Delete", self._delete, "device-delete")):
-            b = QtWidgets.QPushButton(text)
-            b.setAccessibleName(name)
-            b.setToolTip(_TOOLTIPS[name])
-            b.clicked.connect(slot)
-            btns.addWidget(b)
-        btns.addStretch(1)
-        list_row.addLayout(btns)
-        layout.addLayout(list_row)
+        self.list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._show_device_context_menu)
+        side_panel.addWidget(self.list)
+        side_panel.addStretch(1)
+
+        plot_row.addLayout(side_panel, 2)
+        layout.addLayout(plot_row, 1)
 
         self.compare_table = QtWidgets.QTableWidget()
         self.compare_table.setAccessibleName("Device comparison table")
@@ -341,6 +347,34 @@ class DevicePanel(QtWidgets.QWidget):
     def _current(self):
         i = self.list.currentRow()
         return self._devices[i] if 0 <= i < len(self._devices) else None
+
+    def _show_device_context_menu(self, pos) -> None:
+        """The six per-device actions (rename/edit/jump/compare/export/
+        delete), formerly a permanently-attached button column -- see the
+        list's own construction comment for why that cost vertical space.
+        Right-click brings up whichever device is under the cursor (not
+        necessarily the already-selected row), same as any list context
+        menu; each action still operates on _current() exactly as the old
+        buttons did."""
+        item = self.list.itemAt(pos)
+        if item is not None:
+            self.list.setCurrentItem(item)
+        if self._current() is None:
+            return
+        menu = QtWidgets.QMenu(self)
+        for text, slot, tooltip in (
+                ("Rename", self._rename, "Rename the selected device"),
+                ("Edit parameters", self._edit_parameters,
+                 "Edit RTI/activation-temperature parameters and recompute"),
+                ("Jump to", self._jump_to,
+                 "Reveal this device's result across the app (Live Viewer, Graph, Context)"),
+                ("Compare", self._compare_across_scenarios, "Evaluate this device across every scenario"),
+                ("Export CSV", self._export, "Export this device's time series as CSV"),
+                ("Delete", self._delete, "Delete the selected device")):
+            action = menu.addAction(text)
+            action.setToolTip(tooltip)
+            action.triggered.connect(slot)
+        menu.exec_(self.list.mapToGlobal(pos))
 
     def _rename(self) -> None:
         d = self._current()

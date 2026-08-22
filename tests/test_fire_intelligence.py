@@ -206,13 +206,18 @@ class TestDevicePanelNarrative:
         assert panel.story_label.text() == ev.current_story_text(expected_events, fps=2, index=3)
         panel.deleteLater()
 
-    def test_canvas_and_story_label_split_seventy_thirty(self, qapp):
+    def test_canvas_and_side_panel_split_eighty_twenty(self, qapp):
+        """Canvas 80% / side panel 20% (bumped from 70/30: the side panel
+        is text, it doesn't need as much width as the visualization) -- the
+        side panel (a sub-layout, not a single widget) holds story_label/
+        readout/list together, so this checks the side-panel *layout*'s
+        stretch in plot_row, then that it actually contains all three."""
         from device_panel import DevicePanel
 
         provider, manifest = self._ramp_provider()
         panel = DevicePanel(provider, manifest, fps=2)
         # plot_row isn't kept as an attribute -- find the sub-layout that
-        # actually holds canvas + story_label rather than assuming it's
+        # actually holds canvas + the side panel rather than assuming it's
         # panel.layout() itself (that's the outer QVBoxLayout).
         plot_row = None
         outer = panel.layout()
@@ -221,11 +226,21 @@ class TestDevicePanelNarrative:
             if sub is not None and sub.indexOf(panel.canvas) != -1:
                 plot_row = sub
                 break
-        assert plot_row is not None, "expected to find the canvas/story_label row layout"
+        assert plot_row is not None, "expected to find the canvas/side-panel row layout"
         idx_canvas = plot_row.indexOf(panel.canvas)
-        idx_story = plot_row.indexOf(panel.story_label)
-        assert plot_row.stretch(idx_canvas) == 7
-        assert plot_row.stretch(idx_story) == 3
+        assert plot_row.stretch(idx_canvas) == 8
+
+        side_panel = None
+        idx_side = None
+        for i in range(plot_row.count()):
+            sub = plot_row.itemAt(i).layout()
+            if sub is not None and sub.indexOf(panel.story_label) != -1:
+                side_panel, idx_side = sub, i
+                break
+        assert side_panel is not None, "expected to find the side-panel sub-layout holding story_label"
+        assert plot_row.stretch(idx_side) == 2
+        assert side_panel.indexOf(panel.readout) != -1
+        assert side_panel.indexOf(panel.list) != -1
         panel.deleteLater()
 
 
