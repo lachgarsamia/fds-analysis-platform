@@ -78,6 +78,17 @@ _HAZARD_RESPONSE_KEY = "hazard_duration_s"
 # rather than shown at face value.
 _MIN_RELIABLE_N = 6
 
+# Excluded from the Correlation & outliers tab only (not from the other
+# Study tabs, which use sa.RESPONSE_KEYS directly) -- layer_min_height_m
+# is exactly 0.0 for all 24 scenarios in this dataset (confirmed directly
+# via this tab's own Study statistics line), so it has zero variance:
+# correlation_matrix() correctly returns NaN for every pair involving it
+# (undefined, not a real "no relationship" reading), rendering as a row/
+# column of dashes that adds no information -- worse than simply not
+# listing it. Revisit if a future dataset ever gives this response real
+# variance.
+_CORRELATION_EXCLUDED_RESPONSES = ("layer_min_height_m",)
+
 
 class StudyPanel(QtWidgets.QWidget):
     def __init__(self, summaries: list, manifest: list,
@@ -282,7 +293,7 @@ class StudyPanel(QtWidgets.QWidget):
         fig = self.corr_canvas.fig
         fig.clear()
         ax = fig.add_subplot(111)
-        keys = sa.RESPONSE_KEYS
+        keys = [k for k in sa.RESPONSE_KEYS if k not in _CORRELATION_EXCLUDED_RESPONSES]
         self._corr_keys = keys
         c = sa.correlation_matrix(table, keys)
         counts = sa.pairwise_n(table, keys)
@@ -322,7 +333,7 @@ class StudyPanel(QtWidgets.QWidget):
 
     def _render_stats(self) -> None:
         table = self._filtered_table()
-        scores = sa.outlier_scores(table)
+        scores = sa.outlier_scores(table, self._corr_keys)
         order = np.argsort(scores)[::-1]
         top = [f"{table[i]['folder']} ({scores[i]:.2f}σ)" for i in order[:3]] if len(table) else []
         stats = sa.study_statistics(table)
@@ -331,7 +342,7 @@ class StudyPanel(QtWidgets.QWidget):
         lines = [f"<b>Most unusual scenarios</b>{subset} (standardized distance): "
                  + (", ".join(top) if top else "not enough data"),
                  "<b>Study statistics</b>:"]
-        for key in sa.RESPONSE_KEYS:
+        for key in self._corr_keys:
             st = stats[key]
             if st["n"]:
                 lines.append(

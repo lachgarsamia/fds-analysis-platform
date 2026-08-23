@@ -3178,16 +3178,21 @@ class TestStudyPanel:
 
     def test_correlation_matrix_cells_are_annotated_with_values(self, qapp):
         """Compare/Study UX polish: the matrix used to be color-only, with
-        no way to read the exact r without a separate tool."""
+        no way to read the exact r without a separate tool.
+
+        Asserts against panel._corr_keys (the tab's own, possibly-filtered
+        response list -- see _CORRELATION_EXCLUDED_RESPONSES), not the raw
+        sa.RESPONSE_KEYS: a zero-variance response (layer_min_height_m on
+        this dataset) is deliberately excluded from this one tab, so the
+        matrix is smaller than the full response list by design."""
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo or not window.is_factorial:
             window.close()
             return
         panel = window.study_panel
-        import study_analytics as sa
         ax = panel.corr_canvas.fig.axes[0]
-        assert len(ax.texts) == len(sa.RESPONSE_KEYS) ** 2
+        assert len(ax.texts) == len(panel._corr_keys) ** 2
         window.close()
 
     def test_correlation_filter_recomputes_over_the_matching_subset(self, qapp):
