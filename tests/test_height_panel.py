@@ -250,3 +250,45 @@ class TestLocatorMapRoomCrop:
         # a strict sub-range of it on x, confirming this is a real crop,
         # not a coincidental match.
         assert xlim[0] > WIDE_EXTENT[0]
+
+    def test_profile_plot_z_axis_matches_room_bounds_not_full_domain(self, panel):
+        """The vertical-profile plot (top-right) crops its z-axis (height
+        above floor) to the room bounds too, same as the locator map --
+        the data itself isn't filtered, only the viewport."""
+        from schematic import ROOM_Z
+
+        z_bottom, z_top = min(ROOM_Z), max(ROOM_Z)
+        z_margin = (z_top - z_bottom) * 0.05
+        prof_ax = panel.plot_canvas.fig.axes[0]
+        np.testing.assert_allclose(prof_ax.get_ylim(), (z_bottom - z_margin, z_top + z_margin))
+
+
+class TestFieldTimeExplorerBottomPlot:
+    """The bottom-right plot on Field & Time Explorer shows smoke-layer
+    height (position) over time -- not the "Layer, plume & ceiling over
+    time" plot (that one is reused on the Smoke-Layer Motion page instead,
+    via the shared draw_layer_plume_ceiling_over_time; this page's own
+    bottom plot is deliberately simpler)."""
+
+    def test_bottom_plot_shows_smoke_layer_height_not_layer_plume_ceiling(self, panel):
+        time_ax = panel.plot_canvas.fig.axes[1]
+        assert time_ax.get_title() == "Smoke-layer height (position)"
+        assert "layer, plume" not in time_ax.get_title().lower()
+        # No twin ceiling-temperature axis for this simpler plot -- exactly
+        # 2 axes total (profile + this one), not 3 like the shared
+        # layer/plume/ceiling plot (which adds its own twin axis).
+        assert len(panel.plot_canvas.fig.axes) == 2
+        raw_layer = panel._series["layer"]
+        n_times = len(raw_layer)
+        height_lines = [l for l in time_ax.get_lines() if len(l.get_xdata()) == n_times]
+        assert len(height_lines) == 1, "expected exactly one full-length line (the height curve)"
+        # Display-only smoothing (window=5): the plotted line is
+        # height_analysis.smooth_layer_height(raw_layer), not raw_layer
+        # itself -- panel._series["layer"] stays untouched (still what the
+        # profile plot's axhline reference marker reads), proving this is
+        # purely a plotting-layer change.
+        import height_analysis as ha
+        expected = ha.smooth_layer_height(raw_layer)
+        np.testing.assert_allclose(height_lines[0].get_ydata(), expected)
+        assert not np.allclose(height_lines[0].get_ydata(), raw_layer)
+        np.testing.assert_allclose(panel._series["layer"], raw_layer)

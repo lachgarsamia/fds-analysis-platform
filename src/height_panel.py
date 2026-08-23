@@ -66,8 +66,9 @@ DYNAMIC_PRESSURE_QUANTITY = "DYNAMIC PRESSURE"
 
 _DEFAULT_CAPTION = (
     "Click the map to choose a vertical line. The profile shows how the "
-    "quantity changes with height there; the curves track the smoke layer, "
-    "plume, and ceiling over time.")
+    "quantity changes with height there; the lower plot tracks the smoke "
+    "layer's height over time (plume height and ceiling temperature are "
+    "still listed in the readings below, just not plotted here).")
 
 #: Same wording convention as velocity_panel.py's own signed-data caveat
 #: (this dataset's VELOCITY is scalar speed, direction isn't stored) --
@@ -394,17 +395,35 @@ class HeightPanel(QtWidgets.QWidget):
             title_label = "Flow-forcing profile (dynamic pressure)"
         prof_ax.set_title(f"{title_label}  ·  x = {px:.2f} m, "
                           f"t = {idx / self._fps:.1f} s", fontsize=9, fontweight="bold")
-        if len(zs):
-            prof_ax.set_ylim(zs.min(), zs.max())
+        # Room-only crop (same reasoning as the locator map above): the
+        # profile's z-axis previously spanned the full mesh height
+        # (zs.min()/zs.max()); this data isn't filtered, only the viewport,
+        # matching the locator map's own imshow-full-data/crop-the-view
+        # convention.
+        z_bottom, z_top = min(ROOM_Z), max(ROOM_Z)
+        z_room_margin = (z_top - z_bottom) * 0.05
+        prof_ax.set_ylim(z_bottom - z_room_margin, z_top + z_room_margin)
         prof_ax.tick_params(labelsize=7)
 
         if is_thermal:
             time_ax = fig.add_subplot(212)
             times = np.arange(self._data.shape[0]) / self._fps
-            draw_layer_plume_ceiling_over_time(
-                time_ax, times, self._series["layer"], self._series["plume"],
-                self._series["ceiling"], unit, idx / self._fps)
-            fig.subplots_adjust(top=0.92, bottom=0.10, left=0.12, right=0.88, hspace=0.85)
+            t_cursor = idx / self._fps
+            layer = self._series["layer"]
+            if layer is not None:
+                # Display-only smoothing (light rolling average) of the
+                # plotted line -- self._series["layer"] itself stays raw,
+                # still what the profile plot's axhline reference marker
+                # above reads. See height_analysis.smooth_layer_height.
+                smoothed_layer = ha.smooth_layer_height(layer)
+                time_ax.plot(times, smoothed_layer, color="#2563EB", linewidth=1.4)
+                time_ax.scatter([t_cursor], [smoothed_layer[idx]], color="#2563EB", zorder=5, s=26)
+            time_ax.axvline(t_cursor, color="#00E5FF", linewidth=1.2)
+            time_ax.set_xlabel("time (s)", fontsize=8)
+            time_ax.set_ylabel("layer height (m)", fontsize=8)
+            time_ax.set_title("Smoke-layer height (position)", fontsize=9, fontweight="bold")
+            time_ax.tick_params(labelsize=7)
+            fig.subplots_adjust(top=0.92, bottom=0.10, left=0.12, right=0.95, hspace=0.85)
         else:
             fig.subplots_adjust(top=0.90, bottom=0.12, left=0.14, right=0.95)
         self.plot_canvas.draw_idle()
