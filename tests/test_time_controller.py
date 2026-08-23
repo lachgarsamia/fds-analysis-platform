@@ -78,6 +78,14 @@ class TestTimeController:
             f"expected several ticks within 1s at 3x speed, got {len(ticks) - n_before}"
         )
 
+    def test_loop_enabled_reflects_set_loop(self, qapp):
+        tc = TimeController(lambda: 5, 4)
+        assert tc.loop_enabled is True  # starts on by default
+        tc.set_loop(False)
+        assert tc.loop_enabled is False
+        tc.set_loop(True)
+        assert tc.loop_enabled is True
+
     def test_loop_wraps_to_zero(self, qapp):
         tc = TimeController(lambda: 5, 4)
         tc.set_loop(True)

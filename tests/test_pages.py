@@ -209,6 +209,23 @@ class TestMainWindowPageSwitching:
         assert not window.time_controller.is_playing()
         window.close()
 
+    def test_leaving_live_while_looping_keeps_playing(self, qapp):
+        """Loop is the user's explicit signal that playback should keep
+        running unattended -- navigating to another page must not silently
+        stop it, or the Loop toggle would defeat its own purpose the
+        moment the user glances elsewhere and comes back to find it stuck
+        on whatever frame it was on when they left (see pages/live.py's
+        on_leave)."""
+        window = MainWindow(load_simulation_data())
+        window._navigate_to("live")
+        window.time_controller.set_loop(True)
+        window.time_controller.play()
+        assert window.time_controller.is_playing()
+        window._navigate_to("dataset")
+        assert window.time_controller.is_playing()
+        window.time_controller.pause()
+        window.close()
+
     def test_demo_mode_pages_navigate_without_crash(self, qapp, monkeypatch):
         """FireLab roadmap Phase 4: Dataset/Analysis/Compare must degrade
         gracefully (no manifest, nothing to browse/analyze/compare)

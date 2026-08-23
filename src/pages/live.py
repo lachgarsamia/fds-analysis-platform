@@ -43,6 +43,11 @@ class LivePage(Page):
     def on_leave(self) -> None:
         """Pause playback when navigating away -- a fire looping on a page
         the user can't see is wasted work, and resuming is the same one
-        click (Start/Pause) the user already knows."""
-        if self._time_controller.is_playing():
+        click (Start/Pause) the user already knows. Not when Loop is on,
+        though: turning Loop on is the user's explicit signal that they
+        want playback to keep running unattended -- pausing it here would
+        silently defeat that the moment they glance at another page,
+        leaving it stuck at whatever frame they left it on instead of
+        still cycling when they come back."""
+        if self._time_controller.is_playing() and not self._time_controller.loop_enabled:
             self._time_controller.pause()

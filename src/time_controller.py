@@ -82,6 +82,10 @@ class TimeController(QtCore.QObject):
         self._loop = enabled
 
     @property
+    def loop_enabled(self) -> bool:
+        return self._loop
+
+    @property
     def index(self) -> int:
         return self._index
 
