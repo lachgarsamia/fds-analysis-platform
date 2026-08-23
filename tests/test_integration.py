@@ -4198,6 +4198,52 @@ class TestVirtualDeviceNetwork:
         assert after == before["devices"]      # identical, not recomputed
         window.close()
 
+    def test_thermocouple_list_entry_updates_live_others_stay_static(self, qapp):
+        """Devices-list live-readout fix: a thermocouple's list entry now
+        leads with a live current reading (temp + time), updating every
+        tick via the same Device.state_at()-driven path _live_readout()/
+        marker coloring already use -- not a new one -- with the run-
+        aggregate peak stat kept right after it. Heat detectors and
+        sprinklers must show no regression: their one-time activation fact
+        is real, correct model behavior and must not start looking "live"
+        (its text must not depend on the current frame at all)."""
+        import devices as dv
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if sim_data.is_demo:
+            window.close()
+            return
+        p = window.device_panel
+        p.ensure_loaded()
+
+        p.type_combo.setCurrentIndex(p.type_combo.findData("thermocouple"))
+        p._place(1.0, 1.0)
+        p.type_combo.setCurrentIndex(p.type_combo.findData("heat_detector"))
+        p._place(1.0, 1.0)
+        p.type_combo.setCurrentIndex(p.type_combo.findData("sprinkler"))
+        p._place(1.0, 1.0)
+        tc, hd, sp = p._devices
+
+        p._current_index = 5
+        p._render()
+        tc_text_a = p.list.item(0).text()
+        hd_text_a = p.list.item(1).text()
+        sp_text_a = p.list.item(2).text()
+        # Peak stat (the pre-existing _headline() summary) is kept, not
+        # dropped, in the thermocouple's entry.
+        assert p._headline(tc) in tc_text_a
+
+        p._current_index = 40
+        p._render()
+        tc_text_b = p.list.item(0).text()
+        hd_text_b = p.list.item(1).text()
+        sp_text_b = p.list.item(2).text()
+
+        assert tc_text_a != tc_text_b, "thermocouple entry must change across frames"
+        assert hd_text_a == hd_text_b, "heat detector entry must not depend on the frame"
+        assert sp_text_a == sp_text_b, "sprinkler entry must not depend on the frame"
+        window.close()
+
 
 class _SyntheticVectorProvider:
     """Wraps a real QuantityProvider but supplies synthetic U/W so V6-M3's

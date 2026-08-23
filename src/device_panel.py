@@ -186,24 +186,29 @@ class DevicePanel(QtWidgets.QWidget):
 
         # Devices-panel narrative pass, follow-up: the six action buttons
         # used to sit in their own column attached to the list -- since
-        # that column's natural height (6 stacked buttons) exceeds the
-        # list's own 140px cap, it was forcing this whole row taller than
-        # the list needs, eating into the heatmap/narrative row above (the
+        # that column's natural height (6 stacked buttons) exceeded the
+        # list's old 140px cap, it was forcing this whole row taller than
+        # the list needed, eating into the heatmap/narrative row above (the
         # only row in this panel with a stretch factor, so any row forced
         # taller than necessary steals space from it directly). Moved to a
         # right-click context menu on the list instead -- same
         # CustomContextMenu/QMenu pattern views.py's GridCell already uses
-        # for its own per-item actions -- so the list goes back to its own
-        # natural ~140px and that reclaimed height goes to the
-        # visualization above.
+        # for its own per-item actions. (The 140px cap itself is gone now
+        # too -- see the list's own construction comment below.)
         self.list = QtWidgets.QListWidget()
         self.list.setAccessibleName("Devices list")
-        self.list.setMaximumHeight(140)
+        # Vertical space pass: the 140px cap (a leftover from when the
+        # button column beside it needed the list capped to match) left
+        # most of this column's real height as dead whitespace below the
+        # list once the buttons moved to a context menu -- the list is a
+        # QVBoxLayout item with stretch=1 now instead, so it actually
+        # grows to fill the column (scrolling only once there are more
+        # entries than that real space allows), rather than a small fixed
+        # box with empty space beneath it.
         self.list.currentRowChanged.connect(lambda _i: self._render())
         self.list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._show_device_context_menu)
-        side_panel.addWidget(self.list)
-        side_panel.addStretch(1)
+        side_panel.addWidget(self.list, 1)
 
         plot_row.addLayout(side_panel, 2)
         layout.addLayout(plot_row, 1)
@@ -519,13 +524,46 @@ class DevicePanel(QtWidgets.QWidget):
             return f"did not activate (link peaked at {peak_link:.0f} °C, needs {threshold:g} °C)"
         return "did not activate"
 
+    def _list_entry_text(self, d: dv.Device) -> str:
+        """Device list entry text. Thermocouples lead with a live current
+        reading (Device.state_at(self._current_index) via _live_readout --
+        the same live-update path already proven correct for the selected-
+        device readout and marker coloring, not a new one), updating every
+        tick, with the run-aggregate peak/heating-rate stat kept right
+        after it as a secondary readout. Heat detectors and sprinklers are
+        unchanged -- their one-time activation fact ("activated at X s" /
+        "did not activate") is the real, correct model behavior; showing
+        it as if it were "live" would misrepresent a genuinely instant-or-
+        never event as something that updates continuously."""
+        headline = self._headline(d)
+        if d.type == "thermocouple":
+            live = self._live_readout(d)
+            if live:
+                return f"{live} · {headline}"
+        return headline
+
     def _refresh_list(self) -> None:
         self.list.clear()
         for d in self._devices:
             item = QtWidgets.QListWidgetItem(
-                f"{d.name} ({dv.KIND_LABELS[d.type]}) — {self._headline(d)}")
+                f"{d.name} ({dv.KIND_LABELS[d.type]}) — {self._list_entry_text(d)}")
             item.setToolTip((d.results or {}).get("basis", ""))
             self.list.addItem(item)
+
+    def _update_live_list_entries(self) -> None:
+        """Per-tick refresh of just the thermocouple rows' live reading --
+        not a full _refresh_list() rebuild, which would also reset the
+        list's current-row selection every tick and clear+rebuild every
+        item every 250ms for no reason when only thermocouples' text
+        actually changes frame to frame. Relies on self.list's item order
+        matching self._devices' (true as long as _refresh_list() is the
+        only thing that (re)populates it, which it is)."""
+        for i, d in enumerate(self._devices):
+            if d.type != "thermocouple":
+                continue
+            item = self.list.item(i)
+            if item is not None:
+                item.setText(f"{d.name} ({dv.KIND_LABELS[d.type]}) — {self._list_entry_text(d)}")
 
     def _render(self) -> None:
         if self._data is None:
@@ -571,6 +609,7 @@ class DevicePanel(QtWidgets.QWidget):
                         markersize=16, markeredgecolor=color, markeredgewidth=1.5)
         fig.subplots_adjust(top=0.92, bottom=0.03, left=0.03, right=0.97)
         self.canvas.draw_idle()
+        self._update_live_list_entries()
         d = self._current()
         if d is not None:
             live = self._live_readout(d)
