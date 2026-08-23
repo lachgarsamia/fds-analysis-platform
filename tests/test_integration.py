@@ -2304,43 +2304,6 @@ class TestMultiStudyGuestStudy:
         window.close()
 
 
-class TestFactorEffectsPanel:
-    """V2 roadmap M3.1: factor-effect maps on the Analysis page."""
-
-    def test_panel_present_for_factorial_absent_for_guest(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            assert getattr(window, "factor_effects_panel", None) is None
-            window.close()
-            return
-        assert window.factor_effects_panel is not None
-        window.close()
-        # A generic guest study (degenerate single case) has no factor axes.
-        from data_provider import load_study
-        from conftest import real_scenario_dir
-        case_dir = real_scenario_dir("c1_d0_vod0_voc0")
-        guest = MainWindow(load_study(case_dir))
-        assert guest.factor_effects_panel is None
-        guest.close()
-
-    def test_ensure_loaded_builds_table_and_field(self, qapp):
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo:
-            window.close()
-            return
-        panel = window.factor_effects_panel
-        panel.ensure_loaded()
-        assert panel.table.rowCount() == 4  # candles, door, vod, voc
-        assert panel._current_field is not None
-        assert panel._image is not None
-        # Interaction mode: pick a second factor, field recomputes.
-        panel.interaction_combo.setCurrentIndex(1)  # first "× factor" entry
-        assert panel._current_field is not None
-        window.close()
-
-
 class TestReportBuilder:
     """V2 roadmap M3.3: browser "Generate report…" -> HTML report."""
 
@@ -3137,43 +3100,31 @@ class TestStudyPanel:
         assert callable(sa.response_curve)
         window.close()
 
-    def test_factor_effects_folded_in_as_a_sub_tab(self, qapp):
-        """Analysis-improvement roadmap Phase B: Factor effects' actual
-        spatial diverging-field view is a sub-tab here now, complementing
-        this panel's own scalar "Factor influence" ranking -- not a
-        structurally-separate top-level tab. The panel itself (store
-        access, lazy-load, bus wiring) is unchanged."""
+    def test_factor_effects_and_sensitivity_sub_tabs_are_fully_removed(self, qapp):
+        """Bugfix pass: Factor effects' spatial diverging-field view and
+        the Sensitivity Explorer used to be folded in here as sub-tabs
+        (Analysis-improvement roadmap Phase B / Analysis section
+        consolidation Phase 5) -- both were removed completely, not just
+        hidden. factor_effects_panel.py/factor_effects.py and
+        sensitivity_panel.py/sensitivity.py no longer exist, and neither
+        attribute exists on MainWindow any more."""
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo or not window.is_factorial:
             window.close()
             return
+        assert not hasattr(window, "factor_effects_panel")
+        assert not hasattr(window, "sensitivity_panel")
         panel = window.study_panel
         labels = [panel.tabs.tabText(i) for i in range(panel.tabs.count())]
-        assert "Factor effects" in labels
-        idx = labels.index("Factor effects")
-        assert panel.tabs.widget(idx) is window.factor_effects_panel
-        window.close()
-
-    def test_sensitivity_folded_in_as_a_sub_tab(self, qapp):
-        """Analysis section consolidation Phase 5: the Sensitivity
-        Explorer (local sensitivity at a chosen factor setting) is a
-        sub-tab here now, complementing this panel's own global spread
-        across observed levels (Factor influence) -- not a structurally-
-        separate top-level tab. Analysis UX + reliability pass further
-        removed Sensitivity's own Tornado/What-if sub-tabs, so only
-        Response surface remains."""
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo or not window.is_factorial:
-            window.close()
-            return
-        panel = window.study_panel
-        labels = [panel.tabs.tabText(i) for i in range(panel.tabs.count())]
-        assert "Sensitivity" in labels
-        idx = labels.index("Sensitivity")
-        assert panel.tabs.widget(idx) is window.sensitivity_panel
-        assert window.sensitivity_panel.tabs.count() == 1
+        assert "Factor effects" not in labels
+        assert "Sensitivity" not in labels
+        assert labels == ["Factor influence", "Correlation & outliers"]
+        import os
+        src_dir = os.path.join(os.path.dirname(__file__), "..", "src")
+        for mod in ("factor_effects_panel.py", "factor_effects.py",
+                    "sensitivity_panel.py", "sensitivity.py"):
+            assert not os.path.exists(os.path.join(src_dir, mod)), f"{mod} should be deleted, not just unwired"
         window.close()
 
     def test_correlation_matrix_cells_are_annotated_with_values(self, qapp):
@@ -3181,10 +3132,11 @@ class TestStudyPanel:
         no way to read the exact r without a separate tool.
 
         Asserts against panel._corr_keys (the tab's own, possibly-filtered
-        response list -- see _CORRELATION_EXCLUDED_RESPONSES), not the raw
-        sa.RESPONSE_KEYS: a zero-variance response (layer_min_height_m on
-        this dataset) is deliberately excluded from this one tab, so the
-        matrix is smaller than the full response list by design."""
+        response list -- see study_panel._ZERO_VARIANCE_RESPONSES), not the
+        raw sa.RESPONSE_KEYS: a zero-variance response (layer_min_height_m
+        on this dataset) is deliberately excluded from this tab (and from
+        Factor influence's response_combo), so the matrix is smaller than
+        the full response list by design."""
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if sim_data.is_demo or not window.is_factorial:
@@ -3337,57 +3289,6 @@ class TestStudyPanel:
         window.close()
 
 
-class TestSensitivityPanel:
-    """V5-M3: sensitivity explorer + bus hand-off."""
-
-    def test_panel_and_bidirectional_bus(self, qapp):
-        import study_analytics as sa
-        sim_data = load_simulation_data()
-        window = MainWindow(sim_data)
-        if sim_data.is_demo or not window.is_factorial:
-            assert getattr(window, "sensitivity_panel", None) is None
-            window.close()
-            return
-        panel = window.sensitivity_panel
-        assert len(panel._table) == len(sim_data.manifest)
-        # moving a slider publishes the nearest existing run; a panel follows
-        window.height_panel.ensure_loaded()
-        panel._sliders["vod"].setValue(panel._sliders["vod"].maximum())
-        assert window.selection_bus.current.scenario is not None
-        assert window.height_panel.scenario_combo.currentData() == window.selection_bus.current.scenario
-        # selecting a scenario elsewhere snaps the sliders to its factor levels
-        target = panel._table[7]
-        window.selection_bus.update(origin=None, scenario=target["case_index"])
-        for p in sa.PARAMS:
-            assert panel._setting(p) == pytest.approx(float(target["params"][p]))
-        window.close()
-
-    def test_estimate_note_present(self, qapp):
-        window = MainWindow(load_simulation_data())
-        if window.sensitivity_panel is None:
-            window.close()
-            return
-        assert "Estimated from Existing Scenarios" in window.sensitivity_panel.note.text()
-        window.close()
-
-    def test_tornado_and_whatif_tabs_are_removed_response_surface_kept(self, qapp):
-        """Analysis UX + reliability pass: Tornado and What-if (all
-        responses) were removed; Response surface -- and the "Pin what-if
-        to Knowledge Graph" button, which uses predict()/nearest_scenario()
-        rather than either removed tab -- remain."""
-        window = MainWindow(load_simulation_data())
-        if window.sensitivity_panel is None:
-            window.close()
-            return
-        panel = window.sensitivity_panel
-        labels = [panel.tabs.tabText(i) for i in range(panel.tabs.count())]
-        assert labels == ["Response surface"]
-        assert not hasattr(panel, "tornado_canvas")
-        assert not hasattr(panel, "whatif_table")
-        assert hasattr(panel, "pin_button")
-        window.close()
-
-
 class TestSpatiotemporalPanel:
     """Analysis section consolidation Phase 6: Height, Time series, and
     Time Window are now three modes of one "Field & Time Explorer"
@@ -3478,6 +3379,10 @@ class TestWorkspaceAndCommunication:
     """V5 Phase 4 completion (adaptive workspace, space-time) + Phase 5 start."""
 
     def test_workspace_preset_focuses_quantity_and_tab(self, qapp):
+        """"Ventilation study" is repointed to study_panel (bugfix pass:
+        the sensitivity_panel it used to raise no longer exists) -- still
+        publishes VELOCITY as the focused quantity, unlike the plain
+        "Study analytics" preset."""
         window = MainWindow(load_simulation_data())
         if window.dashboard_panel is None:
             window.close()
@@ -3490,12 +3395,8 @@ class TestWorkspaceAndCommunication:
         # quantity is now a shared field: a quantity-aware panel followed
         if window.height_panel._quantity_options:
             assert window.height_panel._key.quantity == "VELOCITY"
-        if window.sensitivity_panel is not None:
-            # Phase 5: sensitivity_panel is now three levels deep (group ->
-            # StudyPanel's own tabs -> sensitivity_panel) -- the recursive
-            # show_tab must still actually raise its tab, not just the
-            # Analysis page in general.
-            assert window.study_panel.tabs.currentWidget() is window.sensitivity_panel
+        if window.study_panel is not None:
+            assert window.pages["analysis"].tabs.currentWidget() is window.study_panel
         window.close()
 
     def test_spacetime_point_syncs_both_ways(self, qapp):
@@ -3831,12 +3732,16 @@ class TestAnalysisPlayback:
         ScenarioSummary itself still computes all four -- this only
         guards against them silently reappearing in the response combo."""
         import study_analytics as sa
+        import study_panel as sp
         excluded = {"time_to_100c_s", "time_to_300c_s", "time_to_600c_s", "time_to_untenable_s"}
         assert not (excluded & set(sa.RESPONSE_KEYS))
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
         if window.study_panel is not None:
-            assert window.study_panel.response_combo.count() == len(sa.RESPONSE_KEYS)
+            # Also excludes sp._ZERO_VARIANCE_RESPONSES (layer_min_height_m
+            # on this dataset -- see that constant's own comment).
+            expected = [k for k in sa.RESPONSE_KEYS if k not in sp._ZERO_VARIANCE_RESPONSES]
+            assert window.study_panel.response_combo.count() == len(expected)
         window.close()
 
 
@@ -4599,23 +4504,21 @@ class TestUnifiedWorkspace:
         assert len(window.graph_panel._graph.nodes_of("device")) == 1
         window.close()
 
-    def test_graph_gains_hypothesis_node_after_pinning_a_whatif(self, qapp):
-        """Analysis-improvement roadmap Phase C: "Pin what-if to Knowledge
-        Graph" from Sensitivity -- the graph_panel picks up pinned estimates
-        the same way it already picks up devices/vector probes."""
+    def test_hypothesis_nodes_are_fully_removed_with_sensitivity(self, qapp):
+        """Bugfix pass: "Pin what-if to Knowledge Graph" lived on the now-
+        removed Sensitivity panel -- its only data source is gone, so
+        graph_model.py's "hypothesis" node type was dropped with it (same
+        "measurement" precedent: see TestGraphModel::
+        test_hypothesis_is_no_longer_a_node_type for the model-level
+        assertion)."""
         window = MainWindow(load_simulation_data())
-        if window.sensitivity_panel is None:
+        assert not hasattr(window, "sensitivity_panel")
+        if window.graph_panel is None:
             window.close()
             return
         window.show()
-        sp = window.sensitivity_panel
-        sp._pin_hypothesis()
-        assert len(sp._hypotheses) == 1
-        assert sp.pin_status.text() != ""
         window.graph_panel._rebuild()
-        nodes = window.graph_panel._graph.nodes_of("hypothesis")
-        assert len(nodes) == 1
-        assert nodes[0].scenario == sp._hypotheses[0]["nearest_scenario"]
+        assert window.graph_panel._graph.nodes_of("hypothesis") == []
         window.close()
 
     def test_reveal_helper_used_by_workspace_preset(self, qapp):
@@ -4629,7 +4532,7 @@ class TestUnifiedWorkspace:
             return
         window._on_workspace_preset("Study analytics")
         assert window._active_page_key == "analysis"
-        # "Factors & Sensitivity" has one member (Study) -- single-member
+        # "Factors" has one member (Study) -- single-member
         # groups go straight to that member now, no inner one-tab
         # QTabWidget wrapping it (Analysis page pruning).
         group = window.pages["analysis"].tabs.currentWidget()

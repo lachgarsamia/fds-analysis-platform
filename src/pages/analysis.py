@@ -55,9 +55,12 @@ from tour import ANALYSIS_STEPS, ANALYSIS_SETTINGS_KEY, TourOverlay, mark_tour_c
 # Zones/Velocity into one "Spatial Probes" tab (probe_measure_panel.py's
 # ProbeMeasurePanel). Phase 5 folded Sensitivity into Study itself as a
 # sub-tab (study_panel.py), the same "thin slot, not a rewrite" pattern
-# already used there for Factor effects -- so "Factors & Sensitivity" now
-# has a single "Study" tab rather than two separate ones (that tab's own
-# sub-tabs include Correlation & outliers -- already there, not moved).
+# already used there for Factor effects -- so this group had a single
+# "Study" tab rather than two separate ones. A later bugfix pass removed
+# both the Factor effects and Sensitivity sub-tabs completely (not just
+# hidden) -- Study now has only Factor influence and Correlation &
+# outliers, so the group is named "Factors" rather than "Factors &
+# Sensitivity".
 # Phase 6 did the same for Height/Time series/Time Window, now one "Field
 # & Time Explorer" tab (spatiotemporal_panel.py's SpatiotemporalPanel);
 # Space-time stays a separate top-level tab in the same group (deferred,
@@ -65,7 +68,7 @@ from tour import ANALYSIS_STEPS, ANALYSIS_SETTINGS_KEY, TourOverlay, mark_tour_c
 # - Overview & Interpretation: "what is happening in this simulation?"
 # - Compare & Discover: "how are scenarios similar or different?"
 # - Probe & Measure: "what happens at this location/region?"
-# - Factors & Sensitivity: "what drives the observed response?"
+# - Factors: "what drives the observed response?"
 # - Spatiotemporal Analysis: "how does a quantity evolve across time
 #   and/or space?"
 # Analysis page pruning, item 9 (last of Phase C): the Experimental group
@@ -91,10 +94,10 @@ from tour import ANALYSIS_STEPS, ANALYSIS_SETTINGS_KEY, TourOverlay, mark_tour_c
 # time options (study_analytics.py's RESPONSE_FIELDS).
 _GROUPS = [
     ("Overview & Interpretation", ["Dashboard"]),
+    ("Spatiotemporal Analysis", ["Field & Time Explorer", "Space-time", "Smoke-Layer Motion"]),
     ("Compare & Discover", ["Compare Presets", "PCA / Clustering"]),
     ("Probe & Measure", ["Spatial Probes"]),
-    ("Factors & Sensitivity", ["Study"]),
-    ("Spatiotemporal Analysis", ["Field & Time Explorer", "Space-time", "Smoke-Layer Motion"]),
+    ("Factors", ["Study"]),
 ]
 
 

@@ -1220,59 +1220,17 @@ class TestStudyAnalytics:
         assert finite.min() == pytest.approx(0.0) and finite.max() == pytest.approx(1.0)
 
 
-import sensitivity as sen  # noqa: E402
+import os as _os  # noqa: E402
 
 
-class TestSensitivity:
-    def _table(self):
-        # peak T = 100 + 200*vod (vod in {0,1,2}); others irrelevant.
-        rows = []
-        ci = 0
-        for c in (0, 1):
-            for d in (0, 1):
-                for vod in (0, 1, 2):
-                    for voc in (0, 1):
-                        rows.append(_FakeSummary(ci, f"c{c}_d{d}_vod{vod}_voc{voc}",
-                                                 c, d, vod, voc,
-                                                 max_temp_c=100.0 + 200.0 * vod))
-                        ci += 1
-        return sam.build_table(rows)
-
-    def test_exact_at_grid_point(self):
-        t = self._table()
-        s = {"candles": 0, "door": 0, "vod": 2, "voc": 0}
-        assert sen.predict(t, "max_temp_c", s) == pytest.approx(500.0)  # 100+200*2
-
-    def test_multilinear_midpoint(self):
-        t = self._table()
-        s = {"candles": 0, "door": 0, "vod": 0.5, "voc": 0}
-        assert sen.predict(t, "max_temp_c", s) == pytest.approx(200.0)  # between 100 and 300
-
-    def test_predict_all_and_tornado_were_removed(self):
-        """Analysis UX + reliability pass: What-if (all-responses) and
-        Tornado were removed from the Sensitivity panel, and predict_all()/
-        tornado() -- used only by those two render methods -- were deleted
-        with them. Response surface (response_surface(), still present)
-        already answers "how does this response change near my current
-        setting" for the two factors that matter most."""
-        assert not hasattr(sen, "predict_all")
-        assert not hasattr(sen, "tornado")
-        assert callable(sen.response_surface)
-        assert callable(sen.predict)
-        assert callable(sen.nearest_scenario)
-
-    def test_nearest_scenario_exact_and_between(self):
-        t = self._table()
-        ci, dist = sen.nearest_scenario(t, {"candles": 0, "door": 0, "vod": 2, "voc": 0})
-        assert dist == pytest.approx(0.0) and ci is not None
-        _ci, d2 = sen.nearest_scenario(t, {"candles": 0, "door": 0, "vod": 1.5, "voc": 0})
-        assert d2 > 0.0
-
-    def test_response_surface_shape(self):
-        t = self._table()
-        xs, ys, z = sen.response_surface(t, "max_temp_c", "vod", "door",
-                                         {"candles": 0, "door": 0, "vod": 0, "voc": 0}, n=5)
-        assert xs.shape == (5,) and ys.shape == (5,) and z.shape == (5, 5)
+def test_sensitivity_module_is_fully_removed():
+    """Bugfix pass: the Sensitivity Explorer panel and its backend
+    (sensitivity.py: predict/nearest_scenario/response_surface) were
+    removed completely, not just unwired -- see study_panel.py's
+    docstring."""
+    src_dir = _os.path.join(_os.path.dirname(__file__), "..", "src")
+    assert not _os.path.exists(_os.path.join(src_dir, "sensitivity.py"))
+    assert not _os.path.exists(_os.path.join(src_dir, "sensitivity_panel.py"))
 
 
 import hazard_spaces as hzs  # noqa: E402
@@ -1419,8 +1377,8 @@ class TestGraphModel:
         """Zones have no `scenario` field in their own domain model
         (zone_stats.py: "a zone applies to any scenario and is compared
         across them") -- linking one to a specific scenario would invent a
-        relationship the data doesn't have, so (unlike device/vector_probe/
-        hypothesis) it stays unlinked."""
+        relationship the data doesn't have, so (unlike device/vector_probe)
+        it stays unlinked."""
         import zone_stats as zst
         zone = zst.Zone("doorway", 0.8, 1.0, 0.0, 0.3)
         g = gmod.build_graph(self._scenarios(), zones=[zone])
@@ -1430,25 +1388,16 @@ class TestGraphModel:
         g = gmod.build_graph(self._scenarios())
         assert g.nodes_of("device") == [] and g.nodes_of("vector_probe") == []
 
-    def test_pinned_hypotheses_become_graph_nodes(self):
-        """Analysis-improvement roadmap Phase C: a pinned Sensitivity
-        what-if is navigable only via the nearest existing scenario it was
-        pinned against (an interpolated estimate isn't itself a real run)."""
-        h = {"id": "whatif-0", "label": "HRR ~ 12.3 kW at (candles=1.0)", "nearest_scenario": 2}
-        g = gmod.build_graph(self._scenarios(), hypotheses=[h])
-        nodes = g.nodes_of("hypothesis")
-        assert len(nodes) == 1
-        assert nodes[0].label == h["label"]
-        assert nodes[0].to_selection().scenario == 2
-
-    def test_hypothesis_links_to_its_nearest_scenario(self):
-        h = {"id": "whatif-0", "label": "HRR ~ 12.3 kW", "nearest_scenario": 2}
-        g = gmod.build_graph(self._scenarios(), hypotheses=[h])
-        assert "scenario:2" in g.neighbors("hypothesis:whatif-0")
-
-    def test_no_hypotheses_is_unaffected(self):
-        g = gmod.build_graph(self._scenarios())
-        assert g.nodes_of("hypothesis") == []
+    def test_hypothesis_is_no_longer_a_node_type(self):
+        """Bugfix pass: the Sensitivity Explorer's "Pin what-if to
+        Knowledge Graph" button was its only source of hypothesis nodes;
+        with that panel removed completely, build_graph() no longer
+        accepts a `hypotheses` kwarg or produces "hypothesis" nodes --
+        same "measurement" precedent as
+        test_measurement_is_no_longer_a_node_type below."""
+        assert "hypothesis" not in gmod.NODE_TYPES
+        import inspect
+        assert "hypotheses" not in inspect.signature(gmod.build_graph).parameters
 
     def test_hazard_node_links_to_its_scenario(self):
         """Analysis UX + reliability pass: a hazard node (worst

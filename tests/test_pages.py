@@ -70,7 +70,7 @@ class TestPageLifecycle:
 class TestAnalysisPageGrouping:
     """Analysis section consolidation Phase 1: tabs re-grouped by research
     question (Overview & Interpretation / Compare & Discover / Probe &
-    Measure / Factors & Sensitivity / Spatiotemporal Analysis). Reference &
+    Measure / Factors / Spatiotemporal Analysis). Reference &
     Communication (Quantities/Graph/Ask) was a sixth group here until a
     later product decision removed it entirely, and Experimental (Fire
     MRI/Attention/Why is it hot?/Forecasting, collapsed by default) was
@@ -89,7 +89,7 @@ class TestAnalysisPageGrouping:
             study_content=QtWidgets.QLabel("Study"),
             graph_content=QtWidgets.QLabel("Graph"))
         group_names = [page.tabs.tabText(i) for i in range(page.tabs.count())]
-        assert group_names == ["Factors & Sensitivity"]
+        assert group_names == ["Factors"]
 
     def test_only_supplied_panels_form_a_group(self, qapp):
         """A group with nothing supplied gets no tab at all (same "only

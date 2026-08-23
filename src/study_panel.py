@@ -1,12 +1,10 @@
 """Study-Level Analytics panel (V5-M2), an Analysis-page tab -- the
-"Factors & Sensitivity" workspace's anchor panel.
+"Factors" workspace's anchor panel.
 
 Views over the parameter × response table (study_analytics): factor
-influence (which factor moves a chosen response most), correlation +
-outliers + study statistics, and (as folded-in sub-tabs) factor effects'
-spatial field and the Sensitivity Explorer's response-surface
-interpolation. Selecting a scenario publishes it to the SelectionBus
-(M1), so the Live Viewer and every linked panel follow.
+influence (which factor moves a chosen response most) and correlation +
+outliers + study statistics. Selecting a scenario publishes it to the
+SelectionBus (M1), so the Live Viewer and every linked panel follow.
 
 Response curve (one factor x one response, level-by-level) was removed
 as its own tab (Analysis UX + reliability pass) -- Factor influence
@@ -16,30 +14,27 @@ response_curve() itself stays: factor_influence() (this panel's own
 "Factor influence" tab) calls it directly to build each factor's spread-
 of-means.
 
-Sensitivity answers a related but distinct question -- local sensitivity
-at an interpolated, possibly-unobserved factor setting (Response
-surface), vs. this panel's own global spread across *observed* factor
-levels (Factor influence) -- so it's folded in as one whole sub-tab (its
-own sliders/tab layout/SelectionBus wiring completely unchanged), the
-same "thin slot, not a rewrite" pattern already used for Factor effects,
-not split apart into this panel's own tabs. Sensitivity's own Tornado and
-What-if sub-tabs were removed in the same pass (Analysis UX +
-reliability pass) -- see sensitivity_panel.py's docstring.
+Factor effects (its spatial diverging-field view) and the Sensitivity
+Explorer (local sensitivity/response-surface interpolation) used to be
+folded in here as sub-tabs (Analysis-improvement roadmap Phase B and
+Analysis section consolidation Phase 5 respectively); a later bugfix
+pass removed both completely, not just hidden -- factor_effects_panel.py/
+factor_effects.py and sensitivity_panel.py/sensitivity.py no longer
+exist. The workspace group this panel anchors was renamed from "Factors
+& Sensitivity" to "Factors" to match (pages/analysis.py's _GROUPS).
 
 Parallel coordinates used to be a tab here too; it was extracted into
 parallel_coordinates_panel.py (Analysis section consolidation Phase 3)
 since it conceptually belongs with the other cross-scenario discovery
 tools (Compare & Discover), not this panel's factor/response tabs.
-scenario_combo stays here regardless -- every remaining tab of this
-panel's own (i.e. not counting the folded-in Sensitivity/Factor-effects
-sub-tabs) is a whole-study view with no per-scenario dependency of its
-own, but keeping it preserves the existing "every relevant Analysis panel
-exposes scenario selection" convention and its cross-panel sync
-(unchanged, still bus-bound).
+scenario_combo stays here regardless -- every tab of this panel is a
+whole-study view with no per-scenario dependency of its own, but keeping
+it preserves the existing "every relevant Analysis panel exposes
+scenario selection" convention and its cross-panel sync (unchanged,
+still bus-bound).
 
 Reads the already-computed scenario summaries; no store reads, no new
-simulations. Reuses study_analytics and, for the factor axis order,
-factor_effects' convention.
+simulations. Reuses study_analytics.
 
 Correlation & outliers is interactive (Compare/Study UX polish): factor-
 level filter combos recompute the matrix/outliers/study-statistics over
@@ -92,9 +87,7 @@ _ZERO_VARIANCE_RESPONSES = ("layer_min_height_m",)
 
 
 class StudyPanel(QtWidgets.QWidget):
-    def __init__(self, summaries: list, manifest: list,
-                 factor_effects_content: QtWidgets.QWidget = None,
-                 sensitivity_content: QtWidgets.QWidget = None, parent=None):
+    def __init__(self, summaries: list, manifest: list, parent=None):
         super().__init__(parent)
         self._summaries = sorted(summaries or [], key=lambda s: s.case_index)
         self._table = sa.build_table(self._summaries)
@@ -218,24 +211,8 @@ class StudyPanel(QtWidgets.QWidget):
         for p, combo in self._corr_filter_combos.items():
             combo.currentIndexChanged.connect(
                 lambda _i, f=p, c=combo: self._on_corr_filter_changed(f, c.currentData()))
-        # Factor effects (Analysis-improvement roadmap Phase B): the actual
-        # spatial diverging-field view, complementing this tab's own
-        # scalar "Factor influence" ranking above -- folded in as a sub-
-        # tab rather than a structurally-separate top-level one, since
-        # this panel already reuses factor_effects' axis-order convention.
-        # A thin slot, not a rewrite: the panel keeps its own store access,
-        # lazy-load (showEvent), and SelectionBus wiring unchanged.
-        if factor_effects_content is not None:
-            self.tabs.addTab(factor_effects_content, "Factor effects")
-        # Sensitivity Explorer (Analysis section consolidation Phase 5):
-        # local sensitivity (what-if interpolation, response surface,
-        # tornado) at a chosen factor setting, complementing this panel's
-        # global spread across observed levels above -- folded in whole
-        # (its own sliders/tabs/SelectionBus wiring unchanged) rather than
-        # split apart, since its three views share one set of sliders and
-        # aren't independently meaningful.
-        if sensitivity_content is not None:
-            self.tabs.addTab(sensitivity_content, "Sensitivity")
+        # Factor effects and Sensitivity (formerly folded-in sub-tabs here)
+        # were removed completely.
         layout.addWidget(self.tabs, 1)
 
         self._render_all()

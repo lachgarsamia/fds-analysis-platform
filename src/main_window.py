@@ -54,7 +54,6 @@ from auto_summary import export_markdown, generate_summary
 from prediction_store import PredictionSource
 from timeseries import TimeSeriesPanel
 from energy_panel import EnergyBudgetPanel
-from factor_effects_panel import FactorEffectsPanel
 from figure_export import (PublicationExportDialog, export_publication_figure,
                            provenance_line, figure_png_bytes)
 from report_builder import (build_scenario_report, build_comparison_report,
@@ -74,7 +73,6 @@ from selection import Selection, SelectionBus
 from quantity_provider import QuantityProvider
 from analysis_panel_base import bind_to_bus
 from study_panel import StudyPanel
-from sensitivity_panel import SensitivityPanel
 from dashboard_panel import DashboardPanel
 from spacetime_panel import SpaceTimePanel
 from graph_panel import GraphPanel
@@ -606,7 +604,6 @@ class MainWindow(QtWidgets.QMainWindow):
     _BUNDLE_FIGURES = [
         ("height_panel", "plot_canvas", "height_profile", "Vertical temperature profile and layer/plume/ceiling over time."),
         ("study_panel", "parallel_canvas", "study_parallel", "Parameter-vs-response parallel coordinates across the factorial."),
-        ("sensitivity_panel", "surface_canvas", "sensitivity_surface", "Estimated response surface (interpolated from existing scenarios)."),
     ]
 
     def _prepare_publication_bundle(self) -> None:
@@ -957,10 +954,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 velocity=self.velocity_panel, streamlines=self.streamline_panel)
             # Compare Presets (Analysis page pruning, item 8): the former
             # top-level Compare page's story-preset buttons, now Compare &
-            # Discover's second sub-view. Factorial-only, same gate as the
-            # sensitivity/factor-effects panels -- the presets are
-            # candle/door/vent factor comparisons a generic guest study
-            # has no axes for.
+            # Discover's second sub-view. Factorial-only, same gate as
+            # StudyPanel below -- the presets are candle/door/vent factor
+            # comparisons a generic guest study has no axes for.
             self.compare_presets_panel = (
                 ComparePresetsPanel(on_preset=self._apply_compare_preset)
                 if self.is_factorial else None)
@@ -991,30 +987,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.graph_panel = GraphPanel(
                 self.controller.store, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second, app=self)
-            # Factor-effect maps (M3.1) need the candle factorial's factor
-            # axes; a generic guest study has none, so it's factorial-only.
-            self.factor_effects_panel = (
-                FactorEffectsPanel(self.controller.store, self.sim_data.manifest,
-                                   self._quantity_options(), self.sim_data.timesteps_per_second)
-                if self.is_factorial else None)
-            # Sensitivity explorer (V5-M3): interpolate responses across the
-            # existing factorial ("what-if"); estimates only, never a new run.
-            # Constructed before StudyPanel (Analysis section consolidation
-            # Phase 5) since it's now folded in as one of its sub-tabs, the
-            # same "thin slot, not a rewrite" pattern already used for
-            # Factor effects -- this panel's own sliders/tabs/bus wiring are
-            # completely unchanged.
-            self.sensitivity_panel = (
-                SensitivityPanel(getattr(self, "_scenario_summaries", None) or [],
-                                 self.sim_data.manifest)
-                if self.is_factorial else None)
             # Study-level analytics (V5-M2): the factorial as a designed
             # experiment. Needs the factor axes + computed summaries.
+            # (Factor effects and Sensitivity, formerly folded in as its
+            # sub-tabs, were removed completely.)
             self.study_panel = (
                 StudyPanel(getattr(self, "_scenario_summaries", None) or [],
-                           self.sim_data.manifest,
-                           factor_effects_content=self.factor_effects_panel,
-                           sensitivity_content=self.sensitivity_panel)
+                           self.sim_data.manifest)
                 if self.is_factorial else None)
             # Compare & Discover (Analysis section consolidation Phase 3,
             # unwrapped in the Analysis final-polish pass): Pairwise
@@ -1032,9 +1011,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.streamline_panel = None
             self.timeseries_panel = None
             self.energy_panel = None
-            self.factor_effects_panel = None
             self.study_panel = None
-            self.sensitivity_panel = None
             self.query_panel = None
             self.height_panel = None
             self.time_window_panel = None
@@ -1168,7 +1145,7 @@ class MainWindow(QtWidgets.QMainWindow):
         fps = self.time_controller.timesteps_per_second
         for attr in ("height_panel", "time_window_panel",
                      "query_panel",
-                     "factor_effects_panel", "timeseries_panel",
+                     "timeseries_panel",
                      "energy_panel", "quantities_panel",
                      "study_panel",
                      "spacetime_panel",
@@ -1177,11 +1154,6 @@ class MainWindow(QtWidgets.QMainWindow):
             panel = getattr(self, attr, None)
             if panel is not None:
                 bind_to_bus(panel, self.selection_bus, fps)
-        # V5-M3: the Sensitivity panel drives the bus by publishing the nearest
-        # existing run for the current slider setting, and reacts to a scenario
-        # selection by snapping its sliders -- it has its own set_bus.
-        if self.sensitivity_panel is not None:
-            self.sensitivity_panel.set_bus(self.selection_bus)
         # V5-M4: the dashboard reads the whole selection (scenario + time) and
         # its workspace preset raises the most relevant analysis tab.
         if self.dashboard_panel is not None:
@@ -1255,7 +1227,11 @@ class MainWindow(QtWidgets.QMainWindow):
     _WORKSPACE = {
         "Overview": ("dashboard_panel", None),
         "Temperature study": ("dashboard_panel", "TEMPERATURE"),
-        "Ventilation study": ("sensitivity_panel", "VELOCITY"),
+        # Repointed from the now-removed sensitivity_panel to study_panel
+        # (Factor influence/Correlation & outliers both cover VOD/
+        # ventilation effects) -- still publishes VELOCITY as the focused
+        # quantity, unlike the plain "Study analytics" preset below.
+        "Ventilation study": ("study_panel", "VELOCITY"),
         "Smoke study": ("height_panel", "TEMPERATURE"),
         "Study analytics": ("study_panel", None),
     }

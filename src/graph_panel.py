@@ -220,8 +220,6 @@ class GraphPanel(QtWidgets.QWidget):
         # same way zones/measurements already do.
         devices = live("device_panel", "_devices") or []
         vector_probes = live("velocity_panel", "_probes") or []
-        # Phase C: pinned Sensitivity what-if estimates become hypothesis nodes.
-        hypotheses = live("sensitivity_panel", "_hypotheses") or []
         experiments = []
         sessions = []
         try:
@@ -248,16 +246,16 @@ class GraphPanel(QtWidgets.QWidget):
             if q:
                 quantities[self._current_scenario] = q
         return (entries, zones, experiments, sessions, ev, devices,
-               vector_probes, hypotheses, hazard, quantities)
+               vector_probes, hazard, quantities)
 
     def _rebuild(self) -> None:
         (entries, zones, experiments, sessions, ev, devices,
-         vector_probes, hypotheses, hazard, quantities) = self._gather()
+         vector_probes, hazard, quantities) = self._gather()
         self._graph = gm.build_graph(self._manifest, notebook=entries, zones=zones,
                                      experiments=experiments,
                                      sessions=sessions, events_by_scenario=ev,
                                      devices=devices, vector_probes=vector_probes,
-                                     hypotheses=hypotheses, hazard_by_scenario=hazard,
+                                     hazard_by_scenario=hazard,
                                      quantities_by_scenario=quantities)
         # tag filter options
         self.tag_combo.blockSignals(True)
@@ -292,8 +290,8 @@ class GraphPanel(QtWidgets.QWidget):
         visible = set(ids)
         # Focus on selected (Analysis UX + reliability pass): restrict to
         # the selected node's one-hop neighborhood -- as the graph gains
-        # real edges (hazard/device/vector_probe/hypothesis links above),
-        # this is what keeps it from becoming a hairball, reusing the same
+        # real edges (hazard/device/vector_probe links above), this is
+        # what keeps it from becoming a hairball, reusing the same
         # neighbor computation click-highlighting already relies on.
         if self._focus_selected and self._selected is not None and self._selected in self._graph.nodes:
             neighborhood = {self._selected, *self._graph.neighbors(self._selected)}

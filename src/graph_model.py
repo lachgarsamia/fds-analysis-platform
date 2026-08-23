@@ -7,23 +7,23 @@ Event (narrative), Hazard (worst tenability class reached), and Tag (factor
 levels like "vod2", plus the user's notebook/zone tags). Edges connect an
 experiment to its scenarios, a scenario to its factor tags/narrative events/
 hazard classification/quantity readings, a tagged artifact to its tags, and
-(Analysis UX + reliability pass) every zone/device/vector_probe/hypothesis to
-the scenario it belongs to -- so clicking a tag ("vod2", "flashover",
-"plume") surfaces everything connected to it, and no placed artifact is an
+(Analysis UX + reliability pass) every zone/device/vector_probe to the
+scenario it belongs to -- so clicking a tag ("vod2", "flashover", "plume")
+surfaces everything connected to it, and no placed artifact is an
 unreachable island.
 
 Each node can produce a `Selection` (M1) for the fields it carries (scenario,
 time, point, region, quantity), or None if it is purely organizational. Pure,
 Qt-free, deterministic.
 
-Analysis UX + reliability pass: previously zone/device/vector_probe/
-hypothesis nodes had NO edges at all (only navigable via their own
-to_selection(), not via the graph's relationships), and nothing here read
-hazard_spaces.py's tenability classification despite the app-wide
-"laboratory memory over every existing artifact" framing. Both gaps are
-closed below -- reusing hazard_spaces.py's own classification (worst_class
-over an already-computed classify_series), not a new hazard model, and
-reusing the exact same g.link() pattern already used for scenario<->tag.
+Analysis UX + reliability pass: previously zone/device/vector_probe nodes had
+NO edges at all (only navigable via their own to_selection(), not via the
+graph's relationships), and nothing here read hazard_spaces.py's tenability
+classification despite the app-wide "laboratory memory over every existing
+artifact" framing. Both gaps are closed below -- reusing hazard_spaces.py's
+own classification (worst_class over an already-computed classify_series),
+not a new hazard model, and reusing the exact same g.link() pattern already
+used for scenario<->tag.
 
 Analysis final-polish pass: the former "measurement" node type (disposable
 rectangle/point reads from the now-removed Quick Probe tool) was dropped --
@@ -36,6 +36,14 @@ nodes already use -- so the graph answers "what did this scenario actually
 do?" instead of only "which factor levels does it share with others?" Kept
 deliberately small (3 quantities, not every summary_stats.py field) so the
 graph stays legible rather than becoming another dense, hairball view.
+
+Bugfix pass (Factor effects/Sensitivity pages removed completely): the
+"hypothesis" node type (pinned Sensitivity what-if estimates, Analysis-
+improvement roadmap Phase C) was dropped the same way "measurement" was
+above -- its only real-world data source (sensitivity_panel.py's pin
+button) no longer exists, so it would only ever be an empty column.
+build_graph() no longer accepts a `hypotheses` kwarg or produces
+"hypothesis" nodes.
 """
 
 from __future__ import annotations
@@ -45,15 +53,13 @@ from typing import Optional, Tuple
 
 # Column order for the layered layout / grouping in the browser.
 NODE_TYPES = ("tag", "experiment", "session", "scenario", "quantity", "event",
-              "hazard", "insight", "zone", "device", "vector_probe",
-              "hypothesis")
+              "hazard", "insight", "zone", "device", "vector_probe")
 TYPE_COLOR = {
     "tag": "#8E24AA", "experiment": "#1565C0", "session": "#00838F",
     "scenario": "#E8622C", "quantity": "#00ACC1", "event": "#F9A825",
     "hazard": "#B71C1C", "insight": "#2E7D32",
     "zone": "#6D4C41",
     "device": "#C2185B", "vector_probe": "#00695C",   # V6-M4
-    "hypothesis": "#5E35B1",   # Analysis-improvement roadmap Phase C
 }
 
 
@@ -117,24 +123,18 @@ _FACTORS = ("candles", "door", "vod", "voc")
 
 def build_graph(scenarios, notebook=None, zones=None,
                 experiments=None, sessions=None, events_by_scenario=None,
-                devices=None, vector_probes=None, hypotheses=None,
+                devices=None, vector_probes=None,
                 hazard_by_scenario=None, quantities_by_scenario=None) -> Graph:
     """Assemble the graph from the current artifacts. `scenarios` are manifest
     entries; the rest are optional and default to empty.
 
     `devices`/`vector_probes` (V6-M4): Device/VectorProbe instances
     (devices.py/velocity.py) -- placed instrumentation becomes graph nodes
-    the same way zones already do. Every zone/device/vector_probe/
-    hypothesis with a `scenario` field is now also linked to that scenario
-    node (Analysis UX + reliability pass), same g.link() pattern already
-    used for scenario<->tag, so they participate in the graph's
-    relationships instead of only being reachable via their own
-    to_selection().
-
-    `hypotheses` (Analysis-improvement roadmap Phase C): pinned Sensitivity
-    what-if estimates (dicts: id/label/nearest_scenario) -- an interpolated
-    estimate isn't itself a real run, so its only navigable dimension is the
-    nearest existing scenario it was pinned against.
+    the same way zones already do. Every zone/device/vector_probe with a
+    `scenario` field is now also linked to that scenario node (Analysis UX
+    + reliability pass), same g.link() pattern already used for
+    scenario<->tag, so they participate in the graph's relationships
+    instead of only being reachable via their own to_selection().
 
     `hazard_by_scenario` (Analysis UX + reliability pass): {case_index:
     class_name}, the worst hazard_spaces.py tenability class reached in
@@ -219,16 +219,6 @@ def build_graph(scenarios, notebook=None, zones=None,
                          scenario=p.scenario, point=tuple(p.position)))
         if p.scenario in scenario_sid:
             g.link(pid, scenario_sid[p.scenario])
-
-    # pinned Sensitivity what-if hypotheses (Phase C) -- linked to the
-    # nearest existing scenario they were pinned against (the same
-    # `scenario` field to_selection() already reads for navigation).
-    for h in hypotheses or []:
-        hid = g.add(Node(f"hypothesis:{h.get('id')}", "hypothesis", h.get("label", "what-if"),
-                         scenario=h.get("nearest_scenario")))
-        nearest = h.get("nearest_scenario")
-        if nearest in scenario_sid:
-            g.link(hid, scenario_sid[nearest])
 
     # hazard classification per scenario (Analysis UX + reliability pass):
     # reuses hazard_spaces.py's own worst-tenability-class-reached
