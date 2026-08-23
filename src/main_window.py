@@ -2479,6 +2479,40 @@ class MainWindow(QtWidgets.QMainWindow):
         frac = min(max(index, 0), n_from - 1) / (n_from - 1)
         return min(int(round(frac * (n_to - 1))), n_to - 1)
 
+    def _reported_n_frames(self, store, case_index: int, quantity_key, data) -> int:
+        """Frame count to report to the shared timeline (playback_bar's
+        range / _current_n_frames) for (case_index, quantity_key)'s
+        `data` -- SOOT DENSITY selected as a "slice" cell's own *primary*
+        quantity (not the TEMPERATURE-view overlay, which already remaps
+        independently; see _soot_overlay_frame_for_cell) has the same
+        1001-native-frame-vs-481 cadence mismatch against the shared,
+        single-global-fps timeline that HRRPUV's overlay does (see
+        _remap_frame_index) -- reporting `data.shape[0]` directly (1001)
+        makes the timeline read ~250s instead of the true ~120s and pace
+        played back ~2x too slow (time_controller.py paces ticks off the
+        same global fps). Reporting TEMPERATURE's own frame count at the
+        same plane instead makes the smoke plane ride the same timeline
+        as every other primary quantity; _soot_primary_frame_index below
+        does the matching index-side remap. Every other quantity reports
+        its own real frame count unchanged."""
+        if quantity_key.quantity != SOOT_QUANTITY:
+            return data.shape[0]
+        temp_key = SliceKey("TEMPERATURE", quantity_key.direction, quantity_key.offset)
+        return store.get(case_index, temp_key).shape[0]
+
+    def _soot_primary_frame_index(self, store, case_index: int, quantity_key, data, index: int) -> int:
+        """Timeline `index` (TEMPERATURE-cadence, thanks to
+        _reported_n_frames above) remapped onto `data`'s own native
+        `.s3d` frame count, when `quantity_key` is SOOT DENSITY shown as
+        a cell's own primary quantity. Plain clamp (today's existing
+        behavior) for every other quantity, so this changes nothing
+        else. See _reported_n_frames's docstring for why this exists."""
+        if quantity_key.quantity != SOOT_QUANTITY:
+            return min(index, data.shape[0] - 1)
+        temp_key = SliceKey("TEMPERATURE", quantity_key.direction, quantity_key.offset)
+        n_temp_frames = store.get(case_index, temp_key).shape[0]
+        return self._remap_frame_index(index, n_temp_frames, data.shape[0])
+
     def _velocity_overlay_frame_for_cell(self, cell, index: int):
         """The VELOCITY frame to overlay on `cell` at timeline `index` --
         only ever called for a "slice" cell showing TEMPERATURE. VELOCITY
@@ -2520,7 +2554,8 @@ class MainWindow(QtWidgets.QMainWindow):
         vmin = display['vmin']
         slider_default = display['slider_default']
         vmax = self.temp_slider.value() if is_active else slider_default
-        index = min(self.time_controller.index, data.shape[0] - 1)
+        index = self._soot_primary_frame_index(
+            self.controller.store, cell.case_index, cell.quantity_key, data, self.time_controller.index)
         cell.view.init_plot(
             data[index],
             cmap=cmap,
@@ -2535,7 +2570,7 @@ class MainWindow(QtWidgets.QMainWindow):
         cell.view.set_room_outline(self._room_outline_for(cell))
         sync_timeseries_strip(self, cell)
         self._setup_cell_probe_and_isotherms(cell)
-        return data.shape[0]
+        return self._reported_n_frames(self.controller.store, cell.case_index, cell.quantity_key, data)
 
     def _init_plot(self):
         # Use the controller's actual default parameters (candles/door/vod/voc
@@ -2705,7 +2740,9 @@ class MainWindow(QtWidgets.QMainWindow):
         scenarios selected yet (nothing to show)."""
         if cell.cell_type == "slice":
             store = self._store_for_cell(cell)
-            return self._field(store, cell.case_index, cell.quantity_key)[index]
+            data = self._field(store, cell.case_index, cell.quantity_key)
+            idx = self._soot_primary_frame_index(store, cell.case_index, cell.quantity_key, data, index)
+            return data[idx]
         if cell.cell_type == "difference":
             store_b = cell.store_override_b if cell.store_override_b is not None else self.controller.store
             # self._field(), not store.get() directly -- a computed/derived
@@ -3144,8 +3181,9 @@ class MainWindow(QtWidgets.QMainWindow):
         scenario at case_idx, and redraw the currently displayed frame
         index against it. Only redraws (doesn't touch play state) -- the
         caller decides whether to resume playback."""
-        self._current_n_frames = self._field(
-            self.controller.store, case_idx, self.current_quantity_key).shape[0]
+        data = self._field(self.controller.store, case_idx, self.current_quantity_key)
+        self._current_n_frames = self._reported_n_frames(
+            self.controller.store, case_idx, self.current_quantity_key, data)
         self.playback_bar.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
         self._update_event_markers()
         active = self.view_grid.active_cell()
@@ -3494,7 +3532,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.temp_slider.setToolTip(f"Adjust the maximum {display['label'].lower()} shown on the color scale")
             self.temp_label.setText(f"{int(vmax)} {display['unit']}")
 
-        self._current_n_frames = self._field(self.controller.store, cell.case_index, cell.quantity_key).shape[0]
+        data = self._field(self.controller.store, cell.case_index, cell.quantity_key)
+        self._current_n_frames = self._reported_n_frames(self.controller.store, cell.case_index, cell.quantity_key, data)
         self.playback_bar.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
         self._update_event_markers()
 
@@ -3796,7 +3835,7 @@ class MainWindow(QtWidgets.QMainWindow):
         sync_cell(self, cell)  # M2.2: a SOOT-plane switch may change the extent
         self._apply_contour_overlay_state(cell)  # levels are quantity-specific; quantity may have just changed
         self._apply_cinematic_state(cell)  # cinematic mode is TEMPERATURE-only; quantity may have just changed
-        index = min(self.time_controller.index, data.shape[0] - 1)
+        index = self._soot_primary_frame_index(store, cell.case_index, cell.quantity_key, data, self.time_controller.index)
         extra = {}
         if getattr(cell.view, "soot_overlay_enabled", False):
             soot_frame, soot_ceiling = self._soot_overlay_frame_for_cell(cell, index)
@@ -4393,7 +4432,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # self._field(), not store.get() directly -- a computed/derived
         # quantity (DYNAMIC PRESSURE, TEMPERATURE RISE) isn't in the store.
         data = self._field(self.controller.store, cell.case_index, cell.quantity_key)
-        index = min(self.time_controller.index, data.shape[0] - 1)
+        index = self._soot_primary_frame_index(
+            self.controller.store, cell.case_index, cell.quantity_key, data, self.time_controller.index)
         frame = np.asarray(data[index])
         display = self._display_for(cell.quantity_key.quantity)
         vmin, vmax = cell.view.heatmap.get_clim()
