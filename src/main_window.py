@@ -2793,14 +2793,31 @@ class MainWindow(QtWidgets.QMainWindow):
             # store at all (see _redraw_cell_now/_apply_link_clim above).
             data_a = self._field(self.controller.store, cell.case_index_a, cell.quantity_key)
             data_b = self._field(store_b, cell.case_index_b, cell.quantity_key)
-            idx = min(index, data_a.shape[0] - 1, data_b.shape[0] - 1)
+            # _soot_primary_frame_index per operand (not a plain shape
+            # clamp): a _VOLUME_QUANTITIES quantity has the same
+            # 1001-vs-481 cadence mismatch here as a "slice" cell's own
+            # primary quantity does -- see that helper's docstring. Both
+            # operands are remapped independently (not against a single
+            # canonical scenario) since A and B can come from different
+            # stores (store_override_b); min() of the two picks the more
+            # conservative bound, identical to today's shape-based min()
+            # in the case where both remap to the same index (verified:
+            # every scenario in this dataset shares the same TEMPERATURE
+            # and volume-quantity frame counts).
+            idx = min(self._soot_primary_frame_index(
+                          self.controller.store, cell.case_index_a, cell.quantity_key, data_a, index),
+                      self._soot_primary_frame_index(
+                          store_b, cell.case_index_b, cell.quantity_key, data_b, index))
             return DifferenceView.compute_diff(data_a, data_b, idx)
         if cell.cell_type == "ensemble":
             if not cell.ensemble_case_indices:
                 return None
             arrays = [self._field(self.controller.store, ci, cell.quantity_key)
                      for ci in cell.ensemble_case_indices]
-            idx = min(index, min(a.shape[0] for a in arrays) - 1)
+            # Same per-operand remap as the "difference" branch above,
+            # extended to however many scenarios are in the ensemble.
+            idx = min(self._soot_primary_frame_index(self.controller.store, ci, cell.quantity_key, a, index)
+                      for ci, a in zip(cell.ensemble_case_indices, arrays))
             return EnsembleView.compute_composite(arrays, idx, cell.ensemble_stat)
         return None
 
@@ -3991,7 +4008,13 @@ class MainWindow(QtWidgets.QMainWindow):
             data_a, data_b, cache_key=(cell.case_index_a, cell.case_index_b, key))
         display = self._display_for(key.quantity)
         colorbar_label = f"Δ{display['label']} ({display['unit']})"
-        index = min(self.time_controller.index, data_a.shape[0] - 1, data_b.shape[0] - 1)
+        # Per-operand volume-cadence remap -- see _frame_for_cell's
+        # "difference" branch for why (same 1001-vs-481 mismatch, same
+        # helper, same reasoning).
+        index = min(self._soot_primary_frame_index(
+                        self.controller.store, cell.case_index_a, key, data_a, self.time_controller.index),
+                    self._soot_primary_frame_index(
+                        store_b, cell.case_index_b, key, data_b, self.time_controller.index))
         frame = DifferenceView.compute_diff(data_a, data_b, index)
         if cell.view.heatmap is None:
             cell.view.init_plot(frame, interpolation=self.current_interpolation,
@@ -4025,7 +4048,10 @@ class MainWindow(QtWidgets.QMainWindow):
             vmax = cell.view.std_vmax(arrays, cache_key=(tuple(cell.ensemble_case_indices), key))
         else:
             vmin, vmax = display['vmin'], display['slider_default']
-        index = min(self.time_controller.index, min(a.shape[0] for a in arrays) - 1)
+        # Per-operand volume-cadence remap -- see _frame_for_cell's
+        # "ensemble" branch for why.
+        index = min(self._soot_primary_frame_index(self.controller.store, ci, key, a, self.time_controller.index)
+                    for ci, a in zip(cell.ensemble_case_indices, arrays))
         frame = EnsembleView.compute_composite(arrays, index, stat)
         if cell.view.heatmap is None:
             cell.view.init_plot(frame, cmap=cmap, interpolation=self.current_interpolation,
