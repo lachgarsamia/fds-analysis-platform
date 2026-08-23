@@ -78,16 +78,17 @@ _HAZARD_RESPONSE_KEY = "hazard_duration_s"
 # rather than shown at face value.
 _MIN_RELIABLE_N = 6
 
-# Excluded from the Correlation & outliers tab only (not from the other
-# Study tabs, which use sa.RESPONSE_KEYS directly) -- layer_min_height_m
-# is exactly 0.0 for all 24 scenarios in this dataset (confirmed directly
-# via this tab's own Study statistics line), so it has zero variance:
-# correlation_matrix() correctly returns NaN for every pair involving it
-# (undefined, not a real "no relationship" reading), rendering as a row/
-# column of dashes that adds no information -- worse than simply not
-# listing it. Revisit if a future dataset ever gives this response real
-# variance.
-_CORRELATION_EXCLUDED_RESPONSES = ("layer_min_height_m",)
+# Excluded from the Correlation & outliers and Factor influence tabs (not
+# from the other Study tabs, which use sa.RESPONSE_KEYS directly) --
+# layer_min_height_m is exactly 0.0 for all 24 scenarios in this dataset
+# (confirmed directly via the Correlation tab's own Study statistics
+# line), so it has zero variance: correlation_matrix() correctly returns
+# NaN for every pair involving it (undefined, not a real "no relationship"
+# reading), and factor_influence() correctly returns 0.0 influence for
+# every factor -- both render as empty/uninformative rather than a real
+# reading, worse than simply not listing it. Revisit if a future dataset
+# ever gives this response real variance.
+_ZERO_VARIANCE_RESPONSES = ("layer_min_height_m",)
 
 
 class StudyPanel(QtWidgets.QWidget):
@@ -130,7 +131,7 @@ class StudyPanel(QtWidgets.QWidget):
         row.addWidget(QtWidgets.QLabel("Response:"))
         self.response_combo = QtWidgets.QComboBox()
         self.response_combo.setAccessibleName("Influence response")
-        for i, key in enumerate(sa.RESPONSE_KEYS):
+        for i, key in enumerate(k for k in sa.RESPONSE_KEYS if k not in _ZERO_VARIANCE_RESPONSES):
             self.response_combo.addItem(sa.RESPONSE_LABEL[key], key)
             if key == _HAZARD_RESPONSE_KEY:
                 # Discoverable on hover even without selecting it (roadmap
@@ -293,7 +294,7 @@ class StudyPanel(QtWidgets.QWidget):
         fig = self.corr_canvas.fig
         fig.clear()
         ax = fig.add_subplot(111)
-        keys = [k for k in sa.RESPONSE_KEYS if k not in _CORRELATION_EXCLUDED_RESPONSES]
+        keys = [k for k in sa.RESPONSE_KEYS if k not in _ZERO_VARIANCE_RESPONSES]
         self._corr_keys = keys
         c = sa.correlation_matrix(table, keys)
         counts = sa.pairwise_n(table, keys)
