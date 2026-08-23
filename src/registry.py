@@ -116,24 +116,50 @@ QUANTITY_REGISTRY = {
         # this quantity's range is strictly positive (~0.52-1.195 kg/m3, no
         # physically meaningful zero-crossing), so unlike U/W/V-VELOCITY or
         # PRESSURE below it isn't a case for keeping a diverging map.
+        #
+        # slider_default=2 (display-scale fix pass; was 1): 1 sat below
+        # ambient (~1.195), so the whole domain saturated the ramp's top
+        # color and only the plume (down to ~0.52) was visible. The slider
+        # is an integer-stepped QSlider (PyQt5 QSlider.setValue() rejects
+        # a float -- confirmed directly, not assumed), and slider_min/max
+        # are already 1/2, so 2 is the nearest reachable value that puts
+        # ambient inside the ramp (~60%) instead of pinned to its ceiling,
+        # with the plume still visible lower down (~26%).
         "DENSITY", "Gas density", "kg/m³", "viridis", 0.0,
-        slider_min=1, slider_max=2, slider_default=1, kind="slice2d",
+        slider_min=1, slider_max=2, slider_default=2, kind="slice2d",
         interpretation="Real local gas density; feeds DYNAMIC PRESSURE in place of "
                        "the fixed-air-density assumption on scenarios where it exists."),
     "SOOT DENSITY": QuantityInfo(
-        # Fixed range (colormap expressiveness pass): 0-20000 mg/m3, tuned
-        # to the real 24-scenario dataset's measured max-over-run (~19289
-        # mg/m3 at the default y=0 plane -- verified directly, not
-        # assumed) rather than the old adaptive per-scenario percentile
+        # Fixed range (colormap expressiveness pass): kept deliberately
+        # fixed rather than a data-driven per-scenario percentile
         # floor/ceiling (main_window._soot_display_range_for, removed) so
         # the same color means the same concentration in every scenario
         # and every frame, not just within one scenario's own playback.
+        #
+        # Recalibration (display-scale fix pass): the original 0-20000
+        # mg/m3 range was tuned to a since-superseded dataset generation's
+        # measured max-over-run (~19289 mg/m3 at the default y=0 plane).
+        # The M-SIM Stage 1 Pleiades re-run that's on disk now produces
+        # much lower soot output at that plane -- re-measured directly
+        # against the current 24-scenario dataset's y=0 plane: true
+        # max-over-run is 88.8 mg/m3 (c2_d0_vod1_voc1), so the old ceiling
+        # was ~225x too high, crushing all real signal into a sliver at
+        # the bottom of the ramp. 90/115/1 replace 20000/25000/100 with
+        # the same headroom proportions as the original calibration
+        # (default ~1-5% above the measured max, slider_max ~25% above
+        # default, slider_min far enough below default for fine
+        # low-concentration exploration). This will need re-measuring
+        # again the next time the dataset is regenerated -- same as any
+        # fixed calibration -- rather than reading from data at import
+        # time (registry.py has no per-scenario array to compute from;
+        # see this quantity's own Live Viewer render path for why an
+        # adaptive ceiling was rejected instead of fixing that).
         # vmin=0 (not a data-driven nonzero floor) so an empty/near-zero
         # field renders at viridis's own floor color consistently, not a
         # data-dependent partial shade. Colormap is "viridis" (was
         # "gray_r") -- UI overhaul: standardized on viridis.
         "SOOT DENSITY", "Smoke (soot)", "mg/m³", "viridis", 0.0,
-        slider_min=100, slider_max=25000, slider_default=20000,
+        slider_min=1, slider_max=115, slider_default=90,
         hazard_levels=(), kind="volume",
         interpretation="Soot mass concentration from the volumetric field; a proxy "
                        "for smoke obscuration."),
