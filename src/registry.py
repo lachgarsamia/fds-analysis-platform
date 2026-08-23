@@ -166,14 +166,30 @@ QUANTITY_REGISTRY = {
     "HRRPUV": QuantityInfo(
         # Analysis dynamic-visualizations pass, Tier 2: same volumetric
         # `.s3d` SMOKF3D family as SOOT DENSITY (fds/s3d/s3d.py's
-        # extract_volume_plane, generalized from SOOT-only). Not surfaced
-        # as a selectable quantity anywhere -- main_window.py's
-        # _discover_quantities() only adds SOOT DENSITY's own explicit
-        # _discover_soot_planes() step, nothing analogous calls an
-        # HRRPUV-discovery step, so this entry is reachable only through
-        # the dedicated overlay path (views.py's _redraw_hrrpuv_overlay),
-        # by design -- an "actively burning right now" marker layered on
-        # the TEMPERATURE view, not a browsable field in its own right.
+        # extract_volume_plane, generalized from SOOT-only). Browsable as
+        # its own primary quantity (bugfix pass) via main_window.py's
+        # _discover_hrrpuv_planes(), mirroring SOOT DENSITY's
+        # _discover_soot_planes() -- both enter the combo with an
+        # explicit plane_pos=0.0. Previously reachable *only* through the
+        # dedicated overlay path (views.py's _redraw_hrrpuv_overlay): the
+        # comment here used to say that was "by design," but it was
+        # actually a bug in the other direction -- HRRPUV's incidental
+        # `.sf` SLCF slice (the M-SIM Stage 1 re-run dumps it both as a
+        # `.s3d` volume and a plain 2D slice) was leaking into the combo
+        # through the generic slice2d discovery path with plane_pos=None,
+        # crashing (float - None) the moment it was selected; fixed by
+        # excluding kind="volume" quantities from that path and giving
+        # HRRPUV its own discovery step instead, same as SOOT DENSITY
+        # already had. Known gap (reported, not yet fixed): as a primary
+        # quantity this shares SOOT DENSITY's own 1001-frame `.s3d`
+        # cadence vs. TEMPERATURE's 481, and main_window.py's
+        # _soot_primary_frame_index/_reported_n_frames timeline remap is
+        # SOOT-specific (checks quantity == SOOT DENSITY, not membership
+        # in the `.s3d` family) -- so HRRPUV's primary-quantity timeline
+        # will currently show the same ~2x-too-long label/pacing that
+        # SOOT DENSITY had before that fix, until that helper is
+        # generalized to cover both.
+        #
         # hazard_levels is a single threshold (50 kW/m3), not a dense
         # ladder: this overlay answers one binary question ("is
         # combustion happening here"), not a gradient to explore -- same
@@ -184,7 +200,12 @@ QUANTITY_REGISTRY = {
         # physical per-scenario variance); active-cell values cluster
         # 56-85 kW/m3 across the sample, so 50 sits just below that
         # cluster -- comfortably above the zero-noise floor without
-        # excluding real combustion.
+        # excluding real combustion. slider_min/max/default (50/1200/200)
+        # were calibrated on 2026-08-20, after the dataset's 2026-08-18
+        # regeneration -- re-verified directly against the live dataset
+        # (bugfix pass): true max-over-run is still exactly 1195.3 kW/m3
+        # on all 24 scenarios, so this range is current, not stale like
+        # SOOT DENSITY's was.
         "HRRPUV", "Heat release rate (per volume)", "kW/m³", "viridis", 0.0,
         slider_min=50, slider_max=1200, slider_default=200,
         hazard_levels=(50.0,), kind="volume",

@@ -2022,7 +2022,22 @@ class MainWindow(QtWidgets.QMainWindow):
         overlay (velocity_panel.py's V6-M7 "color by V" toggle), never
         meant to be a plain selectable heatmap quantity. Registry gating
         is the single source of truth for that distinction, independent
-        of what a given scenario's raw file inventory happens to contain."""
+        of what a given scenario's raw file inventory happens to contain.
+
+        Also requires kind == "slice2d" (bugfix pass): the M-SIM Stage 1
+        re-run's `.smv` dumps HRRPUV as *both* a volumetric `.s3d` SMOKF3D
+        family member and an incidental 2D `.sf` SLCF slice at this same
+        default plane. available_slices() (a plain `.sf` inventory) picks
+        up that incidental slice, and without this kind check it would
+        enter the combo as a bare SliceKey('HRRPUV', ...) with
+        plane_pos=None -- load_data() still routes any _VOLUME_QUANTITIES
+        member through extract_volume_plane() regardless of which
+        discovery path produced the key, and that crashes on
+        `float - None` the moment plane_pos never got set (fds/s3d/
+        s3d.py's boundary_mesh_ids). A `kind="volume"` quantity now only
+        ever enters the combo through its own dedicated discovery step
+        below (_discover_soot_planes/_discover_hrrpuv_planes), which
+        always sets a real plane_pos."""
         from registry import get_quantity
         if self.sim_data.manifest:
             try:
@@ -2031,24 +2046,30 @@ class MainWindow(QtWidgets.QMainWindow):
                 matching = [i for i in infos
                             if i.key.direction == DEFAULT_SLICE_KEY.direction
                             and i.key.offset == DEFAULT_SLICE_KEY.offset
-                            and not get_quantity(i.key.quantity).gated]
+                            and not get_quantity(i.key.quantity).gated
+                            and get_quantity(i.key.quantity).kind == "slice2d"]
                 if matching:
                     matching.sort(key=lambda i: i.key.quantity != DEFAULT_SLICE_KEY.quantity)
-                    return matching + self._discover_soot_planes(path)
+                    return (matching + self._discover_soot_planes(path)
+                            + self._discover_hrrpuv_planes(path))
             except (FileNotFoundError, OSError) as e:
                 logger.warning("could not discover available quantities (%s); "
                                 "falling back to TEMPERATURE only", e)
         return [SliceInfo(DEFAULT_SLICE_KEY, 'temp', QUANTITY_DISPLAY[DEFAULT_SLICE_KEY.quantity]['unit'])]
 
-    # SOOT planes surfaced in the quantity combo when `.s3d` data exists
-    # (M2.2 any-plane slicing): a side view on the app's usual y=0 plane.
-    # A distinct SliceKey carrying its physical plane_pos, so it flows
-    # through the store/extent/probe/isotherm machinery exactly like any
-    # other quantity. (The x=0.25 m doorway plane that used to live here
-    # too was removed by request -- discarded, not gated/hidden -- so
-    # don't re-add it speculatively.)
+    # SOOT/HRRPUV planes surfaced in the quantity combo when `.s3d` data
+    # exists (M2.2 any-plane slicing, generalized to HRRPUV in the bugfix
+    # pass that added _discover_hrrpuv_planes): a side view on the app's
+    # usual y=0 plane. A distinct SliceKey carrying its physical
+    # plane_pos, so it flows through the store/extent/probe/isotherm
+    # machinery exactly like any other quantity. (The x=0.25 m doorway
+    # plane that used to live here too was removed by request --
+    # discarded, not gated/hidden -- so don't re-add it speculatively.)
     _SOOT_PLANES = (
         (SliceKey(SOOT_QUANTITY, AXIS_TO_DIRECTION['y'], 0, 0.0), 'Smoke — side view (y = 0)'),
+    )
+    _HRRPUV_PLANES = (
+        (SliceKey(HRRPUV_QUANTITY, AXIS_TO_DIRECTION['y'], 0, 0.0), 'HRRPUV — side view (y = 0)'),
     )
 
     def _discover_soot_planes(self, scenario_path: str) -> list:
@@ -2060,6 +2081,20 @@ class MainWindow(QtWidgets.QMainWindow):
             return []
         unit = QUANTITY_DISPLAY[SOOT_QUANTITY]['unit']
         return [SliceInfo(key, label, unit) for key, label in self._SOOT_PLANES]
+
+    def _discover_hrrpuv_planes(self, scenario_path: str) -> list:
+        """SliceInfo entries for the HRRPUV volume plane (bugfix pass),
+        mirroring _discover_soot_planes -- HRRPUV's own, correct entry
+        point into the combo (see _discover_quantities's kind=="slice2d"
+        filter for why it can no longer leak in through the plain `.sf`
+        slice path with plane_pos=None). Only if the scenario actually
+        ships `.s3d` files (they aren't in demo data or a trimmed
+        fixture)."""
+        import glob
+        if not glob.glob(os.path.join(scenario_path, '*.s3d')):
+            return []
+        unit = QUANTITY_DISPLAY[HRRPUV_QUANTITY]['unit']
+        return [SliceInfo(key, label, unit) for key, label in self._HRRPUV_PLANES]
 
     @staticmethod
     def _quantity_label(info) -> str:
