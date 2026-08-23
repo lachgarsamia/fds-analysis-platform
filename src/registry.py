@@ -297,13 +297,39 @@ QUANTITY_REGISTRY = {
     # sequential map has no meaningful center, so switching would erase
     # the sign, not just reskin the color.
     "U-VELOCITY": QuantityInfo(
-        "U-VELOCITY", "Velocity U (x-component)", "m/s", "coolwarm", -5.0,
-        slider_min=1, slider_max=10, slider_default=5, kind="slice2d",
+        # Display-scale fix pass: vmin/slider_default lowered from -5.0/5
+        # to -1.0/1 -- the old +-5 m/s range dwarfed the real buoyant-
+        # plume velocities, so the whole field sat within ~20% of the
+        # diverging colormap's neutral center and read as flat gray.
+        # Re-measured directly against all 24 scenarios at y=0 (not
+        # assumed): raw range is -3.13 to +3.09 m/s, but |U| is heavily
+        # skewed -- most of the domain is still air (median 0.055 m/s);
+        # the plume's own characteristic scale is the p90-p99 band (0.34
+        # to 1.56 m/s). +-1 puts that characteristic plume scale at
+        # 34-100%+ of the ramp's half-range (vividly colored, not washed
+        # out), the same "sacrifice the rare >1.56 m/s extreme (<1% of
+        # cells) for common-case legibility" trade-off already made for
+        # TEMPERATURE/DYNAMIC PRESSURE. Kept as an integer (this quantity's
+        # slider is integer-stepped, slider_min=1) rather than the
+        # measurement's own more granular ~1.5-ish sweet spot between the
+        # p95/p99 marks -- 1 lands closer to "typical" plume motion (p90-
+        # p95) than 2 would, and is also the finest step slider_min already
+        # allows, the same "lowest fixed default actually reachable"
+        # reasoning DYNAMIC PRESSURE's own default=1 already uses.
+        "U-VELOCITY", "Velocity U (x-component)", "m/s", "coolwarm", -1.0,
+        slider_min=1, slider_max=10, slider_default=1, kind="slice2d",
         interpretation="Signed in-plane x-velocity; with W, the true vector field "
                        "for streamlines/quiver."),
     "W-VELOCITY": QuantityInfo(
-        "W-VELOCITY", "Velocity W (z-component)", "m/s", "coolwarm", -5.0,
-        slider_min=1, slider_max=10, slider_default=5, kind="slice2d",
+        # Display-scale fix pass: same fix/reasoning as U-VELOCITY above.
+        # Re-measured directly against all 24 scenarios at y=0: raw range
+        # is -2.18 to +3.44 m/s, |W| median 0.021 m/s, plume's own p90-p99
+        # band is 0.38 to 2.51 m/s -- close enough to U's own band that
+        # the same +-1 m/s default keeps the two components' color scales
+        # consistent with each other (a user comparing U vs. W panels
+        # shouldn't have to mentally rescale between them).
+        "W-VELOCITY", "Velocity W (z-component)", "m/s", "coolwarm", -1.0,
+        slider_min=1, slider_max=10, slider_default=1, kind="slice2d",
         interpretation="Signed in-plane z-velocity; with U, the true vector field "
                        "for streamlines/quiver."),
     "V-VELOCITY": QuantityInfo(
