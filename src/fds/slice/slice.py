@@ -395,6 +395,21 @@ class Slice:
         return str_general + str_times + str_data
 
 def findSlices(slices, meshes, quantity, normal_direction, offset):
+    # TODO: the 1.5*slice_delta tolerance below is wider than the physical
+    # gap between a default (PBY=0.000) and CELL_CENTERED (PBY=-0.005)
+    # plane for the current mesh (0.015 m vs 0.005 m), so a query near
+    # offset=0 matches BOTH variants' subslices and hands them all to
+    # combineSlices(). Today this still returns clean default-plane values,
+    # but only because the larger default subslices are processed after the
+    # smaller CELL_CENTERED ones and fully overwrite them -- correct by
+    # write-order coincidence, not by explicit selection. There is
+    # currently no offset value that isolates the CELL_CENTERED variant
+    # alone through this function. See
+    # tests/test_slice_parser.py::TestVectorVelocityCrossValidation for a
+    # working bypass (filter readSliceInfos()'s slice list by `.centered`
+    # directly, call combineSlices() on just those) -- a real fix (e.g. an
+    # explicit `centered` argument here) should preserve that same
+    # semantics rather than relying on offset proximity alone.
     res = []
 
     for s in slices:

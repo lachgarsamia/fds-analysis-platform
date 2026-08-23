@@ -265,6 +265,12 @@ class DevicePanel(QtWidgets.QWidget):
         case_index = self.scenario_combo.currentData()
         if case_index is None:
             return
+        # Clear the previous scenario's fire story immediately rather than
+        # leaving it visible while the new scenario's data loads -- _render()
+        # below repopulates it from the new case's own events, but that
+        # shouldn't happen to read as a (possibly misleading) carryover
+        # narrative in the meantime.
+        self.story_label.setText("")
         key = SliceKey("TEMPERATURE")
         self._data = np.asarray(self._provider.get(case_index, key))
         self._extent = self._provider.get_extent(case_index, key)
