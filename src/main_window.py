@@ -40,7 +40,7 @@ from controls.door_widget import DoorWidget
 from controls.vent_widget import VentWidget
 from inspector import InspectorPanel, InspectorStack
 from export import AnimationExporter, ffmpeg_available
-from load_data import SIM_ROOT
+from load_data import SIM_ROOT, _VOLUME_QUANTITIES
 from slice_key import (SliceInfo, SliceKey, DEFAULT_SLICE_KEY, available_slices,
                         SOOT_QUANTITY, HRRPUV_QUANTITY, AXIS_TO_DIRECTION)
 from views import ViewGrid, DifferenceView, EnsembleView
@@ -2517,20 +2517,25 @@ class MainWindow(QtWidgets.QMainWindow):
     def _reported_n_frames(self, store, case_index: int, quantity_key, data) -> int:
         """Frame count to report to the shared timeline (playback_bar's
         range / _current_n_frames) for (case_index, quantity_key)'s
-        `data` -- SOOT DENSITY selected as a "slice" cell's own *primary*
-        quantity (not the TEMPERATURE-view overlay, which already remaps
-        independently; see _soot_overlay_frame_for_cell) has the same
-        1001-native-frame-vs-481 cadence mismatch against the shared,
-        single-global-fps timeline that HRRPUV's overlay does (see
-        _remap_frame_index) -- reporting `data.shape[0]` directly (1001)
-        makes the timeline read ~250s instead of the true ~120s and pace
-        played back ~2x too slow (time_controller.py paces ticks off the
-        same global fps). Reporting TEMPERATURE's own frame count at the
-        same plane instead makes the smoke plane ride the same timeline
-        as every other primary quantity; _soot_primary_frame_index below
-        does the matching index-side remap. Every other quantity reports
+        `data` -- any `_VOLUME_QUANTITIES` member (SOOT DENSITY, HRRPUV)
+        selected as a "slice" cell's own *primary* quantity (not the
+        TEMPERATURE-view overlay, which already remaps independently;
+        see _soot_overlay_frame_for_cell/_hrrpuv_overlay_frame_for_cell)
+        has the same 1001-native-frame-vs-481 cadence mismatch against
+        the shared, single-global-fps timeline that those overlays
+        already handle (see _remap_frame_index) -- reporting
+        `data.shape[0]` directly (1001) makes the timeline read ~250s
+        instead of the true ~120s and pace playback ~2x too slow
+        (time_controller.py paces ticks off the same global fps).
+        Reporting TEMPERATURE's own frame count at the same plane
+        instead makes the volume plane ride the same timeline as every
+        other primary quantity; _soot_primary_frame_index below does the
+        matching index-side remap. Checked by `_VOLUME_QUANTITIES`
+        membership, not a single hardcoded quantity name, so any future
+        `.s3d`-cadence quantity added to that tuple gets this for free
+        instead of rediscovering the bug. Every other quantity reports
         its own real frame count unchanged."""
-        if quantity_key.quantity != SOOT_QUANTITY:
+        if quantity_key.quantity not in _VOLUME_QUANTITIES:
             return data.shape[0]
         temp_key = SliceKey("TEMPERATURE", quantity_key.direction, quantity_key.offset)
         return store.get(case_index, temp_key).shape[0]
@@ -2538,11 +2543,14 @@ class MainWindow(QtWidgets.QMainWindow):
     def _soot_primary_frame_index(self, store, case_index: int, quantity_key, data, index: int) -> int:
         """Timeline `index` (TEMPERATURE-cadence, thanks to
         _reported_n_frames above) remapped onto `data`'s own native
-        `.s3d` frame count, when `quantity_key` is SOOT DENSITY shown as
-        a cell's own primary quantity. Plain clamp (today's existing
-        behavior) for every other quantity, so this changes nothing
-        else. See _reported_n_frames's docstring for why this exists."""
-        if quantity_key.quantity != SOOT_QUANTITY:
+        `.s3d` frame count, when `quantity_key` is a `_VOLUME_QUANTITIES`
+        member (SOOT DENSITY, HRRPUV) shown as a cell's own primary
+        quantity. Plain clamp (today's existing behavior) for every
+        other quantity, so this changes nothing else. See
+        _reported_n_frames's docstring for why this exists and why the
+        check is membership in that tuple rather than one hardcoded
+        quantity name."""
+        if quantity_key.quantity not in _VOLUME_QUANTITIES:
             return min(index, data.shape[0] - 1)
         temp_key = SliceKey("TEMPERATURE", quantity_key.direction, quantity_key.offset)
         n_temp_frames = store.get(case_index, temp_key).shape[0]
