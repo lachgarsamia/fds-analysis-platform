@@ -1,7 +1,12 @@
 """Tests for the Smoke-Layer Motion panel (Analysis roadmap follow-up):
-a position/descent-rate widget over layer_height.py's existing smoke-layer
-height series -- height (position) and its time-derivative (descent rate),
-locked to one scrub cursor. The bottom panel is never labeled "velocity"
+a position widget over layer_height.py's existing smoke-layer height
+series (top plot) locked to one scrub cursor, with the shared "layer,
+plume & ceiling over time" plot (height_panel.draw_layer_plume_ceiling_
+over_time, also used by Field & Time Explorer) on the bottom -- replacing
+what used to be a standalone descent-rate plot there (Spatiotemporal
+Analysis consolidation pass). The descent-rate computation itself is
+unchanged and still reported live in the status label; it's just no
+longer its own plotted axis. The bottom plot is never labeled "velocity"
 in the UI -- that name is reserved for the real FDS VELOCITY quantity.
 """
 
@@ -128,7 +133,7 @@ def test_scrubbing_moves_cursor_on_both_panels_identically(panel):
     for frac in (0.2, 0.7):
         fi = int(n * frac)
         panel.frame_slider.setValue(fi)
-        ax_h, ax_r = panel.canvas.fig.axes
+        ax_h, ax_r, _jet_ax = panel.canvas.fig.axes
         cursor_h = [l.get_xdata()[0] for l in ax_h.lines if len(set(l.get_xdata())) == 1]
         cursor_r = [l.get_xdata()[0] for l in ax_r.lines if len(set(l.get_xdata())) == 1]
         t_expected = fi / panel._fps
@@ -201,26 +206,34 @@ def test_underlying_rate_series_is_never_modified_by_the_display_mask(panel):
     assert np.isfinite(panel._series["rate"][presmoke_n - 1])
 
 
-def test_displayed_rate_line_masks_the_presmoke_and_transition_indices(panel):
-    panel.frame_slider.setValue(len(panel._series["height"]) - 1)  # off the masked region
-    ax_h, ax_r = panel.canvas.fig.axes
-    presmoke_n = panel._series["presmoke_n"]
-    assert presmoke_n >= 1
-    rate_line = [l for l in ax_r.get_lines() if len(l.get_xdata()) > 1][0]
-    y = rate_line.get_ydata()
-    # Indices [0 .. presmoke_n] inclusive must be NaN'd out of the plotted
-    # line -- the one-sided/centered np.gradient artifacts straddling the
-    # pre-smoke -> real-smoke transition.
-    assert np.all(np.isnan(y[: presmoke_n + 1]))
-    # Real signal past that point must survive untouched.
-    assert np.isfinite(y[presmoke_n + 1])
-    np.testing.assert_allclose(y[presmoke_n + 1:], panel._series["rate"][presmoke_n + 1:])
-
-
 def test_presmoke_interval_is_shaded_on_both_panels(panel):
-    ax_h, ax_r = panel.canvas.fig.axes
+    ax_h, ax_r, _jet_ax = panel.canvas.fig.axes
     assert len(ax_h.patches) >= 1  # axvspan
     assert len(ax_r.patches) >= 1
+
+
+def test_bottom_plot_is_the_shared_layer_plume_ceiling_plot_not_descent_rate(panel):
+    """Spatiotemporal Analysis consolidation pass: the bottom plot is now
+    height_panel.draw_layer_plume_ceiling_over_time's shared plot (same
+    one Field & Time Explorer uses), not a standalone descent-rate axis --
+    a title check alone wouldn't rule out a coincidentally-renamed rate
+    plot, so this also checks for the twin ceiling-temperature axis and
+    real plume-height data flowing through, both specific to the shared
+    plot and absent from the old one."""
+    fig = panel.canvas.fig
+    assert len(fig.axes) == 3, "expected height + layer/plume/ceiling + its ceiling-temp twin axis"
+    ax_h, ax_r, jet_ax = fig.axes
+    assert ax_r.get_title() == "Layer, plume & ceiling over time"
+    assert "descent rate" not in ax_r.get_title().lower()
+    assert "ceiling" in jet_ax.get_ylabel().lower()
+    assert panel._series["plume"] is not None
+    assert panel._series["ceiling"] is not None
+    assert len(panel._series["plume"]) == len(panel._series["height"])
+    # The plume-height line (not the smoke-layer line, which the top plot
+    # also draws in the same color) must actually be present on ax_r.
+    plume_lines = [l for l in ax_r.get_lines() if l.get_label() == "plume height (m)"]
+    assert len(plume_lines) == 1
+    np.testing.assert_allclose(plume_lines[0].get_ydata(), panel._series["plume"])
 
 
 def test_status_label_says_no_smoke_detected_during_presmoke_frames(panel):
@@ -257,9 +270,9 @@ def test_steepest_real_drop_still_aligns_with_rate_minimum_after_masking(panel):
 
 def test_bottom_panel_never_labels_itself_velocity(panel):
     """The real FDS VELOCITY quantity is a different thing entirely --
-    the descent-rate panel must not collide with that name anywhere a
+    the bottom plot must not collide with that name anywhere a
     user actually reads."""
-    ax_h, ax_r = panel.canvas.fig.axes
+    ax_h, ax_r, jet_ax = panel.canvas.fig.axes
     for text in (ax_h.get_title(), ax_r.get_title(), ax_r.get_ylabel(),
-                 ax_h.get_ylabel(), panel.caption.text()):
+                 ax_h.get_ylabel(), jet_ax.get_ylabel(), panel.caption.text()):
         assert "velocity" not in text.lower()

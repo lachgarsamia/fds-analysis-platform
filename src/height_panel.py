@@ -22,6 +22,7 @@ from registry import get_quantity, AMBIENT_C
 from insight import InsightList, Insight
 from layer_height import smoke_layer_height_series
 from analysis_panel_base import populate_scenario_combo
+from schematic import ROOM_X, ROOM_Z
 import height_analysis as ha
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,38 @@ _SOOT_DENSITY_CAPTION = (
     "it was tested against this data and rejected rather than shown. The "
     "Temperature quantity's own smoke-layer curve remains the "
     "temperature-derived estimate.")
+
+
+def draw_layer_plume_ceiling_over_time(ax, times, layer, plume, ceiling, unit, t_cursor) -> None:
+    """The "Layer, plume & ceiling over time" plot: smoke-layer height and
+    plume height on `ax`'s own axis, ceiling-jet temperature on a twin
+    right axis, a vertical line at `t_cursor`. Shared between this page
+    (Field & Time Explorer) and smoke_layer_motion_panel.py's Smoke-Layer
+    Motion page, which reuses this verbatim for its own bottom plot rather
+    than reimplementing it -- the two pages' figures differ (this one
+    shares a figure with the vertical-profile plot above it; the other
+    shares one with its own height/position plot above it), so subplot
+    creation and fig.subplots_adjust() stay the caller's job; this only
+    draws onto the axes it's given. `layer`/`plume`/`ceiling` may
+    individually be None (nothing to plot for that series -- e.g. a
+    non-thermal quantity's layer/plume are never computed)."""
+    if layer is not None:
+        ax.plot(times, layer, color="#2563EB", label="smoke layer (m)")
+    if plume is not None:
+        ax.plot(times, plume, color="#E8622C", label="plume height (m)")
+    ax.set_xlabel("time (s)", fontsize=8)
+    ax.set_ylabel("height (m)", fontsize=8)
+    ax.set_title("Layer, plume & ceiling over time", fontsize=8)
+    ax.tick_params(labelsize=7)
+    # ceiling-jet temperature on a twin axis (linked multi-quantity view)
+    jet_ax = ax.twinx()
+    if ceiling is not None:
+        jet_ax.plot(times, ceiling, color="#888", linewidth=0.9, label="ceiling temp")
+    jet_ax.set_ylabel(f"ceiling {unit}", fontsize=8, color="#888")
+    jet_ax.tick_params(labelsize=7, colors="#888")
+    ax.axvline(t_cursor, color="#00E5FF", linewidth=1.0)  # time cursor
+    lines = [l for l in (ax.get_lines() + jet_ax.get_lines()) if not l.get_label().startswith("_")]
+    ax.legend(lines, [l.get_label() for l in lines], fontsize=6, loc="upper left")
 
 
 class HeightPanel(QtWidgets.QWidget):
@@ -299,6 +332,17 @@ class HeightPanel(QtWidgets.QWidget):
         self._loc_ax.imshow(frame, cmap=display.cmap, vmin=loc_vmin,
                             vmax=loc_vmax, aspect="auto",
                             extent=self._extent if self._extent else None)
+        # Room-only crop (this picker map specifically -- NOT the Live
+        # Viewer's main heatmap, which stays full-domain by a separate,
+        # already-decided item): the analysis only cares about what's
+        # happening inside the room, same crop convention device_panel.py
+        # already uses for its own locator canvas.
+        x_left, x_right = min(ROOM_X), max(ROOM_X)
+        z_bottom, z_top = min(ROOM_Z), max(ROOM_Z)
+        x_margin = (x_right - x_left) * 0.05
+        z_margin = (z_top - z_bottom) * 0.05
+        self._loc_ax.set_xlim(x_left - x_margin, x_right + x_margin)
+        self._loc_ax.set_ylim(z_bottom - z_margin, z_top + z_margin)
         self._loc_ax.set_xticks([]); self._loc_ax.set_yticks([])
         if self._extent is not None and self._x_col is not None:
             x0, x1, _z0, _z1 = self._extent
@@ -357,24 +401,9 @@ class HeightPanel(QtWidgets.QWidget):
         if is_thermal:
             time_ax = fig.add_subplot(212)
             times = np.arange(self._data.shape[0]) / self._fps
-            if self._series["layer"] is not None:
-                time_ax.plot(times, self._series["layer"], color="#2563EB", label="smoke layer (m)")
-            if self._series["plume"] is not None:
-                time_ax.plot(times, self._series["plume"], color="#E8622C", label="plume height (m)")
-            time_ax.set_xlabel("time (s)", fontsize=8)
-            time_ax.set_ylabel("height (m)", fontsize=8)
-            time_ax.set_title("Layer, plume & ceiling over time", fontsize=8)
-            time_ax.tick_params(labelsize=7)
-            # ceiling-jet temperature on a twin axis (linked multi-quantity view)
-            jet_ax = time_ax.twinx()
-            jet_ax.plot(times, self._series["ceiling"], color="#888", linewidth=0.9,
-                        label="ceiling temp")
-            jet_ax.set_ylabel(f"ceiling {unit}", fontsize=8, color="#888")
-            jet_ax.tick_params(labelsize=7, colors="#888")
-            time_ax.axvline(idx / self._fps, color="#00E5FF", linewidth=1.0)  # time cursor
-            lines = [l for l in (time_ax.get_lines() + jet_ax.get_lines())
-                     if not l.get_label().startswith("_")]
-            time_ax.legend(lines, [l.get_label() for l in lines], fontsize=6, loc="upper left")
+            draw_layer_plume_ceiling_over_time(
+                time_ax, times, self._series["layer"], self._series["plume"],
+                self._series["ceiling"], unit, idx / self._fps)
             fig.subplots_adjust(top=0.92, bottom=0.10, left=0.12, right=0.88, hspace=0.85)
         else:
             fig.subplots_adjust(top=0.90, bottom=0.12, left=0.14, right=0.95)

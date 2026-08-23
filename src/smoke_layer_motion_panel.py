@@ -1,28 +1,31 @@
-"""Smoke-Layer Motion panel (Analysis roadmap follow-up): a position-
-velocity *teaching analogy* grounded entirely in real simulation data.
-The UI itself never calls the bottom panel "velocity" -- this dataset
-already has a real, distinct VELOCITY quantity (registry.py), and reusing
-that word for an interface-descent speed would collide with it. The
-bottom panel is labeled "descent rate" throughout.
+"""Smoke-Layer Motion panel (Analysis roadmap follow-up): smoke-layer
+height (layer_height.smoke_layer_height_series) grounded entirely in real
+simulation data, read alongside the same "Layer, plume & ceiling over
+time" view Field & Time Explorer uses.
 
-The only FireScope quantity that's literally kinematic is smoke-layer
-height (layer_height.smoke_layer_height_series): a real height in meters
-that descends over time. This panel shows that height (the "position")
-locked to its own time-derivative, the descent rate (the "velocity" of
-the teaching analogy, never the UI label) -- np.gradient(height) * fps,
-the same rate-from-position idiom devices.py already uses for a
-thermocouple's heating rate. One scrub cursor (the frame_slider, the same
-control every other Analysis panel uses) drives both panels together.
+Top plot: smoke-layer height (the "position") over time. Bottom plot
+(Spatiotemporal Analysis consolidation pass): the shared layer/plume/
+ceiling-over-time plot (height_panel.draw_layer_plume_ceiling_over_time),
+reused verbatim rather than reimplemented -- previously this was a
+descent-rate ("velocity" of a position/velocity teaching analogy, never
+the UI label -- this dataset already has a real, distinct VELOCITY
+quantity, registry.py) plot; that computation (np.gradient(height) * fps,
+the same rate-from-position idiom devices.py uses for a thermocouple's
+heating rate) is still computed and reported live in the status label
+below the plots, just no longer plotted on its own axis. One scrub
+cursor (the frame_slider, the same control every other Analysis panel
+uses) drives both plots together.
 
 Reuses layer_height.py's existing computation verbatim -- this panel adds
-no new physics, only a new view over an existing one. TEMPERATURE is
+no new physics, only a view over an existing one. TEMPERATURE is
 never gated (see tenability.fed_heat_dose's own docstring), so the
 GatedQuantityError path below is defensive, not one expected to fire on
 this dataset today: it exists so a future gated scenario fails with an
 honest empty state instead of a guessed curve, per this widget's own
 non-negotiable.
 
-Sign-convention note (cleanup pass): summary_stats.py separately reports
+Sign-convention note (cleanup pass, still applies to the status label's
+live rate readout): summary_stats.py separately reports
 `smoke_descent_rate_m_s`, a positive-only *scalar* -- the single worst
 frame-to-frame drop across a run, clamped >=0, used as one of several
 severity-style response fields in study_analytics.py's factor-effects
@@ -30,15 +33,15 @@ comparisons (peak temp, HRR, hazard duration, etc. are all positive-
 magnitude there too). This panel's `rate` is deliberately signed and
 full-series instead (negative = descending, positive = rising) -- it
 carries the rise/fall information the scalar's `max(0.0, ...)` clamp
-discards, which is the whole point of a position/velocity view. The two
-are related (summary_stats.py's scalar is, in spirit, `-min(rate)` over
-a run, though computed via np.diff rather than np.gradient -- see that
-module's own comment), not contradictory: one is a full curve for
-exploration, the other a single ranking statistic. Not unified into one
-sign convention on purpose -- study_analytics.py's callers assume a
-positive magnitude (see its own pinned test), so flipping the scalar's
-sign would ripple into an unrelated comparison feature for no benefit;
-documenting the relationship at both sites instead.
+discards. The two are related (summary_stats.py's scalar is, in spirit,
+`-min(rate)` over a run, though computed via np.diff rather than
+np.gradient -- see that module's own comment), not contradictory: one is
+a full series for exploration, the other a single ranking statistic. Not
+unified into one sign convention on purpose -- study_analytics.py's
+callers assume a positive magnitude (see its own pinned test), so
+flipping the scalar's sign would ripple into an unrelated comparison
+feature for no benefit; documenting the relationship at both sites
+instead.
 """
 
 from __future__ import annotations
@@ -47,20 +50,21 @@ import numpy as np
 from PyQt5 import QtCore, QtWidgets
 
 from widgets import MplCanvas, plot_fg_color
-from registry import AMBIENT_C
+from registry import AMBIENT_C, get_quantity
 from slice_key import SliceKey
 from quantity_provider import GatedQuantityError
 from layer_height import smoke_layer_height_series
 from analysis_panel_base import populate_scenario_combo
+import height_analysis as ha
+from height_panel import draw_layer_plume_ceiling_over_time
 
 _CAPTION = (
-    "Smoke-layer height (top) and its descent rate (bottom), locked to one "
-    "time cursor. Height is the domain-mean excess-temperature half-integral "
-    "from the ceiling down -- a documented simplification of the rigorous "
-    "two-zone (Cooper) method, not a directly measured interface "
-    "(layer_height.py). Descent rate is the real time-derivative of that "
-    "same height curve, nothing else -- negative means the layer is "
-    "descending."
+    "Smoke-layer height (top) and layer/plume/ceiling over time (bottom), "
+    "locked to one time cursor. Height is the elevation of steepest "
+    "excess-temperature gradient (Steckler, Quintiere & Rinkinen, NBSIR "
+    "82-2520, 1982; layer_height.py), the literature definition of thermal "
+    "interface height. The status line below reports the same height's "
+    "live descent rate -- negative means the layer is descending."
 )
 
 _NO_DATA_CAPTION = "Smoke-layer height is not available for this scenario."
@@ -164,7 +168,17 @@ class SmokeLayerMotionPanel(QtWidgets.QWidget):
         # signed derivative of the real height series.
         rate = np.gradient(height) * self._fps
         presmoke_n = _presmoke_frame_count(height, float(extent[3]))
-        return {"height": height, "rate": rate, "presmoke_n": presmoke_n}
+        # Plume height / ceiling-jet temperature (bottom-plot replacement:
+        # the shared "Layer, plume & ceiling over time" plot, see
+        # height_panel.draw_layer_plume_ceiling_over_time) -- same
+        # threshold/series convention height_panel.py's own _reload_impl
+        # uses for TEMPERATURE.
+        q = get_quantity("TEMPERATURE")
+        thr = (q.hazard_levels or (AMBIENT_C * 3,))[0]
+        plume = ha.plume_height_series(data, extent, thr)
+        ceiling = ha.ceiling_jet_series(data)
+        return {"height": height, "rate": rate, "presmoke_n": presmoke_n,
+                "plume": plume, "ceiling": ceiling, "unit": q.unit}
 
     def _reload(self) -> None:
         if not self._loaded:
@@ -215,18 +229,17 @@ class SmokeLayerMotionPanel(QtWidgets.QWidget):
         # presmoke_n-1, referencing only the ceiling default before it),
         # then a centered difference one frame later (index presmoke_n)
         # that still partly references that same ceiling value. Both
-        # indices are masked from the *displayed* rate line and shaded on
-        # both panels; `rate` itself (used everywhere else, incl. the
-        # cursor scatter math below) stays the complete, unmodified
-        # np.gradient(height)*fps array -- nothing about the underlying
-        # derivative changes, only what's drawn as trustworthy signal.
+        # indices are shaded (see the axvspan loop below) and drive the
+        # status-label wording; `rate` itself (used there and in
+        # summary_stats.py-style callers) stays the complete, unmodified
+        # np.gradient(height)*fps array regardless.
         mask_end = min(presmoke_n, n - 1) if presmoke_n >= 1 else -1
-        rate_display = rate.copy()
-        if mask_end >= 0:
-            rate_display[: mask_end + 1] = np.nan
 
         # Two locked, time-aligned panels sharing one x-axis (sharex) --
-        # position on top, descent rate on bottom, same cursor drawn on both.
+        # position on top, the shared layer/plume/ceiling-over-time plot
+        # (height_panel.draw_layer_plume_ceiling_over_time -- same one
+        # Field & Time Explorer uses, not reimplemented here) on bottom,
+        # same cursor drawn on both.
         ax_h = fig.add_subplot(211)
         ax_h.plot(times, height, color="#2563EB", linewidth=1.4)
         ax_h.axvline(t_cursor, color="#00E5FF", linewidth=1.2)
@@ -236,15 +249,9 @@ class SmokeLayerMotionPanel(QtWidgets.QWidget):
         ax_h.tick_params(labelsize=7, labelbottom=False)
 
         ax_r = fig.add_subplot(212, sharex=ax_h)
-        ax_r.plot(times, rate_display, color="#E8622C", linewidth=1.4)
-        ax_r.axhline(0.0, color="#888888", linewidth=0.6)
-        ax_r.axvline(t_cursor, color="#00E5FF", linewidth=1.2)
-        if mask_end < 0 or idx > mask_end:
-            ax_r.scatter([t_cursor], [rate[idx]], color="#E8622C", zorder=5, s=26)
-        ax_r.set_xlabel("time (s)", fontsize=8)
-        ax_r.set_ylabel("descent rate (m/s)", fontsize=8)
-        ax_r.set_title("Smoke-layer descent rate — negative = descending", fontsize=9)
-        ax_r.tick_params(labelsize=7)
+        draw_layer_plume_ceiling_over_time(
+            ax_r, times, height, self._series["plume"], self._series["ceiling"],
+            self._series["unit"], t_cursor)
 
         if mask_end >= 0:
             t_mask_end = mask_end / self._fps

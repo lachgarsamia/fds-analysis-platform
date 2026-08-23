@@ -223,3 +223,30 @@ class TestHeightPanelSafetyNet:
         assert p._data is not None
         assert "click the map" in p.caption.text().lower()
         p.deleteLater()
+
+
+class TestLocatorMapRoomCrop:
+    """The vertical-profile picker map (the "click to pick x" locator
+    heatmap) crops its display to the room bounds, not the full simulation
+    domain -- distinct from the Live Viewer's main heatmap, which stays
+    full-domain by a separate, already-decided item; this crop is specific
+    to this picker map only."""
+
+    def test_locator_axes_limits_match_room_bounds_not_full_domain(self, panel):
+        from schematic import ROOM_X, ROOM_Z
+
+        x_left, x_right = min(ROOM_X), max(ROOM_X)
+        z_bottom, z_top = min(ROOM_Z), max(ROOM_Z)
+        x_margin = (x_right - x_left) * 0.05
+        z_margin = (z_top - z_bottom) * 0.05
+
+        xlim = panel._loc_ax.get_xlim()
+        ylim = panel._loc_ax.get_ylim()
+        np.testing.assert_allclose(xlim, (x_left - x_margin, x_right + x_margin))
+        np.testing.assert_allclose(ylim, (z_bottom - z_margin, z_top + z_margin))
+
+        # WIDE_EXTENT (the fixture's full simulation domain, 0.0-1.0 x
+        # 0.0-0.3) must NOT be what's actually shown -- the room bounds are
+        # a strict sub-range of it on x, confirming this is a real crop,
+        # not a coincidental match.
+        assert xlim[0] > WIDE_EXTENT[0]
