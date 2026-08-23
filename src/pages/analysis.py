@@ -158,7 +158,7 @@ class _PanelJumpDialog(QtWidgets.QDialog):
 
 
 class AnalysisPage(Page):
-    title = "Analysis"
+    title = "Scientific Analysis"
     # Phase D: a tab switch at ANY level (outer group, or a group's own
     # inner tab) must still trigger the RC-polish "resend the current
     # selection" catch-up (main_window.py's freeze-while-hidden mechanism)
@@ -275,7 +275,7 @@ class AnalysisPage(Page):
 
             # Searchable panel jump (roadmap A2). WidgetWithChildrenShortcut,
             # not the default WindowShortcut context: this page shares one
-            # QMainWindow with every other nav-rail page (Home, Live, ...),
+            # QMainWindow with every other nav-rail page (Live, Dataset, ...),
             # so an unscoped shortcut would also fire while looking at a
             # completely different page.
             self._jump_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+K"), self)

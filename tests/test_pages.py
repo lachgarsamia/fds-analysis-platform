@@ -17,38 +17,38 @@ from pages.placeholder import PlaceholderPage
 
 class TestNavRail:
     def test_first_entry_active_by_default(self, qapp):
-        rail = NavRail([("home", "Home"), ("live", "Live Viewer")])
-        assert rail._buttons["home"].isChecked()
+        rail = NavRail([("live", "Live Simulation"), ("analysis", "Scientific Analysis")])
+        assert rail._buttons["live"].isChecked()
 
     def test_click_emits_page_selected(self, qapp):
-        rail = NavRail([("home", "Home"), ("live", "Live Viewer")])
+        rail = NavRail([("live", "Live Simulation"), ("analysis", "Scientific Analysis")])
         received = []
         rail.page_selected.connect(received.append)
-        rail._buttons["live"].click()
-        assert received == ["live"]
+        rail._buttons["analysis"].click()
+        assert received == ["analysis"]
 
     def test_set_active_checks_the_right_button(self, qapp):
-        rail = NavRail([("home", "Home"), ("live", "Live Viewer")])
-        rail.set_active("live")
-        assert rail._buttons["live"].isChecked()
-        assert not rail._buttons["home"].isChecked()
+        rail = NavRail([("live", "Live Simulation"), ("analysis", "Scientific Analysis")])
+        rail.set_active("analysis")
+        assert rail._buttons["analysis"].isChecked()
+        assert not rail._buttons["live"].isChecked()
 
     def test_starts_collapsed(self, qapp):
-        rail = NavRail([("home", "Home")])
+        rail = NavRail([("live", "Live Simulation")])
         assert not rail.is_expanded()
-        assert rail._buttons["home"].text() == "1"
+        assert rail._buttons["live"].text() == "1"
 
     def test_hover_expands_and_leave_collapses(self, qapp):
-        rail = NavRail([("home", "Home")])
+        rail = NavRail([("live", "Live Simulation")])
         collapsed_width = rail.width()
         QtWidgets.QApplication.sendEvent(rail, QtCore.QEvent(QtCore.QEvent.Enter))
         assert rail.is_expanded()
         assert rail.width() > collapsed_width
-        assert rail._buttons["home"].text() == "1  Home"
+        assert rail._buttons["live"].text() == "1  Live Simulation"
         QtWidgets.QApplication.sendEvent(rail, QtCore.QEvent(QtCore.QEvent.Leave))
         assert not rail.is_expanded()
         assert rail.width() == collapsed_width
-        assert rail._buttons["home"].text() == "1"
+        assert rail._buttons["live"].text() == "1"
 
 
 class TestPageLifecycle:
@@ -147,6 +147,38 @@ class TestMainWindowPageSwitching:
         assert window.page_stack.currentWidget() is window.pages["live"]
         window.close()
 
+    def test_no_home_page(self, qapp):
+        """Nav reordering pass: Home is removed entirely, not just
+        reordered/hidden -- no "home" key anywhere pages/nav can reach."""
+        window = MainWindow(load_simulation_data())
+        assert "home" not in window.pages
+        assert "home" not in window.nav_rail._buttons
+        window.close()
+
+    def test_nav_order_and_titles(self, qapp):
+        """Nav order/titles: Live Simulation, Scientific Analysis, Dataset
+        Explorer, About -- Export page removed entirely (postcard export
+        dropped with it; Animation/Publication figure/Publication Bundle
+        exports remain reachable via the File > Export menu)."""
+        window = MainWindow(load_simulation_data())
+        assert list(window.nav_rail._buttons.keys()) == [
+            "live", "analysis", "dataset", "about"]
+        assert window.nav_rail._labels["live"] == "1  Live Simulation"
+        assert window.nav_rail._labels["analysis"] == "2  Scientific Analysis"
+        assert window.nav_rail._labels["dataset"] == "3  Dataset Explorer"
+        assert window.nav_rail._labels["about"] == "4  About"
+        window.close()
+
+    def test_kiosk_idle_stays_on_current_page(self, qapp):
+        """No separate Home/landing page to drift back to (nav reordering
+        pass) -- idle must leave the active page exactly as it was, not
+        silently navigate anywhere."""
+        window = MainWindow(load_simulation_data())
+        window._navigate_to("dataset")
+        window._kiosk._enter_idle()
+        assert window._active_page_key == "dataset"
+        window.close()
+
     def test_live_content_built_eagerly_regardless_of_active_page(self, qapp):
         """The Live page's real content (view_grid, ...) and the shared
         header chrome (playback_bar) must both exist as soon as MainWindow
@@ -167,12 +199,13 @@ class TestMainWindowPageSwitching:
         assert window.time_controller.index == 3
         window.close()
 
-    def test_leaving_live_while_playing_pauses(self, qapp):
+    def test_leaving_live_while_playing_without_loop_pauses(self, qapp):
         window = MainWindow(load_simulation_data())
         window._navigate_to("live")
+        window.time_controller.set_loop(False)
         window.time_controller.play()
         assert window.time_controller.is_playing()
-        window._navigate_to("home")
+        window._navigate_to("dataset")
         assert not window.time_controller.is_playing()
         window.close()
 
@@ -186,7 +219,7 @@ class TestMainWindowPageSwitching:
         sim_data = load_simulation_data()
         assert sim_data.is_demo
         window = MainWindow(sim_data)
-        for key in ("home", "dataset", "analysis", "export", "live"):
+        for key in ("dataset", "analysis", "live"):
             window._navigate_to(key)
         window.close()
 

@@ -95,10 +95,8 @@ from session import build_session_dict, read_session, write_session
 from nav import NavRail, COLLAPSED_WIDTH
 from playback_bar import PlaybackBar
 from pages.live import LivePage
-from pages.home import HomePage
 from pages.dataset import DatasetPage
 from pages.analysis import AnalysisPage
-from pages.export_page import ExportPage
 from pages.about import AboutPage
 from kiosk import KioskController
 
@@ -391,12 +389,15 @@ class MainWindow(QtWidgets.QMainWindow):
         for i in range(self.inspector_stack.count()):
             self.inspector_stack.section(i).set_story_index(self.time_controller.index)
 
-        # Kiosk / attract mode (FireLab roadmap Phase 5): idle -> Home,
-        # any input -> Live. Needs a live QApplication instance, which
-        # exists by construction time (main.py creates it before MainWindow).
+        # Kiosk / attract mode (FireLab roadmap Phase 5): no separate Home/
+        # landing page to drift back to (nav reordering pass) -- idle stays
+        # on whatever page is currently showing; only the cursor auto-hide
+        # (a fully independent mechanism, see kiosk.py) still fires on
+        # idle. Needs a live QApplication instance, which exists by
+        # construction time (main.py creates it before MainWindow).
         self._kiosk = KioskController(
-            on_idle=lambda: self._navigate_to("home"),
-            on_wake=lambda: self._navigate_to("live"),
+            on_idle=lambda: None,
+            on_wake=lambda: None,
             app=QtWidgets.QApplication.instance(),
             cursor_target=self,
             parent=self,
@@ -404,14 +405,14 @@ class MainWindow(QtWidgets.QMainWindow):
         # Demo-script bookmarks (FireLab roadmap Phase 5): slot -> {page,
         # case_index, time_index}; Ctrl+Shift+<1-9> records, Shift+<1-9> jumps.
         self._demo_bookmarks: dict = {}
-        # Guards the Compare -> Home/Live grid-reset bugfix (_navigate_to)
-        # from firing on _apply_compare_preset's own internal jump to Live.
+        # Guards the Compare -> Live grid-reset bugfix (_navigate_to) from
+        # firing on _apply_compare_preset's own internal jump to Live.
         self._applying_compare_preset = False
         # True while the grid is showing a Compare preset's comparison
         # setup -- Compare and the plain Live Viewer are meant to be
         # independent, so _navigate_to resets the grid back to a single
-        # view the next time the user actually asks for "live" or "home"
-        # (including re-clicking "Live Viewer" while already there).
+        # view the next time the user actually asks for "live" (including
+        # re-clicking "Live Simulation" while already there).
         self._compare_active = False
         # Esc long-press: "effects off" master switch, tracked via
         # keyPressEvent/keyReleaseEvent below (QShortcut has no notion of
@@ -836,7 +837,9 @@ class MainWindow(QtWidgets.QMainWindow):
         experiment_browser/analytics_panel docks' own inner content
         (already built -- see __init__'s ordering comment); the Simulation
         Viewer (LivePage) is the page shown first, per the UI/UX
-        modernization spec -- Home remains reachable from the nav rail."""
+        modernization spec -- there is no separate Home/landing page, nav
+        reordering pass: Live Simulation is both the first nav entry and
+        the startup page."""
         # UI overhaul (global chrome pass): one playback transport, in a
         # persistent header above page_stack, instead of two separately-
         # built copies (the old Live Viewer sidebar section and Analysis's
@@ -1056,7 +1059,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.analytics_panel.hide()
 
         self.pages = {
-            "home": HomePage(on_start=lambda: self._navigate_to("live")),
             "live": LivePage(live_content, self.time_controller, settings=self.settings),
             "dataset": DatasetPage(dataset_content),
             "analysis": AnalysisPage(
@@ -1074,16 +1076,18 @@ class MainWindow(QtWidgets.QMainWindow):
                 graph_content=self.graph_panel,
                 quantities_content=self.quantities_panel,
                 ask_content=self.query_panel),
-            "export": ExportPage(
-                on_export_animation=self._export_animation, on_export_postcard=self._export_postcard),
             "about": AboutPage(),
         }
-        self.pages["home"].set_stats(
-            len(self.sim_data.manifest or []), self._current_n_frames, len(self.quantity_infos))
 
+        # Nav reordering pass: no separate Home/landing page -- Live
+        # Simulation is both the first entry and the startup page (see
+        # _navigate_to("live") below). Export page removed entirely
+        # (postcard export dropped with it; Animation/Publication figure/
+        # Publication Bundle exports remain reachable via the File > Export
+        # menu, which never depended on this page).
         nav_entries = [
-            ("home", "Home"), ("live", "Live Viewer"),
-            ("dataset", "Dataset Explorer"), ("analysis", "Analysis"), ("export", "Export"),
+            ("live", "Live Simulation"), ("analysis", "Scientific Analysis"),
+            ("dataset", "Dataset Explorer"),
             ("about", "About"),
         ]
         self.page_stack = QtWidgets.QStackedWidget()
@@ -1398,14 +1402,15 @@ class MainWindow(QtWidgets.QMainWindow):
         page = self.pages.get(key)
         if page is None:
             return
-        # Compare and the plain Live Viewer are meant to be independent: a
-        # preset's comparison grid must not stick around as "the" Live
-        # Viewer. Checked before the same-page early-return below so
-        # re-clicking "Live Viewer" while its comparison grid is still
-        # showing there also resets it, not just navigating in from
-        # elsewhere -- _navigate_to's only other caller with this guard
-        # already up is _apply_compare_preset's own internal jump.
-        if (key in ("home", "live") and getattr(self, "_compare_active", False)
+        # Compare and the plain Live Simulation view are meant to be
+        # independent: a preset's comparison grid must not stick around as
+        # "the" Live Simulation view. Checked before the same-page early-
+        # return below so re-clicking "Live Simulation" while its
+        # comparison grid is still showing there also resets it, not just
+        # navigating in from elsewhere -- _navigate_to's only other caller
+        # with this guard already up is _apply_compare_preset's own
+        # internal jump.
+        if (key == "live" and getattr(self, "_compare_active", False)
                 and not getattr(self, "_applying_compare_preset", False)):
             self._reset_grid_after_compare()
         if key == self._active_page_key:
@@ -1441,8 +1446,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _reset_grid_after_compare(self) -> None:
         """Bugfix: leaving a Compare preset's comparison grid (2x1, two
-        plain-slice scenarios -- see _apply_compare_preset) back to Home
-        or Live must not leave that setup behind -- reset to a plain 1x1
+        plain-slice scenarios -- see _apply_compare_preset) back to Live
+        must not leave that setup behind -- reset to a plain 1x1
         view of whichever scenario was the comparison's first (A)."""
         self._compare_active = False
         cells = self.view_grid.visible_cells()
@@ -3279,7 +3284,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if quantity_key is None or case_a is None or case_b is None:
             return
 
-        # Guards _navigate_to()'s Compare -> Home/Live grid reset (bugfix
+        # Guards _navigate_to()'s Compare -> Live grid reset (bugfix
         # below) from firing on *this* internal jump to Live -- that reset
         # is for a user manually leaving Compare later, not for the preset
         # setting up its own comparison grid.
@@ -4106,39 +4111,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if was_playing:
             self.time_controller.play()
 
-    def _export_postcard(self):
-        """Export page's "demo postcard" (FireLab roadmap Phase 4): a
-        one-click PNG of the active cell's current frame with a simple
-        FireLab title-card overlay -- a QPainter grab of the live canvas,
-        not a re-render, so it always matches exactly what's on screen."""
-        cell = self.view_grid.active_cell()
-        if cell is None:
-            return
-        default_name = f"firelab_{self.controller.current_case_index()}.png"
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Save Demo Postcard", default_name, "PNG Image (*.png)")
-        if not path:
-            return
-        if not path.lower().endswith(".png"):
-            path += ".png"
-
-        pixmap = cell.view.widget().grab()
-        painter = QtGui.QPainter(pixmap)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing)
-        band_height = max(36, pixmap.height() // 12)
-        band_rect = QtCore.QRect(0, pixmap.height() - band_height, pixmap.width(), band_height)
-        painter.fillRect(band_rect, QtGui.QColor(11, 13, 18, 200))
-        painter.setPen(QtGui.QColor("#FF6B35"))
-        font = painter.font()
-        font.setPointSizeF(max(font.pointSizeF() * 1.3, 12))
-        font.setBold(True)
-        painter.setFont(font)
-        painter.drawText(band_rect.adjusted(12, 0, -12, 0), QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft,
-                          "FireLab Digital Twin")
-        painter.end()
-        pixmap.save(path, "PNG")
-        self.statusBar().showMessage(f"Saved {path}", 4000)
-
     # --------------------------------------------------------- multi-study (M2.5)
     def _open_study(self):
         """File -> Open Study… (M2.5): load a different FDS-output
@@ -4390,7 +4362,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _export_publication_figure(self):
         """Export -> Publication figure… (V2 roadmap M1.4): a real
-        re-render (not a screen grab, unlike _export_postcard) through
+        re-render (not a plain screen grab) through
         figure_export.export_publication_figure, at a chosen journal
         width/format, with proper physical axes, labeled isotherms, and
         an optional provenance footer parsed from the scenario's `.out`/
@@ -4581,11 +4553,12 @@ class MainWindow(QtWidgets.QMainWindow):
             QtGui.QKeySequence("Shift+Right"), self,
             activated=lambda: self.time_controller.step(self.time_controller.timesteps_per_second),
         )
-        # FireLab roadmap Phase 1: 1-6 jump straight to a nav-rail page, in
+        # FireLab roadmap Phase 1: 1-4 jump straight to a nav-rail page, in
         # the same display order as the rail itself. (Analysis page pruning:
-        # was 1-7 with "compare" at 3 -- renumbered down, not left dead, now
-        # that the Compare page is gone.)
-        for i, key in enumerate(("home", "live", "dataset", "analysis", "export", "about"), start=1):
+        # was 1-7 with "compare" at 3, renumbered down when the Compare page
+        # went; nav reordering pass removed Home; Export page removal
+        # dropped it further -- now 1-4.)
+        for i, key in enumerate(("live", "analysis", "dataset", "about"), start=1):
             QtWidgets.QShortcut(QtGui.QKeySequence(str(i)), self, activated=lambda k=key: self._navigate_to(k))
         # Demo-script bookmarks (FireLab roadmap Phase 5): Ctrl+Shift+<n>
         # records the current (page, scenario, time) into slot n;

@@ -1,11 +1,12 @@
-"""Live Viewer page (FireLab roadmap Phase 1): hosts the existing 1x1
+"""Live Simulation page (FireLab roadmap Phase 1): hosts the existing 1x1
 ViewGrid + TimelineWidget + control panel unchanged.
 
 Built eagerly by MainWindow at startup exactly as before this page system
 existed -- this is the app's primary, already-fast, already-tested
 surface (M1.2's disk cache already made its own construction cheap), not
-a lazy-build candidate like the placeholder pages. Boots hidden behind
-Home; showing it is a plain QStackedWidget index change, not a rebuild.
+a lazy-build candidate like the placeholder pages. It's the startup page
+(nav reordering pass: no separate Home/landing page) -- shown immediately
+via _navigate_to("live"), not hidden behind anything else first.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from tour import TourOverlay, mark_tour_completed, should_show_tour
 
 
 class LivePage(Page):
-    title = "Live Viewer"
+    title = "Live Simulation"
 
     def __init__(self, content: QtWidgets.QWidget, time_controller,
                  settings: QtCore.QSettings = None, parent=None):

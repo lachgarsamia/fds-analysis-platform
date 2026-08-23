@@ -1,7 +1,7 @@
 """Forschungszentrum Jülich + Bergische Universität Wuppertal logo widgets
--- shared by the top bar (menu bar corner) and the Home page header. Each
-falls back to a plain text label if its asset isn't found, rather than
-failing to build the window.
+-- shared by the top bar (menu bar corner) and the nav rail. Each falls
+back to a plain text label if its asset isn't found, rather than failing
+to build the window.
 
 Both marks are pre-cropped PNGs (banner/img/), each with a black-ink and a
 white-ink variant for theme switching -- see _LogoLabel. FZJ's original
@@ -93,8 +93,8 @@ def build_wuppertal_logo_widget(height: int = 28) -> QtWidgets.QWidget:
 
 class PartnerLogosWidget(QtWidgets.QWidget):
     """FZJ above Wuppertal, one accessible unit -- both partner institutions
-    read as a pair wherever the app already showed just FZJ (nav rail, Home
-    header), not as two unrelated logos that happen to be near each other.
+    read as a pair wherever the app already showed just FZJ (nav rail),
+    not as two unrelated logos that happen to be near each other.
     Stacked, not side by side: at a shared height tall enough to read, the
     two logos' combined width overran the ~340px nav rail and visibly
     overlapped -- a vertical stack only grows the (plentiful) rail height,

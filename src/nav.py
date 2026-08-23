@@ -31,7 +31,7 @@ LOGO_HEIGHT = 150
 
 class NavRail(QtWidgets.QWidget):
     """entries: [(key, label), ...] in display order, e.g.
-    [("home", "Home"), ("live", "Live Viewer"), ...]."""
+    [("live", "Live Simulation"), ("analysis", "Scientific Analysis"), ...]."""
 
     page_selected = QtCore.pyqtSignal(str)  # page key
     theme_toggle_requested = QtCore.pyqtSignal()

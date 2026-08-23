@@ -1,7 +1,11 @@
 """Kiosk / attract mode (FireLab roadmap Phase 5): after IDLE_TIMEOUT_MS
-of no user input, drift back to Home's hero page; the next real input
-returns to Live. Also hides the cursor after a shorter idle delay ("F11
-full-screen already exists; add cursor auto-hide" per the roadmap).
+of no user input, fires the caller's on_idle() (MainWindow currently
+wires this to a no-op -- nav reordering pass removed the separate Home/
+landing page it used to drift back to, so idle now just stays on
+whatever page is showing); the next real input fires on_wake(). Also
+hides the cursor after a shorter idle delay ("F11 full-screen already
+exists; add cursor auto-hide" per the roadmap) -- independent of
+on_idle/on_wake, so it keeps working regardless of what those do.
 
 A single QObject event filter installed on the QApplication -- not tied
 to any one widget -- so it catches input anywhere in the window. Cursor
