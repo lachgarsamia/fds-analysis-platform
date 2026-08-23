@@ -18,6 +18,7 @@ matching the app's flipped-array convention.
 from __future__ import annotations
 
 import numpy as np
+from scipy.ndimage import uniform_filter1d
 
 # Near-ceiling band (fraction of domain height from the top) used for the
 # ceiling-jet temperature.
@@ -77,3 +78,23 @@ def ceiling_jet_series(data: np.ndarray, band_frac: float = CEILING_BAND_FRAC) -
     n_z = arr.shape[1]
     band = max(1, int(round(band_frac * n_z)))
     return arr[:, :band, :].max(axis=(1, 2))
+
+
+def smooth_layer_height(values, window: int = 5) -> np.ndarray:
+    """A light rolling average of a layer-height series, for the *plotted
+    line only* -- display-layer polish, not a data fix. layer_height.py's
+    smoke_layer_height_series() already documents that some residual
+    frame-to-frame noise in this signal is physically expected (Steckler
+    et al. 1982's own +-8%/+-50% accuracy limits); this exists purely to
+    make the line easier to read on a chart, never to feed back into
+    event detection, dashboard stats, or narrative text, which must keep
+    seeing the true unsmoothed signal.
+
+    mode="nearest" at the edges (same convention layer_height.py's own
+    median filter uses) so the first/last few frames aren't NaN-padded
+    or pulled toward zero -- they're smoothed against a repeated edge
+    value instead."""
+    arr = np.asarray(values, dtype=float)
+    if arr.size == 0 or window <= 1:
+        return arr
+    return uniform_filter1d(arr, size=window, mode="nearest")

@@ -235,22 +235,32 @@ class SmokeLayerMotionPanel(QtWidgets.QWidget):
         # np.gradient(height)*fps array regardless.
         mask_end = min(presmoke_n, n - 1) if presmoke_n >= 1 else -1
 
+        # Display-only smoothing (light rolling average, window=5) of the
+        # *plotted* line -- height/rate above stay the true, unsmoothed
+        # signal (rate in particular is np.gradient(height)*fps; smoothing
+        # height here would desync the status label's rate reading from
+        # what it's the derivative of). The status label below reads raw
+        # height[idx] for the same reason; only the scatter dot (which
+        # visually anchors to the line, not to an analytics number) tracks
+        # the smoothed value. See height_analysis.smooth_layer_height.
+        smoothed_height = ha.smooth_layer_height(height)
+
         # Two locked, time-aligned panels sharing one x-axis (sharex) --
         # position on top, the shared layer/plume/ceiling-over-time plot
         # (height_panel.draw_layer_plume_ceiling_over_time -- same one
         # Field & Time Explorer uses, not reimplemented here) on bottom,
         # same cursor drawn on both.
         ax_h = fig.add_subplot(211)
-        ax_h.plot(times, height, color="#2563EB", linewidth=1.4)
+        ax_h.plot(times, smoothed_height, color="#2563EB", linewidth=1.4)
         ax_h.axvline(t_cursor, color="#00E5FF", linewidth=1.2)
-        ax_h.scatter([t_cursor], [height[idx]], color="#2563EB", zorder=5, s=26)
+        ax_h.scatter([t_cursor], [smoothed_height[idx]], color="#2563EB", zorder=5, s=26)
         ax_h.set_ylabel("layer height (m)", fontsize=8)
         ax_h.set_title("Smoke-layer height (position)", fontsize=9, fontweight="bold")
         ax_h.tick_params(labelsize=7, labelbottom=False)
 
         ax_r = fig.add_subplot(212, sharex=ax_h)
         draw_layer_plume_ceiling_over_time(
-            ax_r, times, height, self._series["plume"], self._series["ceiling"],
+            ax_r, times, smoothed_height, self._series["plume"], self._series["ceiling"],
             self._series["unit"], t_cursor)
 
         if mask_end >= 0:

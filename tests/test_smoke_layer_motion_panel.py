@@ -236,6 +236,43 @@ def test_bottom_plot_is_the_shared_layer_plume_ceiling_plot_not_descent_rate(pan
     np.testing.assert_allclose(plume_lines[0].get_ydata(), panel._series["plume"])
 
 
+def test_top_and_bottom_plots_show_the_smoothed_line_not_raw_height(panel):
+    """Display-only smoothing (window=5): both the top plot's own line and
+    the bottom shared plot's "smoke layer (m)" line must differ from
+    panel._series["height"] (the raw signal) -- proving the smoothing is
+    applied consistently to both, not just one, and confirming it's
+    display-only (the raw series itself is untouched and still what the
+    status label reads)."""
+    import height_analysis as ha
+    raw_height = panel._series["height"]
+    expected = ha.smooth_layer_height(raw_height)
+
+    ax_h, ax_r, _jet_ax = panel.canvas.fig.axes
+    top_line = ax_h.get_lines()[0]
+    np.testing.assert_allclose(top_line.get_ydata(), expected)
+    assert not np.allclose(top_line.get_ydata(), raw_height)
+
+    bottom_lines = [l for l in ax_r.get_lines() if l.get_label() == "smoke layer (m)"]
+    assert len(bottom_lines) == 1
+    np.testing.assert_allclose(bottom_lines[0].get_ydata(), expected)
+
+    # panel._series["height"] itself must stay raw -- proof this never
+    # touched layer_height.py's output, only what gets plotted.
+    np.testing.assert_allclose(panel._series["height"], raw_height)
+
+
+def test_status_label_reads_raw_height_not_smoothed(panel):
+    """The status label pairs height with rate (np.gradient(raw height)*
+    fps) in one reading -- showing a smoothed height there would desync
+    the two numbers (a big rate next to a muted height), so the label
+    keeps reading the true raw value even though the line above it is
+    smoothed."""
+    idx = panel._series["presmoke_n"] + 2
+    panel.frame_slider.setValue(idx)
+    raw_height_at_idx = panel._series["height"][idx]
+    assert f"height {raw_height_at_idx:.3f} m" in panel.status_label.text()
+
+
 def test_status_label_says_no_smoke_detected_during_presmoke_frames(panel):
     panel.frame_slider.setValue(0)
     text = panel.status_label.text()

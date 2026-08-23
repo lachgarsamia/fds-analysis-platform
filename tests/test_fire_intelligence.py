@@ -470,6 +470,44 @@ class TestHeightAnalysis:
         assert jet[0] == pytest.approx(300.0)
         assert jet[1] == pytest.approx(20.0)  # the 500 is at the floor, ignored
 
+    def test_smooth_layer_height_averages_a_single_frame_spike(self):
+        """Display-only smoothing (window=5): a single-frame spike against
+        an otherwise-flat series must be pulled toward its neighbors, not
+        left standing -- the whole point of the plotted line getting this
+        treatment."""
+        values = np.full(11, 0.15)
+        values[5] = 0.48  # matches the real single-frame excursions seen
+        smoothed = haz.smooth_layer_height(values, window=5)
+        assert smoothed[5] < 0.3   # spike substantially reduced
+        assert smoothed[5] > 0.15  # but not fully erased -- an average, not a clamp
+        # Frames far from the spike (outside the window) are untouched.
+        np.testing.assert_allclose(smoothed[0], 0.15)
+        np.testing.assert_allclose(smoothed[-1], 0.15)
+
+    def test_smooth_layer_height_preserves_a_flat_series(self):
+        values = np.full(8, 0.2)
+        np.testing.assert_allclose(haz.smooth_layer_height(values, window=5), values)
+
+    def test_smooth_layer_height_edges_use_nearest_not_nan(self):
+        """mode="nearest": the first/last frames of a short series must
+        still get a real, finite value -- not NaN-padded or pulled toward
+        zero, which would make the very start/end of the plotted line
+        misleading."""
+        values = np.array([0.1, 0.2, 0.9, 0.2, 0.1])
+        smoothed = haz.smooth_layer_height(values, window=5)
+        assert np.all(np.isfinite(smoothed))
+        assert smoothed[0] > 0.0
+        assert smoothed[-1] > 0.0
+
+    def test_smooth_layer_height_returns_a_new_array_not_a_view(self):
+        """Purely display-layer -- must never let a caller's in-place edit
+        of the smoothed line accidentally corrupt the raw series it came
+        from (e.g. an analytics consumer that still holds the original)."""
+        values = np.array([0.1, 0.2, 0.3, 0.2, 0.1])
+        smoothed = haz.smooth_layer_height(values, window=5)
+        smoothed[0] = 999.0
+        assert values[0] == pytest.approx(0.1)
+
 
 import smoke_density as smd  # noqa: E402
 
