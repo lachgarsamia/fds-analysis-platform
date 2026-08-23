@@ -33,6 +33,66 @@ class TestMplCanvasRenderingQuality:
         widgets.set_plot_theme(LIGHT)                      # restore for other tests
 
 
+class TestMplCanvasBlitCacheGuard:
+    """Render-artifact investigation: blit_update() used to trust a cached
+    background's size blindly -- restore_region() doesn't validate that
+    itself, it just paints the stale/wrong-sized region into place, which
+    reproduced as striped/misplaced content extending past the heatmap's
+    real bounds whenever a resize slipped past resizeEvent's own cache
+    invalidation. Tests the confirmed mechanism directly (a forced size
+    mismatch), not the still-unpinned real-world trigger path."""
+
+    def _canvas_with_image(self):
+        canvas = MplCanvas()
+        canvas.resize(200, 150)
+        ax = canvas.fig.add_subplot(111)
+        image = ax.imshow([[0, 1], [1, 0]])
+        canvas.capture_background()
+        return canvas, image
+
+    def test_matched_size_blits_normally_no_warning(self, qapp, caplog):
+        canvas, image = self._canvas_with_image()
+        before = canvas._background
+        with caplog.at_level("WARNING", logger="widgets"):
+            canvas.blit_update(image)
+        assert canvas._background is before  # unchanged -- no fallback triggered
+        assert "cached background size" not in caplog.text
+
+    def test_mismatched_size_falls_back_to_full_redraw_not_corruption(self, qapp, caplog):
+        canvas, image = self._canvas_with_image()
+        # Force the exact mechanism: a cached background whose size no
+        # longer matches the figure's current size, without a matching
+        # resizeEvent to invalidate it first (see widgets.py's own repro
+        # for how this can happen on a resize resizeEvent doesn't catch).
+        canvas.fig.set_size_inches(1.0, 1.0)
+        canvas.draw()
+        canvas._background = canvas.copy_from_bbox(canvas.fig.bbox)
+        canvas.fig.set_size_inches(4.0, 3.0)
+        canvas.draw()
+        mismatched_bg = canvas._background
+
+        with caplog.at_level("WARNING", logger="widgets"):
+            canvas.blit_update(image)
+
+        assert "cached background size" in caplog.text
+        # The guard must have replaced the stale cache with a fresh one
+        # matching the figure's real current size, not left it as-is.
+        assert canvas._background is not mismatched_bg
+        x0, y0, x1, y1 = canvas._background.get_extents()
+        assert (x1 - x0, y1 - y0) == (canvas.fig.bbox.width, canvas.fig.bbox.height)
+
+    def test_no_cached_background_falls_back_without_warning(self, qapp, caplog):
+        """The pre-existing "no cache yet" fallback (first paint) is a
+        distinct, expected case -- must not also log a spurious mismatch
+        warning."""
+        canvas, image = self._canvas_with_image()
+        canvas._background = None
+        with caplog.at_level("WARNING", logger="widgets"):
+            canvas.blit_update(image)
+        assert "cached background size" not in caplog.text
+        assert canvas._background is not None
+
+
 class TestCollapsibleSectionCard:
     """Streamlit-style redesign: each section is a rounded 'card', not a
     title with a divider line drawn underneath it."""

@@ -10,6 +10,7 @@ Small reusable widgets used by the main window.
   keyboard-navigable widget instead of N buttons wired by hand.
 """
 
+import logging
 import weakref
 from typing import List, Sequence, Tuple
 
@@ -17,6 +18,8 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 import matplotlib as mpl
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+
+logger = logging.getLogger(__name__)
 
 
 # --- Plot theming (RC polish) --------------------------------------------
@@ -134,8 +137,25 @@ class MplCanvas(FigureCanvas):
         `artist` -- or, since the ember-particle scatter (FireLab roadmap
         Phase 2.1g), each artist in an iterable of artists -- on top, blit
         to screen. Falls back to a full draw+capture if there's no cached
-        background yet (e.g. before the first paint)."""
+        background yet (e.g. before the first paint), or if the cached
+        background's size no longer matches the figure's current size.
+        restore_region() doesn't validate that itself -- it just paints
+        the stale/wrong-sized region into place regardless, which is what
+        produced a real reported artifact (striped/misplaced content
+        extending past the heatmap's actual bounds) on a resize that
+        slipped past resizeEvent's own cache invalidation. Logged (not
+        user-facing) so a recurrence gives a concrete signal -- confirms
+        the guard caught a real mismatch, rather than the artifact being
+        a different, still-unexplained bug."""
         if self._background is None:
+            self.capture_background()
+            return
+        bx0, by0, bx1, by1 = self._background.get_extents()
+        if (bx1 - bx0, by1 - by0) != (self.fig.bbox.width, self.fig.bbox.height):
+            logger.warning(
+                "blit_update: cached background size %sx%s != current figure size %sx%s -- "
+                "falling back to a full redraw instead of blitting stale/misplaced pixels",
+                bx1 - bx0, by1 - by0, self.fig.bbox.width, self.fig.bbox.height)
             self.capture_background()
             return
         self.restore_region(self._background)
