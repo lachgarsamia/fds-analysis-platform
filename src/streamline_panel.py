@@ -44,13 +44,12 @@ click) -- the entire rendered content is the live frame.
 from __future__ import annotations
 
 import numpy as np
-from matplotlib.colors import Normalize
+from matplotlib.colors import PowerNorm
 from PyQt5 import QtCore, QtWidgets
 
 from widgets import MplCanvas
 from quantity_provider import GatedQuantityError
 from analysis_panel_base import populate_scenario_combo
-from registry import get_quantity
 from schematic import room_overlay_geometry
 import velocity as vel
 
@@ -62,11 +61,24 @@ import velocity as vel
 DEFAULT_DENSITY = 1.8
 DEFAULT_CMAP = "viridis"  # perceptually uniform sequential -- never jet
 # Linewidth-scales-with-speed formula (see _render): base + scale * ratio,
-# ratio = local speed / this frame's peak speed. Same comparison pass --
-# bumped from 0.5-2.5px to 1.0-3.5px so the peak-speed jet reads clearly
-# bolder than ambient recirculation without the whole plot feeling heavy.
+# ratio = local speed / SPEED_REF_MS (a fixed reference, not this frame's
+# own peak -- see SPEED_REF_MS). Same comparison pass -- bumped from
+# 0.5-2.5px to 1.0-3.5px so the peak-speed jet reads clearly bolder than
+# ambient recirculation without the whole plot feeling heavy.
 LINEWIDTH_BASE = 1.0
 LINEWIDTH_SCALE = 2.5
+
+# Fixed reference speed (m/s) for both color and linewidth, replacing two
+# per-frame-relative references that crushed real signal: color used to
+# normalize against VELOCITY.slider_default=2 (a generic UI slider ceiling,
+# not calibrated to this dataset), and linewidth used to scale against each
+# frame's own speed_frame.max(). Measured directly against real
+# sim_stage1_prep data across all candle levels: room circulation runs
+# ~0.03-0.15 m/s, the strongest candle case's plume peaks at ~1.17 m/s
+# across its full run -- 1.2 gives that peak headroom without being so high
+# that circulation still crushes toward zero. Shared by both fixes because
+# they're the same bug: a reference that lets real signal get buried.
+SPEED_REF_MS = 1.2
 
 # Room outline colors (views.py's own _VENT_STATE_COLORS/wall/door
 # convention, duplicated rather than imported -- same "zero coupling to
@@ -279,21 +291,16 @@ class StreamlinePanel(QtWidgets.QWidget):
 
         linewidth = 1.0
         if self.linewidth_check.isChecked():
-            peak = float(speed_frame.max())
-            if peak > 1e-9:
-                linewidth = LINEWIDTH_BASE + LINEWIDTH_SCALE * (speed_frame / peak)
+            linewidth = LINEWIDTH_BASE + LINEWIDTH_SCALE * (speed_frame / SPEED_REF_MS)
 
-        # Fixed color scale (visual-clarity follow-up): the registry's own
-        # VELOCITY calibration (vmin=0, slider_default=2 m/s -- lowered to
-        # match real plume velocities, see registry.py) instead of letting
-        # streamplot auto-normalize to *this frame's own* min/max speed.
-        # Un-normalized, a calm frame's peak and a fast frame's peak render
-        # as the identical "hottest" color, which reads as "equally fast"
-        # while scrubbing through time even though they aren't -- and it
-        # made this view uncomparable to VelocityPanel's background heatmap,
-        # which already uses this same fixed scale.
-        q = get_quantity("VELOCITY")
-        norm = Normalize(vmin=q.vmin, vmax=q.slider_default)
+        # Fixed color scale against SPEED_REF_MS, not this frame's own
+        # min/max speed -- same fixed-reference reasoning as linewidth
+        # above. PowerNorm (gamma=0.45), not linear: real speeds span a
+        # ~20x dynamic range (room circulation ~0.05 m/s vs. plume ~1.0
+        # m/s), and a linear ramp buries circulation near-black to leave
+        # headroom for the plume; gamma<1 stretches the low end so both
+        # bands render legibly.
+        norm = PowerNorm(gamma=0.45, vmin=0.0, vmax=SPEED_REF_MS)
         strm = ax.streamplot(
             x, z, u_frame, w_frame,
             color=speed_frame, cmap=self._cmap, norm=norm,
