@@ -44,11 +44,14 @@ click) -- the entire rendered content is the live frame.
 from __future__ import annotations
 
 import numpy as np
+from matplotlib.colors import Normalize
 from PyQt5 import QtCore, QtWidgets
 
 from widgets import MplCanvas
 from quantity_provider import GatedQuantityError
 from analysis_panel_base import populate_scenario_combo
+from registry import get_quantity
+from schematic import room_overlay_geometry
 import velocity as vel
 
 # Visual clarity pass: matplotlib's own streamplot default (1.0) reads
@@ -64,6 +67,15 @@ DEFAULT_CMAP = "viridis"  # perceptually uniform sequential -- never jet
 # bolder than ambient recirculation without the whole plot feeling heavy.
 LINEWIDTH_BASE = 1.0
 LINEWIDTH_SCALE = 2.5
+
+# Room outline colors (views.py's own _VENT_STATE_COLORS/wall/door
+# convention, duplicated rather than imported -- same "zero coupling to
+# the other velocity views" precedent this module already follows for
+# _ensure_field). Drawn from schematic.room_overlay_geometry(), the same
+# real &HOLE-derived geometry the Live Viewer overlays on its heatmap.
+_WALL_COLOR = "#FFFFFF"
+_DOOR_COLOR = "#38BDF8"
+_VENT_STATE_COLORS = {"open": "#22C55E", "closed": "#94A3B8", "HVAC": "#F59E0B"}
 
 # Frame-to-frame stability fix: streamplot()'s automatic seeding
 # (density=...) picks new seed locations independently on every call, so
@@ -90,6 +102,7 @@ class StreamlinePanel(QtWidgets.QWidget):
         super().__init__(parent)
         self._provider = provider
         self._manifest = sorted(manifest, key=lambda e: e.case_index)
+        self._by_index = {e.case_index: e for e in self._manifest}
         self._fps = max(1, fps)
         self._cmap = cmap
         self._loaded = False
@@ -270,14 +283,47 @@ class StreamlinePanel(QtWidgets.QWidget):
             if peak > 1e-9:
                 linewidth = LINEWIDTH_BASE + LINEWIDTH_SCALE * (speed_frame / peak)
 
+        # Fixed color scale (visual-clarity follow-up): the registry's own
+        # VELOCITY calibration (vmin=0, slider_default=2 m/s -- lowered to
+        # match real plume velocities, see registry.py) instead of letting
+        # streamplot auto-normalize to *this frame's own* min/max speed.
+        # Un-normalized, a calm frame's peak and a fast frame's peak render
+        # as the identical "hottest" color, which reads as "equally fast"
+        # while scrubbing through time even though they aren't -- and it
+        # made this view uncomparable to VelocityPanel's background heatmap,
+        # which already uses this same fixed scale.
+        q = get_quantity("VELOCITY")
+        norm = Normalize(vmin=q.vmin, vmax=q.slider_default)
         strm = ax.streamplot(
             x, z, u_frame, w_frame,
-            color=speed_frame, cmap=self._cmap,
+            color=speed_frame, cmap=self._cmap, norm=norm,
             density=self.density_spin.value(),
             linewidth=linewidth,
             start_points=self._seed_points(x0, x1, z0, z1),
         )
         self.canvas.fig.colorbar(strm.lines, ax=ax, fraction=0.046, pad=0.04, label="Speed (m/s)")
+
+        # Room outline (visual-clarity follow-up): walls/door/vents from the
+        # real &HOLE-derived geometry (schematic.room_overlay_geometry), the
+        # same source and colors the Live Viewer overlays on its own
+        # heatmap -- this plot had no spatial reference at all before, just
+        # streamlines floating with no visible walls/door/vents to relate
+        # the flow to. Drawn as plain ax.plot() calls (not views.py's
+        # LineCollection/blit-cache machinery, which this from-scratch-
+        # redraw-every-frame canvas doesn't use or need -- same "thin,
+        # zero-coupling" precedent as this module's other duplicated bits).
+        entry = self._by_index.get(case_index)
+        if entry is not None:
+            geometry = room_overlay_geometry(entry.door, entry.vod, entry.voc)
+            for wx0, wz0, wx1, wz1 in geometry["walls"]:
+                ax.plot([wx0, wx1], [wz0, wz1], color=_WALL_COLOR,
+                        linestyle="--", linewidth=1.4, zorder=6)
+            dx0, dz0, dx1, dz1 = geometry["door"]
+            ax.plot([dx0, dx1], [dz0, dz1], color=_DOOR_COLOR, linewidth=2.6, zorder=6)
+            for (vx0, vz0, vx1, vz1), state in geometry["vents"]:
+                ax.plot([vx0, vx1], [vz0, vz1],
+                        color=_VENT_STATE_COLORS.get(state, "#94A3B8"),
+                        linewidth=4.0, zorder=6)
 
         # Same axis scale/aspect convention as VelocityPanel's imshow
         # background (extent + aspect='auto') so the two views are
