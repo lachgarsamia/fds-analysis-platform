@@ -1,8 +1,8 @@
 """Rendering smoke test for CompositeFlowPanel: does a real composite
-(filled W background + uniform quiver + temperature isotherms) get
-produced from known-good U/W/TEMPERATURE data, without error, and does
-the panel show an honest gate message (never a fabricated plot) when
-either is unavailable -- same conventions as test_streamline_panel.py.
+(filled W background + speed-scaled quiver + translucent temperature
+zones) get produced from known-good U/W/TEMPERATURE data, without error,
+and does the panel show an honest gate message (never a fabricated plot)
+when either is unavailable -- same conventions as test_streamline_panel.py.
 
 No fdsreader cross-validation here (rendering-only change; U/W-VELOCITY/
 TEMPERATURE data itself is already validated elsewhere).
@@ -103,32 +103,65 @@ def test_scenario_combo_populated_from_manifest(panel, manifest):
 
 
 def test_renders_all_three_layers_without_error(panel):
-    """The whole point: a filled mesh (W), a quiver (direction), and a
-    contour (isotherms) all get produced from known-good data."""
+    """The whole point: a filled mesh (W), a quiver (direction+length),
+    and filled contour bands (temperature zones) all get produced from
+    known-good data."""
     ax = panel.canvas.fig.axes[0]
     kinds = {type(c).__name__ for c in ax.collections}
     assert any(k.endswith("QuadMesh") for k in kinds), "expected the W pcolormesh"
-    assert "Quiver" in kinds, "expected the uniform quiver"
-    assert len(ax.collections) >= 3, "expected mesh + quiver + at least one isotherm collection"
+    assert "Quiver" in kinds, "expected the quiver"
+    assert len(ax.collections) >= 3, "expected mesh + quiver + at least one temperature-zone collection"
 
 
-def test_colorbar_is_added_and_labeled_for_w(panel):
-    assert len(panel.canvas.fig.axes) >= 2, "expected a colorbar axes alongside the plot axes"
-    cbar_ax = panel.canvas.fig.axes[-1]
-    assert "m/s" in cbar_ax.get_ylabel()
-    assert "W" in cbar_ax.get_ylabel()
+def test_both_colorbars_are_added_and_labeled(panel):
+    """Two independent colorbars: W velocity (Layer 1) and temperature
+    (Layer 3's translucent zones) -- neither should be assumed to be
+    axes[-1] since matplotlib appends them in the order added."""
+    labels = [ax.get_ylabel() for ax in panel.canvas.fig.axes[1:]]
+    assert len(labels) >= 2, "expected two colorbar axes alongside the plot axes"
+    assert any("m/s" in l and "W" in l for l in labels), f"no W-velocity colorbar in {labels}"
+    assert any("Temperature" in l for l in labels), f"no temperature colorbar in {labels}"
 
 
-def test_quiver_arrows_are_uniform_length_not_speed_scaled(panel):
-    """Layer 2 is direction-only -- magnitude is carried by Layer 1's
-    color, not arrow length (see composite_flow_panel.py's module
-    docstring)."""
+def test_quiver_length_is_speed_scaled_within_a_compressed_range(panel):
+    """Layer 2 length now encodes speed sub-linearly (sqrt, floored) --
+    not uniform (the old behavior) and not linear (which would crush the
+    ~20x real speed range to invisibility) -- see QUIVER_SPEED_REF/
+    QUIVER_LENGTH_FLOOR/QUIVER_LENGTH_MAX. Color still separately encodes
+    magnitude too (Layer 1); this only asserts the length side."""
     ax = panel.canvas.fig.axes[0]
     quiver = [c for c in ax.collections if type(c).__name__ == "Quiver"][0]
+    from composite_flow_panel import QUIVER_LENGTH_FLOOR, QUIVER_LENGTH_MAX
     mags = np.hypot(quiver.U, quiver.V)
     nonzero = mags[mags > 1e-9]
     assert nonzero.size > 0
-    assert np.allclose(nonzero, 1.0)
+    # not uniform: the synthetic swirl field has real speed variation
+    assert not np.allclose(nonzero, nonzero[0])
+    assert nonzero.min() >= QUIVER_LENGTH_FLOOR - 1e-9
+    assert nonzero.max() <= QUIVER_LENGTH_MAX + 1e-9
+
+
+def test_quiver_samples_the_unflipped_field_not_the_display_flip(panel):
+    """Regression test for the quiver-orientation bug: an earlier version
+    of this panel passed the already-vertically-flipped u/w arrays into
+    velocity.quiver_grid, which computes each sample's z from the RAW
+    (row 0 = ceiling) convention (see composite_flow_panel.py's module
+    docstring) -- that double-flip silently mispaired each arrow's
+    position with a *different* row's velocity, confirmed against
+    measure.probe_value ground truth before the fix landed.
+
+    _swirl_field's U is antisymmetric top-to-bottom: +scale at row 0
+    (the ceiling) and -scale at the last row (the floor). A regression
+    that re-introduces the double-flip would swap those, so the sample
+    nearest the ceiling (z close to EXTENT's z1) should have positive U;
+    the buggy version would render it negative."""
+    ax = panel.canvas.fig.axes[0]
+    quiver = [c for c in ax.collections if type(c).__name__ == "Quiver"][0]
+    offsets = np.array(quiver.get_offsets())
+    z1 = EXTENT[3]
+    ceiling_idx = np.argmax(offsets[:, 1])
+    assert offsets[ceiling_idx, 1] == pytest.approx(z1, abs=1e-6)
+    assert quiver.U[ceiling_idx] > 0, "ceiling-row U should be positive (raw field), not negative (flipped)"
 
 
 def test_quiver_grid_positions_are_identical_across_renders(panel):

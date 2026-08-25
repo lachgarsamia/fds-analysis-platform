@@ -1,8 +1,8 @@
 """Composite flow panel: filled vertical-velocity (W) background + a
-uniform (direction-only) velocity quiver + temperature isotherm lines,
-all on one frame -- "where the air is going, colored by whether it's
-rising or sinking, with the heat structure traced on top." A third,
-independent visualization of the validated U/W-VELOCITY field, alongside
+speed-scaled velocity quiver + translucent temperature zones, all on one
+frame -- "where the air is going, colored by whether it's rising or
+sinking, with the heat structure filled in on top." A third, independent
+visualization of the validated U/W-VELOCITY field, alongside
 VelocityPanel's quiver/streamlines and StreamlinePanel's matplotlib
 streamplot -- this one composites velocity with TEMPERATURE instead of
 showing velocity alone. Does not touch velocity_panel.py or
@@ -20,8 +20,21 @@ quantities' own cadence, which is unrelated to this panel).
 Row-0-is-ceiling convention: exactly the same as streamline_panel.py --
 U/W/TEMPERATURE all have row 0 at the physical ceiling; each frame is
 flipped vertically (row reindexing only, no sign changes) so `z` is
-increasing for pcolormesh/quiver/contour alike, keeping all three layers
-in the same coordinate frame.
+increasing for pcolormesh/contour alike, keeping the fill layers in the
+same coordinate frame as ax.set_ylim(z0, z1).
+
+Quiver is the one layer that must NOT receive the flipped arrays.
+velocity.quiver_grid computes each sample's physical z itself from the
+*raw* (row 0 = ceiling) array (see its own docstring/implementation --
+the same convention VectorField.quiver_at() feeds it in velocity_panel.py
+today); passing the already-flipped u/w in here as well (an earlier
+version of this panel did exactly that) silently double-flips the
+positions, so each arrow gets drawn at its physically mirrored z and
+paired with a different row's velocity -- confirmed directly against
+measure.probe_value ground truth before this fix landed. Fixed by
+sampling quiver_grid from field.u[frame_index]/field.w[frame_index]
+(unflipped) directly, not from the flipped u_frame/w_frame the pcolormesh/
+contour layers use.
 
 W sign: confirmed empirically (not assumed from FDS's nominal z-up
 convention) against real data -- at the open VOC vent directly above a
@@ -51,26 +64,44 @@ import velocity as vel
 # (see its own docstring), so this is temporally stable by construction,
 # same guarantee as StreamlinePanel's fixed seeds, with none of the
 # caching those needed (nothing here depends on frame data to compute
-# the *positions*, only the *directions* redraw per frame). Chosen via
-# the same visual-comparison approach as the streamline panel's density
-# passes: stride=6 (~17x9 arrows) reads as a direction texture over the
-# W background rather than clutter competing with it.
+# the *positions*, only the *directions*/*lengths* redraw per frame).
+# Chosen via the same visual-comparison approach as the streamline
+# panel's density passes: stride=6 (~17x9 arrows) reads as a direction
+# texture over the W background rather than clutter competing with it.
 QUIVER_STRIDE = 6
-# Arrows are unit-normalized (see _render) so magnitude is carried by the
-# W background color, not arrow length, matching the reference composite
-# -- `scale` (matplotlib's data-units-per-arrow-length-unit) then sets a
-# single uniform length for every arrow regardless of local speed.
+# Length encodes speed, sub-linearly (sqrt), not uniform and not linear:
+# real speeds span ~20x here (room circulation ~0.03-0.15 m/s vs. plume
+# ~0.6-1.2 m/s -- the same range streamline_panel.py measured and
+# documented for this dataset), and a linear length scale would shrink
+# circulation arrows to sub-pixel invisibility to leave headroom for the
+# plume. sqrt(speed) compresses that to a ~4.5x range (sqrt(20)~=4.47)
+# before QUIVER_LENGTH_FLOOR narrows it further so slow-but-real
+# circulation stays legible instead of vanishing. QUIVER_SPEED_REF is the
+# same empirical plume-peak reference streamline_panel.py's SPEED_REF_MS
+# uses (duplicated, not imported -- this module's zero-coupling
+# precedent): speeds at/above it render at QUIVER_LENGTH_MAX, everything
+# else scales down to QUIVER_LENGTH_FLOOR. Color (Layer 1) still encodes
+# magnitude too -- redundant encoding is deliberate, not a leftover.
+QUIVER_SPEED_REF = 1.2
+QUIVER_LENGTH_FLOOR = 0.2
+QUIVER_LENGTH_MAX = 1.0
 QUIVER_SCALE = 22.0
 QUIVER_WIDTH = 0.0035
 QUIVER_COLOR = "#1A1A1A"   # neutral dark -- reads over both coolwarm ends
 
-# Layer 3 (isotherms): TEMPERATURE's own registry-driven contour levels
-# (config.CONTOUR_OVERLAY_LEVELS, the same list the View-menu Contour
-# overlay and Temperature (Isolines) use), not a new hand-picked set --
-# lines only (ax.contour), no filled bands (ax.contourf) -- Layer 1's W
-# background is the fill, isotherms are structure on top of it.
-ISOTHERM_COLOR = "#F5F5F5"
-ISOTHERM_LINEWIDTH = 0.7
+# Layer 3 (temperature zones): TEMPERATURE's own registry-driven contour
+# levels (config.CONTOUR_OVERLAY_LEVELS, the same list the View-menu
+# Contour overlay and Temperature (Isolines) use), not a new hand-picked
+# set -- translucent filled bands (ax.contourf), not lines, so Layer 1's
+# W background and Layer 2's quiver both still read through them. A warm
+# sequential colormap (not coolwarm/viridis) so "this is thermal" is
+# visually unambiguous against the blue/red velocity field underneath.
+# No `extend` (matplotlib default): cells below the lowest level (most of
+# the room, ambient) get no fill at all rather than a wash across the
+# whole domain -- these are meant to read as discrete hot *zones*, not a
+# second full-domain background competing with Layer 1's.
+TEMPERATURE_FILL_CMAP = "YlOrRd"
+TEMPERATURE_FILL_ALPHA = 0.4
 
 # Layer 4 (room geometry): same thinned/faded/receded-behind-the-flow
 # values the streamline panel settled on (visual clarity passes 2-3) --
@@ -89,10 +120,10 @@ _TEMPERATURE_KEY = SliceKey("TEMPERATURE", 1, 0)
 
 
 class CompositeFlowPanel(QtWidgets.QWidget):
-    """Analysis-page tab: filled W background + uniform quiver +
-    temperature isotherms on one frame. Independent of VelocityPanel and
-    StreamlinePanel -- no shared state, no probes, nothing here writes to
-    either."""
+    """Analysis-page tab: filled W background + speed-scaled quiver +
+    translucent temperature zones on one frame. Independent of
+    VelocityPanel and StreamlinePanel -- no shared state, no probes,
+    nothing here writes to either."""
 
     def __init__(self, provider, manifest: list, fps: int, parent=None):
         super().__init__(parent)
@@ -266,25 +297,39 @@ class CompositeFlowPanel(QtWidgets.QWidget):
                               shading="auto", zorder=0)
         fig.colorbar(mesh, ax=ax, fraction=0.046, pad=0.04, label="W velocity (m/s)")
 
-        # Layer 2: uniform (direction-only) quiver -- fixed-stride grid
-        # positions (see QUIVER_STRIDE), unit-normalized vectors so every
-        # arrow is the same length; magnitude is already carried by Layer
-        # 1's color.
-        xs, zs, us, ws = vel.quiver_grid(u_frame, w_frame, field.extent, QUIVER_STRIDE)
+        # Layer 2: speed-scaled quiver -- fixed-stride grid positions (see
+        # QUIVER_STRIDE), sampled from the RAW (unflipped) field.u/w, not
+        # u_frame/w_frame (see the module docstring's "quiver_grid" note --
+        # quiver_grid computes its own z from the raw row-0-is-ceiling
+        # convention). Direction is unit-normalized, then scaled by
+        # sqrt(speed) clamped between QUIVER_LENGTH_FLOOR and
+        # QUIVER_LENGTH_MAX so both the plume and slow circulation stay
+        # legible (see QUIVER_SPEED_REF's comment) -- a true stagnation
+        # point (speed exactly 0) still renders as a zero-length (i.e. no)
+        # arrow, only genuinely slow-but-moving cells get floored.
+        xs, zs, us, ws = vel.quiver_grid(field.u[frame_index], field.w[frame_index],
+                                         field.extent, QUIVER_STRIDE)
         speed = np.hypot(us, ws)
-        us_n = np.divide(us, speed, out=np.zeros_like(us), where=speed > 1e-9)
-        ws_n = np.divide(ws, speed, out=np.zeros_like(ws), where=speed > 1e-9)
-        ax.quiver(xs, zs, us_n, ws_n, color=QUIVER_COLOR, angles="xy",
+        eps = 1e-9
+        us_dir = np.divide(us, speed, out=np.zeros_like(us), where=speed > eps)
+        ws_dir = np.divide(ws, speed, out=np.zeros_like(ws), where=speed > eps)
+        length_frac = np.clip(np.sqrt(speed / QUIVER_SPEED_REF), 0.0, 1.0)
+        length = QUIVER_LENGTH_FLOOR + (QUIVER_LENGTH_MAX - QUIVER_LENGTH_FLOOR) * length_frac
+        length = np.where(speed > eps, length, 0.0)
+        ax.quiver(xs, zs, us_dir * length, ws_dir * length, color=QUIVER_COLOR, angles="xy",
                   scale_units="xy", scale=QUIVER_SCALE, width=QUIVER_WIDTH,
                   pivot="mid", zorder=2)
 
-        # Layer 3: temperature isotherm lines -- TEMPERATURE's own
+        # Layer 3: translucent temperature zones -- TEMPERATURE's own
         # registry-driven contour levels (same list the View-menu Contour
-        # overlay and Temperature (Isolines) use), lines only.
+        # overlay and Temperature (Isolines) use), filled not lines, with
+        # alpha so Layers 1-2 still read through them (see
+        # TEMPERATURE_FILL_ALPHA's comment).
         levels = CONTOUR_OVERLAY_LEVELS.get("TEMPERATURE", [])
         if levels:
-            ax.contour(x, z, temp_frame, levels=levels, colors=ISOTHERM_COLOR,
-                      linewidths=ISOTHERM_LINEWIDTH, zorder=3)
+            temp_fill = ax.contourf(x, z, temp_frame, levels=levels, cmap=TEMPERATURE_FILL_CMAP,
+                                    alpha=TEMPERATURE_FILL_ALPHA, zorder=3)
+            fig.colorbar(temp_fill, ax=ax, fraction=0.046, pad=0.12, label="Temperature (°C)")
 
         # Layer 4: room outline -- thinned/faded/pushed just above the
         # background (below quiver/isotherms), same lesson as the
@@ -308,7 +353,7 @@ class CompositeFlowPanel(QtWidgets.QWidget):
         ax.set_aspect("auto")
         ax.set_xticks([]); ax.set_yticks([])
         t_s = frame_index / self._fps
-        ax.set_title(f"W + quiver + isotherms · t={t_s:.1f}s", fontsize=8)
+        ax.set_title(f"W + quiver + temperature zones · t={t_s:.1f}s", fontsize=8)
 
         fig.subplots_adjust(top=0.92, bottom=0.03, left=0.03, right=0.97)
         self.canvas.draw_idle()
