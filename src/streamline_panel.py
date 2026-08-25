@@ -53,12 +53,15 @@ from analysis_panel_base import populate_scenario_combo
 from schematic import room_overlay_geometry, fire_positions
 import velocity as vel
 
-# Visual clarity pass: matplotlib's own streamplot default (1.0) reads
-# thin and sparse against this app's real (coherent, post-ignition) U/W
-# data -- compared several density/linewidth combos rendered against real
-# t=30/60/90s frames (scenario 0) before picking these; 2.5 density got
-# visually tangled in the recirculating eddies, this is the balance point.
-DEFAULT_DENSITY = 1.8
+# Visual clarity pass, phase 2 (feature-based seeding): now that seeds
+# cluster at the fire/door/vents instead of a blind 12x6 grid, the old
+# 1.8 default -- tuned for that grid's much denser coverage -- reads as
+# visual clutter competing with the feature clusters and the room outline
+# for attention. Lowered to 0.9 (matplotlib's mask granularity, not seed
+# count -- see the _seed_points/feature-seeding comment; seeds are
+# unaffected) so surviving lines are fewer and less tangled, closer to
+# ~15-30 visible strokes rather than filling the whole mask grid.
+DEFAULT_DENSITY = 0.9
 DEFAULT_CMAP = "viridis"  # perceptually uniform sequential -- never jet
 # Linewidth-scales-with-speed formula (see _render): base + scale * ratio,
 # ratio = local speed / SPEED_REF_MS (a fixed reference, not this frame's
@@ -97,14 +100,43 @@ SPEED_REF_MS = 1.2
 # shorter/denser without fragmenting into illegibly short dashes.
 MAXLENGTH = 1.2
 
+# Visual clarity pass, phase 2: doubling arrows (above) was the right
+# call for legibility, but at full size (arrowsize=1.0, matplotlib's own
+# default) on *both* passes they read as clutter competing with the
+# feature clusters for attention. Kept the forward/backward split (still
+# wanted for its line-shortening effect), but only the forward pass gets
+# a visible arrow now -- moderately shrunk, not full size. The backward
+# pass's arrows are suppressed rather than removed outright:
+# ARROWSIZE_HIDDEN isn't literally 0 because matplotlib's own arrow-head
+# geometry divides by the arrow's length and misbehaves (RuntimeWarning)
+# at exactly 0 -- confirmed directly; a tiny nonzero value renders as
+# invisible without tripping that.
+ARROWSIZE = 0.8            # moderate shrink from streamplot's own default (1.0)
+ARROWSIZE_HIDDEN = 0.001   # effectively invisible -- backward pass only, see above
+
 # Room outline colors (views.py's own _VENT_STATE_COLORS/wall/door
 # convention, duplicated rather than imported -- same "zero coupling to
 # the other velocity views" precedent this module already follows for
 # _ensure_field). Drawn from schematic.room_overlay_geometry(), the same
 # real &HOLE-derived geometry the Live Viewer overlays on its heatmap.
+#
+# Visual clarity pass, phase 2: at the original linewidths and zorder=6,
+# the door/vent bars sat on top of and visually dominated the flow itself
+# -- the room read as a decorated diagram with a streamplot in it, not a
+# flow diagram with room context. Thinned, given _GEOMETRY_ALPHA<1, and
+# moved to _GEOMETRY_ZORDER -- below streamplot's own default artist
+# zorders (its LineCollection defaults to 2, its arrow FancyArrowPatches
+# to 1; confirmed directly against matplotlib.collections/patches
+# defaults) -- so flow lines and arrows now draw over the room outline,
+# not under it.
 _WALL_COLOR = "#FFFFFF"
 _DOOR_COLOR = "#38BDF8"
 _VENT_STATE_COLORS = {"open": "#22C55E", "closed": "#94A3B8", "HVAC": "#F59E0B"}
+_WALL_LINEWIDTH = 1.4
+_DOOR_LINEWIDTH = 1.6     # was 2.6
+_VENT_LINEWIDTH = 2.2     # was 4.0
+_GEOMETRY_ALPHA = 0.7
+_GEOMETRY_ZORDER = 0
 
 # Frame-to-frame stability fix: streamplot()'s automatic seeding
 # (density=...) picks new seed locations independently on every call, so
@@ -398,7 +430,8 @@ class StreamlinePanel(QtWidgets.QWidget):
         norm = PowerNorm(gamma=0.45, vmin=0.0, vmax=SPEED_REF_MS)
         # Two traces per seed (see MAXLENGTH) -- same fixed seeds, same
         # color/linewidth/density for both, only integration_direction
-        # differs, so this doesn't change what seeds exist or where.
+        # (and arrowsize, see ARROWSIZE/ARROWSIZE_HIDDEN) differs, so this
+        # doesn't change what seeds exist or where.
         seeds = self._seed_points(case_index, entry, geometry, x0, x1, z0, z1)
         streamplot_kwargs = dict(
             color=speed_frame, cmap=self._cmap, norm=norm,
@@ -408,9 +441,11 @@ class StreamlinePanel(QtWidgets.QWidget):
             maxlength=MAXLENGTH,
         )
         strm = ax.streamplot(x, z, u_frame, w_frame,
-                              integration_direction="forward", **streamplot_kwargs)
+                              integration_direction="forward", arrowsize=ARROWSIZE,
+                              **streamplot_kwargs)
         ax.streamplot(x, z, u_frame, w_frame,
-                       integration_direction="backward", **streamplot_kwargs)
+                       integration_direction="backward", arrowsize=ARROWSIZE_HIDDEN,
+                       **streamplot_kwargs)
         self.canvas.fig.colorbar(strm.lines, ax=ax, fraction=0.046, pad=0.04, label="Speed (m/s)")
 
         # Room outline (visual-clarity follow-up): walls/door/vents from the
@@ -422,16 +457,21 @@ class StreamlinePanel(QtWidgets.QWidget):
         # LineCollection/blit-cache machinery, which this from-scratch-
         # redraw-every-frame canvas doesn't use or need -- same "thin,
         # zero-coupling" precedent as this module's other duplicated bits).
+        # Thinned/faded/pushed behind the flow -- see _GEOMETRY_ALPHA/
+        # _GEOMETRY_ZORDER's comment above _WALL_COLOR.
         if entry is not None:
             for wx0, wz0, wx1, wz1 in geometry["walls"]:
                 ax.plot([wx0, wx1], [wz0, wz1], color=_WALL_COLOR,
-                        linestyle="--", linewidth=1.4, zorder=6)
+                        linestyle="--", linewidth=_WALL_LINEWIDTH,
+                        alpha=_GEOMETRY_ALPHA, zorder=_GEOMETRY_ZORDER)
             dx0, dz0, dx1, dz1 = geometry["door"]
-            ax.plot([dx0, dx1], [dz0, dz1], color=_DOOR_COLOR, linewidth=2.6, zorder=6)
+            ax.plot([dx0, dx1], [dz0, dz1], color=_DOOR_COLOR, linewidth=_DOOR_LINEWIDTH,
+                    alpha=_GEOMETRY_ALPHA, zorder=_GEOMETRY_ZORDER)
             for (vx0, vz0, vx1, vz1), state in geometry["vents"]:
                 ax.plot([vx0, vx1], [vz0, vz1],
                         color=_VENT_STATE_COLORS.get(state, "#94A3B8"),
-                        linewidth=4.0, zorder=6)
+                        linewidth=_VENT_LINEWIDTH, alpha=_GEOMETRY_ALPHA,
+                        zorder=_GEOMETRY_ZORDER)
 
         # Same axis scale/aspect convention as VelocityPanel's imshow
         # background (extent + aspect='auto') so the two views are
