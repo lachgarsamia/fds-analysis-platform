@@ -96,9 +96,24 @@ SPEED_REF_MS = 1.2
 # against real data (scenario 12, t=72s): 34 arrows before -> 74 after.
 # MAXLENGTH tuned down from streamplot's own default (4.0, halved to 2.0
 # per direction internally when using a single 'both' call) via the same
-# visual-comparison pass as DEFAULT_DENSITY -- 1.2 reads noticeably
-# shorter/denser without fragmenting into illegibly short dashes.
-MAXLENGTH = 1.2
+# visual-comparison pass as DEFAULT_DENSITY.
+#
+# Visual clarity pass, phase 3: 1.2 was still long enough for a handful
+# of trajectories to loop across most of the room (measured directly,
+# scenario 0 t=72s: 2 of 39 traced lines spanned >75% of the room's
+# diagonal) -- one line tracing "the whole room" reads as generic
+# turbulence again, working against the feature-seeding goal of showing
+# one meaningful local structure per seed (a plume rising into a vent, a
+# door inflow) rather than everywhere-to-everywhere paths. Cut to 0.5 via
+# the same measurement: 0 trajectories exceed 50% of the room diagonal at
+# that value, while a fire-seeded plume trajectory (case 0, t=72s) still
+# traces a real 0.27 m arc (down from 0.53 m at 1.2, not chopped to a
+# stub) -- confirmed directly, not assumed. MINLENGTH is streamplot's own
+# default (0.1); named explicitly rather than left implicit so both ends
+# of "one meaningful structure, not the whole room or a speck" are
+# visible together and independently tunable.
+MAXLENGTH = 0.5
+MINLENGTH = 0.1
 
 # Visual clarity pass, phase 2: doubling arrows (above) was the right
 # call for legibility, but at full size (arrowsize=1.0, matplotlib's own
@@ -439,6 +454,7 @@ class StreamlinePanel(QtWidgets.QWidget):
             linewidth=linewidth,
             start_points=seeds,
             maxlength=MAXLENGTH,
+            minlength=MINLENGTH,
         )
         strm = ax.streamplot(x, z, u_frame, w_frame,
                               integration_direction="forward", arrowsize=ARROWSIZE,
