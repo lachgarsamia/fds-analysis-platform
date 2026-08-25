@@ -2858,10 +2858,11 @@ class TestProbeMeasurePanel:
             return
         wrapper = window.probe_measure_panel
         labels = [wrapper.tabs.tabText(i) for i in range(wrapper.tabs.count())]
-        assert labels == ["Devices", "Velocity", "Velocity (Streamlines)"]
+        assert labels == ["Devices", "Velocity", "Velocity (Streamlines)", "Velocity (Composite)"]
         assert wrapper.tabs.widget(0) is window.device_panel
         assert wrapper.tabs.widget(1) is window.velocity_panel
         assert wrapper.tabs.widget(2) is window.streamline_panel
+        assert wrapper.tabs.widget(3) is window.composite_flow_panel
         assert not hasattr(window, "measurement_panel")
         assert window.velocity_panel is not None
         assert wrapper.velocity_widget is window.velocity_panel
