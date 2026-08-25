@@ -65,28 +65,41 @@ import velocity as vel
 # same guarantee as StreamlinePanel's fixed seeds, with none of the
 # caching those needed (nothing here depends on frame data to compute
 # the *positions*, only the *directions*/*lengths* redraw per frame).
-# Chosen via the same visual-comparison approach as the streamline
-# panel's density passes: stride=6 (~17x9 arrows) reads as a direction
-# texture over the W background rather than clutter competing with it.
-QUIVER_STRIDE = 6
+# Placement stays a pure function of stride -- never made denser/sparser
+# by the velocity field itself -- that purity is what keeps this
+# flicker-safe; do not make it magnitude-dependent.
+#
+# Visual clarity follow-up: stride=6 (~153 arrows) read as redundant
+# texture -- many neighboring arrows in, e.g., the ceiling jet all say
+# the same thing. Thinned to stride=12 (~45 arrows, measured directly),
+# freeing up room to render each arrow bigger (QUIVER_SCALE) without
+# neighbors overlapping.
+QUIVER_STRIDE = 12
 # Length encodes speed, sub-linearly (sqrt), not uniform and not linear:
 # real speeds span ~20x here (room circulation ~0.03-0.15 m/s vs. plume
 # ~0.6-1.2 m/s -- the same range streamline_panel.py measured and
 # documented for this dataset), and a linear length scale would shrink
 # circulation arrows to sub-pixel invisibility to leave headroom for the
 # plume. sqrt(speed) compresses that to a ~4.5x range (sqrt(20)~=4.47)
-# before QUIVER_LENGTH_FLOOR narrows it further so slow-but-real
-# circulation stays legible instead of vanishing. QUIVER_SPEED_REF is the
-# same empirical plume-peak reference streamline_panel.py's SPEED_REF_MS
-# uses (duplicated, not imported -- this module's zero-coupling
-# precedent): speeds at/above it render at QUIVER_LENGTH_MAX, everything
-# else scales down to QUIVER_LENGTH_FLOOR. Color (Layer 1) still encodes
-# magnitude too -- redundant encoding is deliberate, not a leftover.
+# before QUIVER_LENGTH_FLOOR narrows/widens it further. QUIVER_SPEED_REF
+# is the same empirical plume-peak reference streamline_panel.py's
+# SPEED_REF_MS uses (duplicated, not imported -- this module's zero-
+# coupling precedent): speeds at/above it render at QUIVER_LENGTH_MAX,
+# everything else scales down to QUIVER_LENGTH_FLOOR. Color (Layer 1)
+# still encodes magnitude too -- redundant encoding is deliberate.
+#
+# Visual clarity follow-up: floor lowered 0.2 -> 0.12 (measured directly
+# against all 3 gate scenarios at t=72s: longest:shortest now 4.5-5.8x,
+# vs. 3.3-3.9x before) so length carries more of the magnitude signal,
+# while still nowhere near linear's ~20x (which would vanish slow flow).
+# QUIVER_SCALE lowered 22 -> 15 (matplotlib: smaller = longer arrows) now
+# that thinning (above) freed up space for each arrow to read bigger --
+# the shortest (floor-length) arrow should look like an arrow, not a dot.
 QUIVER_SPEED_REF = 1.2
-QUIVER_LENGTH_FLOOR = 0.2
+QUIVER_LENGTH_FLOOR = 0.12
 QUIVER_LENGTH_MAX = 1.0
-QUIVER_SCALE = 22.0
-QUIVER_WIDTH = 0.0035
+QUIVER_SCALE = 15.0
+QUIVER_WIDTH = 0.005
 QUIVER_COLOR = "#1A1A1A"   # neutral dark -- reads over both coolwarm ends
 
 # Layer 3 (temperature zones): TEMPERATURE's own registry-driven contour
