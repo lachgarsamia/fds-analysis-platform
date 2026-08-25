@@ -50,7 +50,7 @@ from PyQt5 import QtCore, QtWidgets
 from widgets import MplCanvas
 from quantity_provider import GatedQuantityError
 from analysis_panel_base import populate_scenario_combo
-from schematic import room_overlay_geometry
+from schematic import room_overlay_geometry, fire_positions
 import velocity as vel
 
 # Visual clarity pass: matplotlib's own streamplot default (1.0) reads
@@ -111,13 +111,35 @@ _VENT_STATE_COLORS = {"open": "#22C55E", "closed": "#94A3B8", "HVAC": "#F59E0B"}
 # the rendered pattern reshuffled discontinuously between frames even
 # though the underlying U/W field itself evolves smoothly -- the seeds
 # moved, not the flow. Fixed explicit start_points (see _seed_points)
-# sidesteps this: the same seed grid drives every frame, so the pattern
-# now shifts continuously with the field instead of jumping. NX:NZ
-# roughly matches the room's ~2:1 x:z extent ratio; 12x6=72 seeds is
-# comparable in on-screen density to the old density=1.8 auto-seeding,
-# not excessive.
+# sidesteps this: the same seed set drives every frame, so the pattern
+# now shifts continuously with the field instead of jumping.
+#
+# Uniform-grid fallback (used only when a scenario has no manifest entry
+# to read geometry from -- see _seed_points): NX:NZ roughly matches the
+# room's ~2:1 x:z extent ratio; 12x6=72 seeds is comparable in on-screen
+# density to the old density=1.8 auto-seeding, not excessive.
 _SEED_GRID_NX = 12
 _SEED_GRID_NZ = 6
+
+# Feature-based seeding (replaces the uniform grid as the normal path):
+# clusters at the fire(s), the door, and each open/HVAC vent, so the plot
+# reads as "air enters at the openings, circulates, driven by the fire"
+# instead of generic turbulence. Geometry-only inputs (entry.door/vod/
+# voc/candles + schematic's static positions) -- never field.u/w/speed --
+# so the result stays identical for every frame of a scenario (see
+# _seed_points' cache), preserving the flicker fix. A closed vent gets no
+# seeds at all: nothing flows through it, so nothing should emanate from
+# it. Cluster size scales with each opening's physical extent (door
+# height, vent width) via _FEATURE_SEED_SPACING rather than a fixed count
+# per feature, so e.g. a wide door reads with more seeds than a narrow
+# one. A light background grid (_BG_GRID_NX/NZ, well below the old
+# uniform grid's 12x6) is layered underneath so the room's return
+# circulation still draws -- feature seeding concentrates attention, it
+# doesn't empty out the rest of the room.
+_FEATURE_SEED_SPACING = 0.03      # m: target seed-to-seed spacing within a cluster
+_FIRE_SEED_HEIGHTS = (0.0, 0.03, 0.06)   # m above the floor, per candle position
+_BG_GRID_NX = 6
+_BG_GRID_NZ = 4
 
 
 class StreamlinePanel(QtWidgets.QWidget):
@@ -139,7 +161,7 @@ class StreamlinePanel(QtWidgets.QWidget):
         self._gate_reasons: dict = {}   # case_index -> str
         self._bus = None
         self._current_index = 0    # live playback frame -- see set_bus()
-        self._seed_cache: dict = {}   # extent tuple -> fixed start_points array, see _seed_points
+        self._seed_cache: dict = {}   # (case_index, extent) -> fixed start_points array, see _seed_points
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -252,20 +274,68 @@ class StreamlinePanel(QtWidgets.QWidget):
         return f
 
     # ---------------------------------------------------------- seed points
-    def _seed_points(self, x0: float, x1: float, z0: float, z1: float) -> np.ndarray:
-        """Fixed start_points grid for streamplot(), generated once per
-        distinct plot extent and cached -- reused for every frame of that
-        extent rather than regenerated, which is the actual fix (see the
-        _SEED_GRID_NX/NZ comment)."""
-        key = (x0, x1, z0, z1)
+    def _seed_points(self, case_index, entry, geometry, x0: float, x1: float,
+                      z0: float, z1: float) -> np.ndarray:
+        """Fixed start_points for streamplot(), generated once per
+        (scenario, extent) and cached -- reused for every frame of that
+        scenario/extent rather than regenerated, which is the actual
+        flicker fix (see the class docstring's stability note). Feature-
+        based when `entry` (and its `geometry`, already computed by
+        _render()) is available -- see _feature_seed_points and the
+        _FEATURE_SEED_SPACING/_BG_GRID_NX/NZ comment. Falls back to the
+        old uniform grid only if `entry` is None (case_index absent from
+        the manifest -- shouldn't normally happen, but there's no
+        geometry to seed from in that case)."""
+        key = (case_index, x0, x1, z0, z1)
         seeds = self._seed_cache.get(key)
         if seeds is None:
-            xs = np.linspace(x0, x1, _SEED_GRID_NX)
-            zs = np.linspace(z0, z1, _SEED_GRID_NZ)
-            xx, zz = np.meshgrid(xs, zs)
-            seeds = np.column_stack([xx.ravel(), zz.ravel()])
+            if entry is not None:
+                seeds = self._feature_seed_points(entry, geometry, x0, x1, z0, z1)
+            else:
+                xs = np.linspace(x0, x1, _SEED_GRID_NX)
+                zs = np.linspace(z0, z1, _SEED_GRID_NZ)
+                xx, zz = np.meshgrid(xs, zs)
+                seeds = np.column_stack([xx.ravel(), zz.ravel()])
             self._seed_cache[key] = seeds
         return seeds
+
+    def _feature_seed_points(self, entry, geometry: dict, x0: float, x1: float,
+                              z0: float, z1: float) -> np.ndarray:
+        """Geometry-only seed clusters: fire position(s), the door, each
+        open/HVAC vent, plus a light background grid. Reads only
+        entry.candles and `geometry` (itself derived only from
+        entry.door/vod/voc) -- never field.u/w/speed -- see the
+        _FEATURE_SEED_SPACING comment for why that matters."""
+        points = []
+
+        for fx, fz in fire_positions(entry.candles):
+            for dz in _FIRE_SEED_HEIGHTS:
+                points.append((fx, fz + dz))
+
+        dx0, dz0, dx1, dz1 = geometry["door"]
+        n_door = max(2, round(abs(dz1 - dz0) / _FEATURE_SEED_SPACING) + 1)
+        for z in np.linspace(dz0, dz1, n_door):
+            points.append((dx0, z))
+
+        # geometry["vents"] is [VOD-lower, VOC-lower, VOD-topface,
+        # VOC-topface] (see room_overlay_geometry's docstring) -- only
+        # the first two are distinct physical openings; the top-face pair
+        # redraws the same two vents on the ceiling slab's other face.
+        for (vx0, vz0, vx1, vz1), state in geometry["vents"][:2]:
+            if state == "closed":
+                continue
+            n_vent = max(2, round(abs(vx1 - vx0) / _FEATURE_SEED_SPACING) + 1)
+            for x in np.linspace(vx0, vx1, n_vent):
+                points.append((x, vz0))
+
+        feature = np.array(points, dtype=float) if points else np.empty((0, 2))
+
+        xs = np.linspace(x0, x1, _BG_GRID_NX)
+        zs = np.linspace(z0, z1, _BG_GRID_NZ)
+        xx, zz = np.meshgrid(xs, zs)
+        background = np.column_stack([xx.ravel(), zz.ravel()])
+
+        return np.vstack([feature, background])
 
     # --------------------------------------------------------------- render
     def _render(self) -> None:
@@ -287,6 +357,14 @@ class StreamlinePanel(QtWidgets.QWidget):
             self.canvas.draw_idle()
             return
         self.status.setText("")
+
+        # Scenario geometry (moved up from the room-outline draw below --
+        # feature seeding needs it too, and this way it's computed once
+        # per frame instead of twice). entry is None only if case_index is
+        # somehow absent from the manifest.
+        entry = self._by_index.get(case_index)
+        geometry = (room_overlay_geometry(entry.door, entry.vod, entry.voc)
+                    if entry is not None else None)
 
         # Live frame (Analysis dynamic-visualizations pass): field.u/w/speed
         # are indexed directly below (unlike VelocityPanel's quiver_at()/
@@ -321,7 +399,7 @@ class StreamlinePanel(QtWidgets.QWidget):
         # Two traces per seed (see MAXLENGTH) -- same fixed seeds, same
         # color/linewidth/density for both, only integration_direction
         # differs, so this doesn't change what seeds exist or where.
-        seeds = self._seed_points(x0, x1, z0, z1)
+        seeds = self._seed_points(case_index, entry, geometry, x0, x1, z0, z1)
         streamplot_kwargs = dict(
             color=speed_frame, cmap=self._cmap, norm=norm,
             density=self.density_spin.value(),
@@ -344,9 +422,7 @@ class StreamlinePanel(QtWidgets.QWidget):
         # LineCollection/blit-cache machinery, which this from-scratch-
         # redraw-every-frame canvas doesn't use or need -- same "thin,
         # zero-coupling" precedent as this module's other duplicated bits).
-        entry = self._by_index.get(case_index)
         if entry is not None:
-            geometry = room_overlay_geometry(entry.door, entry.vod, entry.voc)
             for wx0, wz0, wx1, wz1 in geometry["walls"]:
                 ax.plot([wx0, wx1], [wz0, wz1], color=_WALL_COLOR,
                         linestyle="--", linewidth=1.4, zorder=6)

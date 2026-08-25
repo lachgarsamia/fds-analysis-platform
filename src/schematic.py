@@ -226,6 +226,20 @@ _VOC_X = (0.86, 0.94)
 _DOMAIN_ASPECT = (_DOMAIN_Z[1] - _DOMAIN_Z[0]) / (_DOMAIN_X[1] - _DOMAIN_X[0])
 
 
+def fire_positions(candles: int) -> list:
+    """Physical (x, z) floor-level position(s) of the candle flame(s) --
+    same offset formula RoomSchematic's own paint code draws from (see
+    below), factored out here so other consumers (streamline seeding)
+    share one source instead of duplicating the math. `candles` is the
+    raw ScenarioEntry/ToggleGroup factor level (0 -> 1 candle, 1 -> 2
+    candles). z is always ROOM_Z[0] -- candles sit on the floor."""
+    n_candles = 2 if candles == 1 else 1
+    cx_mid = sum(_CANDLE_X) / 2
+    span = _CANDLE_X[1] - _CANDLE_X[0]
+    xs = [cx_mid] if n_candles == 1 else [cx_mid - span * 0.35, cx_mid + span * 0.35]
+    return [(x, ROOM_Z[0]) for x in xs]
+
+
 def room_overlay_geometry(door: int, vod: int, voc: int) -> dict:
     """Physical-coordinate (meters) room geometry for the heatmap's room
     overlay (views.py) -- the actual &HOLE/&VENT opening positions from
@@ -515,13 +529,11 @@ class SchematicWidget(QtWidgets.QWidget):
                 painter.drawLine(QtCore.QPointF(sx, vent_rect.top()), QtCore.QPointF(sx, vent_rect.bottom()))
 
         # --- candle flame(s) on the floor -----------------------------------
-        n_candles = 2 if self._candles == 1 else 1
-        cx_mid = sum(_CANDLE_X) / 2
-        span = (_CANDLE_X[1] - _CANDLE_X[0])
-        xs = [cx_mid] if n_candles == 1 else [cx_mid - span * 0.35, cx_mid + span * 0.35]
+        positions = fire_positions(self._candles)
+        n_candles = len(positions)
         flame_h = room_rect.height() * 0.42
-        for x in xs:
-            base = self._phys(domain_rect, x, ROOM_Z[0])
+        for x, z in positions:
+            base = self._phys(domain_rect, x, z)
             draw_realistic_flame(painter, base.x(), base.y(), flame_h)
 
         # --- caption -------------------------------------------------------------
