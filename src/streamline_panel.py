@@ -44,149 +44,26 @@ click) -- the entire rendered content is the live frame.
 from __future__ import annotations
 
 import numpy as np
-from matplotlib.colors import PowerNorm
 from PyQt5 import QtCore, QtWidgets
 
 from widgets import MplCanvas
 from quantity_provider import GatedQuantityError
 from analysis_panel_base import populate_scenario_combo
-from schematic import room_overlay_geometry, fire_positions
 import velocity as vel
 
-# Visual clarity pass, phase 2 (feature-based seeding): now that seeds
-# cluster at the fire/door/vents instead of a blind 12x6 grid, the old
-# 1.8 default -- tuned for that grid's much denser coverage -- reads as
-# visual clutter competing with the feature clusters and the room outline
-# for attention. Lowered to 0.9 (matplotlib's mask granularity, not seed
-# count -- see the _seed_points/feature-seeding comment; seeds are
-# unaffected) so surviving lines are fewer and less tangled, closer to
-# ~15-30 visible strokes rather than filling the whole mask grid.
-DEFAULT_DENSITY = 0.9
+DEFAULT_DENSITY = 1.0  # matplotlib's own streamplot default
 DEFAULT_CMAP = "viridis"  # perceptually uniform sequential -- never jet
-# Linewidth-scales-with-speed formula (see _render): base + scale * ratio,
-# ratio = local speed / SPEED_REF_MS (a fixed reference, not this frame's
-# own peak -- see SPEED_REF_MS). Same comparison pass -- bumped from
-# 0.5-2.5px to 1.0-3.5px so the peak-speed jet reads clearly bolder than
-# ambient recirculation without the whole plot feeling heavy.
-LINEWIDTH_BASE = 1.0
-LINEWIDTH_SCALE = 2.5
-
-# Fixed reference speed (m/s) for both color and linewidth, replacing two
-# per-frame-relative references that crushed real signal: color used to
-# normalize against VELOCITY.slider_default=2 (a generic UI slider ceiling,
-# not calibrated to this dataset), and linewidth used to scale against each
-# frame's own speed_frame.max(). Measured directly against real
-# sim_stage1_prep data across all candle levels: room circulation runs
-# ~0.03-0.15 m/s, the strongest candle case's plume peaks at ~1.17 m/s
-# across its full run -- 1.2 gives that peak headroom without being so high
-# that circulation still crushes toward zero. Shared by both fixes because
-# they're the same bug: a reference that lets real signal get buried.
-SPEED_REF_MS = 1.2
-
-# Visual-density follow-up: matplotlib's streamplot places exactly one
-# arrow per traced line, at that line's own midpoint -- with a single
-# call per seed (integration_direction='both', the default), each of the
-# 72 fixed seeds produces one long line and one arrow, so direction is
-# only marked once per loop even when a line wanders across much of the
-# room. Splitting each seed into two separate traces -- one
-# 'forward'-only, one 'backward'-only, both from the *same* fixed
-# start_points array (see _seed_points) -- doubles the arrow count (two
-# midpoints instead of one) and roughly halves each visible line's
-# length, without adding, moving, or removing a single seed. Confirmed
-# against real data (scenario 12, t=72s): 34 arrows before -> 74 after.
-# MAXLENGTH tuned down from streamplot's own default (4.0, halved to 2.0
-# per direction internally when using a single 'both' call) via the same
-# visual-comparison pass as DEFAULT_DENSITY.
-#
-# Visual clarity pass, phase 3: 1.2 was still long enough for a handful
-# of trajectories to loop across most of the room (measured directly,
-# scenario 0 t=72s: 2 of 39 traced lines spanned >75% of the room's
-# diagonal) -- one line tracing "the whole room" reads as generic
-# turbulence again, working against the feature-seeding goal of showing
-# one meaningful local structure per seed (a plume rising into a vent, a
-# door inflow) rather than everywhere-to-everywhere paths. Cut to 0.5 via
-# the same measurement: 0 trajectories exceed 50% of the room diagonal at
-# that value, while a fire-seeded plume trajectory (case 0, t=72s) still
-# traces a real 0.27 m arc (down from 0.53 m at 1.2, not chopped to a
-# stub) -- confirmed directly, not assumed. MINLENGTH is streamplot's own
-# default (0.1); named explicitly rather than left implicit so both ends
-# of "one meaningful structure, not the whole room or a speck" are
-# visible together and independently tunable.
-MAXLENGTH = 0.5
-MINLENGTH = 0.1
-
-# Visual clarity pass, phase 2: doubling arrows (above) was the right
-# call for legibility, but at full size (arrowsize=1.0, matplotlib's own
-# default) on *both* passes they read as clutter competing with the
-# feature clusters for attention. Kept the forward/backward split (still
-# wanted for its line-shortening effect), but only the forward pass gets
-# a visible arrow now -- moderately shrunk, not full size. The backward
-# pass's arrows are suppressed rather than removed outright:
-# ARROWSIZE_HIDDEN isn't literally 0 because matplotlib's own arrow-head
-# geometry divides by the arrow's length and misbehaves (RuntimeWarning)
-# at exactly 0 -- confirmed directly; a tiny nonzero value renders as
-# invisible without tripping that.
-ARROWSIZE = 0.8            # moderate shrink from streamplot's own default (1.0)
-ARROWSIZE_HIDDEN = 0.001   # effectively invisible -- backward pass only, see above
-
-# Room outline colors (views.py's own _VENT_STATE_COLORS/wall/door
-# convention, duplicated rather than imported -- same "zero coupling to
-# the other velocity views" precedent this module already follows for
-# _ensure_field). Drawn from schematic.room_overlay_geometry(), the same
-# real &HOLE-derived geometry the Live Viewer overlays on its heatmap.
-#
-# Visual clarity pass, phase 2: at the original linewidths and zorder=6,
-# the door/vent bars sat on top of and visually dominated the flow itself
-# -- the room read as a decorated diagram with a streamplot in it, not a
-# flow diagram with room context. Thinned, given _GEOMETRY_ALPHA<1, and
-# moved to _GEOMETRY_ZORDER -- below streamplot's own default artist
-# zorders (its LineCollection defaults to 2, its arrow FancyArrowPatches
-# to 1; confirmed directly against matplotlib.collections/patches
-# defaults) -- so flow lines and arrows now draw over the room outline,
-# not under it.
-_WALL_COLOR = "#FFFFFF"
-_DOOR_COLOR = "#38BDF8"
-_VENT_STATE_COLORS = {"open": "#22C55E", "closed": "#94A3B8", "HVAC": "#F59E0B"}
-_WALL_LINEWIDTH = 1.4
-_DOOR_LINEWIDTH = 1.6     # was 2.6
-_VENT_LINEWIDTH = 2.2     # was 4.0
-_GEOMETRY_ALPHA = 0.7
-_GEOMETRY_ZORDER = 0
 
 # Frame-to-frame stability fix: streamplot()'s automatic seeding
 # (density=...) picks new seed locations independently on every call, so
 # the rendered pattern reshuffled discontinuously between frames even
 # though the underlying U/W field itself evolves smoothly -- the seeds
 # moved, not the flow. Fixed explicit start_points (see _seed_points)
-# sidesteps this: the same seed set drives every frame, so the pattern
-# now shifts continuously with the field instead of jumping.
-#
-# Uniform-grid fallback (used only when a scenario has no manifest entry
-# to read geometry from -- see _seed_points): NX:NZ roughly matches the
-# room's ~2:1 x:z extent ratio; 12x6=72 seeds is comparable in on-screen
-# density to the old density=1.8 auto-seeding, not excessive.
+# sidesteps this: the same seed grid drives every frame, so the pattern
+# now shifts continuously with the field instead of jumping. NX:NZ
+# roughly matches the room's ~2:1 x:z extent ratio.
 _SEED_GRID_NX = 12
 _SEED_GRID_NZ = 6
-
-# Feature-based seeding (replaces the uniform grid as the normal path):
-# clusters at the fire(s), the door, and each open/HVAC vent, so the plot
-# reads as "air enters at the openings, circulates, driven by the fire"
-# instead of generic turbulence. Geometry-only inputs (entry.door/vod/
-# voc/candles + schematic's static positions) -- never field.u/w/speed --
-# so the result stays identical for every frame of a scenario (see
-# _seed_points' cache), preserving the flicker fix. A closed vent gets no
-# seeds at all: nothing flows through it, so nothing should emanate from
-# it. Cluster size scales with each opening's physical extent (door
-# height, vent width) via _FEATURE_SEED_SPACING rather than a fixed count
-# per feature, so e.g. a wide door reads with more seeds than a narrow
-# one. A light background grid (_BG_GRID_NX/NZ, well below the old
-# uniform grid's 12x6) is layered underneath so the room's return
-# circulation still draws -- feature seeding concentrates attention, it
-# doesn't empty out the rest of the room.
-_FEATURE_SEED_SPACING = 0.03      # m: target seed-to-seed spacing within a cluster
-_FIRE_SEED_HEIGHTS = (0.0, 0.03, 0.06)   # m above the floor, per candle position
-_BG_GRID_NX = 6
-_BG_GRID_NZ = 4
 
 
 class StreamlinePanel(QtWidgets.QWidget):
@@ -200,7 +77,6 @@ class StreamlinePanel(QtWidgets.QWidget):
         super().__init__(parent)
         self._provider = provider
         self._manifest = sorted(manifest, key=lambda e: e.case_index)
-        self._by_index = {e.case_index: e for e in self._manifest}
         self._fps = max(1, fps)
         self._cmap = cmap
         self._loaded = False
@@ -208,7 +84,7 @@ class StreamlinePanel(QtWidgets.QWidget):
         self._gate_reasons: dict = {}   # case_index -> str
         self._bus = None
         self._current_index = 0    # live playback frame -- see set_bus()
-        self._seed_cache: dict = {}   # (case_index, extent) -> fixed start_points array, see _seed_points
+        self._seed_cache: dict = {}   # extent tuple -> fixed start_points array, see _seed_points
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -321,68 +197,20 @@ class StreamlinePanel(QtWidgets.QWidget):
         return f
 
     # ---------------------------------------------------------- seed points
-    def _seed_points(self, case_index, entry, geometry, x0: float, x1: float,
-                      z0: float, z1: float) -> np.ndarray:
-        """Fixed start_points for streamplot(), generated once per
-        (scenario, extent) and cached -- reused for every frame of that
-        scenario/extent rather than regenerated, which is the actual
-        flicker fix (see the class docstring's stability note). Feature-
-        based when `entry` (and its `geometry`, already computed by
-        _render()) is available -- see _feature_seed_points and the
-        _FEATURE_SEED_SPACING/_BG_GRID_NX/NZ comment. Falls back to the
-        old uniform grid only if `entry` is None (case_index absent from
-        the manifest -- shouldn't normally happen, but there's no
-        geometry to seed from in that case)."""
-        key = (case_index, x0, x1, z0, z1)
+    def _seed_points(self, x0: float, x1: float, z0: float, z1: float) -> np.ndarray:
+        """Fixed start_points grid for streamplot(), generated once per
+        distinct plot extent and cached -- reused for every frame of that
+        extent rather than regenerated, which is the actual fix (see the
+        _SEED_GRID_NX/NZ comment)."""
+        key = (x0, x1, z0, z1)
         seeds = self._seed_cache.get(key)
         if seeds is None:
-            if entry is not None:
-                seeds = self._feature_seed_points(entry, geometry, x0, x1, z0, z1)
-            else:
-                xs = np.linspace(x0, x1, _SEED_GRID_NX)
-                zs = np.linspace(z0, z1, _SEED_GRID_NZ)
-                xx, zz = np.meshgrid(xs, zs)
-                seeds = np.column_stack([xx.ravel(), zz.ravel()])
+            xs = np.linspace(x0, x1, _SEED_GRID_NX)
+            zs = np.linspace(z0, z1, _SEED_GRID_NZ)
+            xx, zz = np.meshgrid(xs, zs)
+            seeds = np.column_stack([xx.ravel(), zz.ravel()])
             self._seed_cache[key] = seeds
         return seeds
-
-    def _feature_seed_points(self, entry, geometry: dict, x0: float, x1: float,
-                              z0: float, z1: float) -> np.ndarray:
-        """Geometry-only seed clusters: fire position(s), the door, each
-        open/HVAC vent, plus a light background grid. Reads only
-        entry.candles and `geometry` (itself derived only from
-        entry.door/vod/voc) -- never field.u/w/speed -- see the
-        _FEATURE_SEED_SPACING comment for why that matters."""
-        points = []
-
-        for fx, fz in fire_positions(entry.candles):
-            for dz in _FIRE_SEED_HEIGHTS:
-                points.append((fx, fz + dz))
-
-        dx0, dz0, dx1, dz1 = geometry["door"]
-        n_door = max(2, round(abs(dz1 - dz0) / _FEATURE_SEED_SPACING) + 1)
-        for z in np.linspace(dz0, dz1, n_door):
-            points.append((dx0, z))
-
-        # geometry["vents"] is [VOD-lower, VOC-lower, VOD-topface,
-        # VOC-topface] (see room_overlay_geometry's docstring) -- only
-        # the first two are distinct physical openings; the top-face pair
-        # redraws the same two vents on the ceiling slab's other face.
-        for (vx0, vz0, vx1, vz1), state in geometry["vents"][:2]:
-            if state == "closed":
-                continue
-            n_vent = max(2, round(abs(vx1 - vx0) / _FEATURE_SEED_SPACING) + 1)
-            for x in np.linspace(vx0, vx1, n_vent):
-                points.append((x, vz0))
-
-        feature = np.array(points, dtype=float) if points else np.empty((0, 2))
-
-        xs = np.linspace(x0, x1, _BG_GRID_NX)
-        zs = np.linspace(z0, z1, _BG_GRID_NZ)
-        xx, zz = np.meshgrid(xs, zs)
-        background = np.column_stack([xx.ravel(), zz.ravel()])
-
-        return np.vstack([feature, background])
 
     # --------------------------------------------------------------- render
     def _render(self) -> None:
@@ -405,14 +233,6 @@ class StreamlinePanel(QtWidgets.QWidget):
             return
         self.status.setText("")
 
-        # Scenario geometry (moved up from the room-outline draw below --
-        # feature seeding needs it too, and this way it's computed once
-        # per frame instead of twice). entry is None only if case_index is
-        # somehow absent from the manifest.
-        entry = self._by_index.get(case_index)
-        geometry = (room_overlay_geometry(entry.door, entry.vod, entry.voc)
-                    if entry is not None else None)
-
         # Live frame (Analysis dynamic-visualizations pass): field.u/w/speed
         # are indexed directly below (unlike VelocityPanel's quiver_at()/
         # streamline_at(), which clamp internally), so clamp here.
@@ -433,61 +253,18 @@ class StreamlinePanel(QtWidgets.QWidget):
 
         linewidth = 1.0
         if self.linewidth_check.isChecked():
-            linewidth = LINEWIDTH_BASE + LINEWIDTH_SCALE * (speed_frame / SPEED_REF_MS)
+            peak = float(speed_frame.max())
+            if peak > 1e-9:
+                linewidth = 0.5 + 2.0 * (speed_frame / peak)
 
-        # Fixed color scale against SPEED_REF_MS, not this frame's own
-        # min/max speed -- same fixed-reference reasoning as linewidth
-        # above. PowerNorm (gamma=0.45), not linear: real speeds span a
-        # ~20x dynamic range (room circulation ~0.05 m/s vs. plume ~1.0
-        # m/s), and a linear ramp buries circulation near-black to leave
-        # headroom for the plume; gamma<1 stretches the low end so both
-        # bands render legibly.
-        norm = PowerNorm(gamma=0.45, vmin=0.0, vmax=SPEED_REF_MS)
-        # Two traces per seed (see MAXLENGTH) -- same fixed seeds, same
-        # color/linewidth/density for both, only integration_direction
-        # (and arrowsize, see ARROWSIZE/ARROWSIZE_HIDDEN) differs, so this
-        # doesn't change what seeds exist or where.
-        seeds = self._seed_points(case_index, entry, geometry, x0, x1, z0, z1)
-        streamplot_kwargs = dict(
-            color=speed_frame, cmap=self._cmap, norm=norm,
+        strm = ax.streamplot(
+            x, z, u_frame, w_frame,
+            color=speed_frame, cmap=self._cmap,
             density=self.density_spin.value(),
             linewidth=linewidth,
-            start_points=seeds,
-            maxlength=MAXLENGTH,
-            minlength=MINLENGTH,
+            start_points=self._seed_points(x0, x1, z0, z1),
         )
-        strm = ax.streamplot(x, z, u_frame, w_frame,
-                              integration_direction="forward", arrowsize=ARROWSIZE,
-                              **streamplot_kwargs)
-        ax.streamplot(x, z, u_frame, w_frame,
-                       integration_direction="backward", arrowsize=ARROWSIZE_HIDDEN,
-                       **streamplot_kwargs)
         self.canvas.fig.colorbar(strm.lines, ax=ax, fraction=0.046, pad=0.04, label="Speed (m/s)")
-
-        # Room outline (visual-clarity follow-up): walls/door/vents from the
-        # real &HOLE-derived geometry (schematic.room_overlay_geometry), the
-        # same source and colors the Live Viewer overlays on its own
-        # heatmap -- this plot had no spatial reference at all before, just
-        # streamlines floating with no visible walls/door/vents to relate
-        # the flow to. Drawn as plain ax.plot() calls (not views.py's
-        # LineCollection/blit-cache machinery, which this from-scratch-
-        # redraw-every-frame canvas doesn't use or need -- same "thin,
-        # zero-coupling" precedent as this module's other duplicated bits).
-        # Thinned/faded/pushed behind the flow -- see _GEOMETRY_ALPHA/
-        # _GEOMETRY_ZORDER's comment above _WALL_COLOR.
-        if entry is not None:
-            for wx0, wz0, wx1, wz1 in geometry["walls"]:
-                ax.plot([wx0, wx1], [wz0, wz1], color=_WALL_COLOR,
-                        linestyle="--", linewidth=_WALL_LINEWIDTH,
-                        alpha=_GEOMETRY_ALPHA, zorder=_GEOMETRY_ZORDER)
-            dx0, dz0, dx1, dz1 = geometry["door"]
-            ax.plot([dx0, dx1], [dz0, dz1], color=_DOOR_COLOR, linewidth=_DOOR_LINEWIDTH,
-                    alpha=_GEOMETRY_ALPHA, zorder=_GEOMETRY_ZORDER)
-            for (vx0, vz0, vx1, vz1), state in geometry["vents"]:
-                ax.plot([vx0, vx1], [vz0, vz1],
-                        color=_VENT_STATE_COLORS.get(state, "#94A3B8"),
-                        linewidth=_VENT_LINEWIDTH, alpha=_GEOMETRY_ALPHA,
-                        zorder=_GEOMETRY_ZORDER)
 
         # Same axis scale/aspect convention as VelocityPanel's imshow
         # background (extent + aspect='auto') so the two views are

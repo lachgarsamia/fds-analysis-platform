@@ -105,13 +105,13 @@ def test_uses_perceptually_uniform_colormap_not_jet(panel):
 
 
 def test_density_control_default_matches_app_default(panel):
-    """0.9, not matplotlib's own 1.0 default -- visual clarity pass, phase
-    2: lowered from 1.8 once seeding became feature-based (fire/door/vent
-    clusters + a light background grid) instead of a blind 12x6 grid --
-    the higher density was tuned for that grid's much denser coverage and
-    read as clutter competing with the feature clusters and room outline
-    for attention. See streamline_panel.py's DEFAULT_DENSITY."""
-    assert panel.density_spin.value() == pytest.approx(0.9)
+    """1.0 -- matplotlib's own streamplot default. Later visual-tuning
+    passes (bolder/denser styling, feature-based seeding, a room outline)
+    were reverted back to this original look/behavior; only the
+    frame-to-frame seed-stability fix (fixed start_points, see
+    streamline_panel.py's _seed_points) was kept on top of it. See
+    streamline_panel.py's DEFAULT_DENSITY."""
+    assert panel.density_spin.value() == pytest.approx(1.0)
 
 
 def test_density_is_a_tunable_constructor_parameter(qapp, provider, manifest):
