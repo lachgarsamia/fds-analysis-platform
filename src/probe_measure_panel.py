@@ -39,7 +39,8 @@ class ProbeMeasurePanel(QtWidgets.QWidget):
     def __init__(self, devices: QtWidgets.QWidget = None,
                  velocity: QtWidgets.QWidget = None,
                  streamlines: QtWidgets.QWidget = None,
-                 composite: QtWidgets.QWidget = None, parent=None):
+                 composite: QtWidgets.QWidget = None,
+                 tracers: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self.devices_widget = devices
         self.velocity_widget = velocity
@@ -54,6 +55,12 @@ class ProbeMeasurePanel(QtWidgets.QWidget):
         # visualization of the same U/W-VELOCITY field, alongside this
         # field. Does not touch velocity/streamlines widgets in any way.
         self.composite_widget = composite
+        # Tracer particles (animated, room-seeded dots with fading trails,
+        # advected by the real U/W field, tracer_flow_panel.py) -- a
+        # fourth, independent visualization of the same U/W-VELOCITY
+        # field. Does not touch velocity/streamlines/composite widgets in
+        # any way.
+        self.tracers_widget = tracers
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -61,7 +68,8 @@ class ProbeMeasurePanel(QtWidgets.QWidget):
         for widget, label in ((devices, "Devices"),
                              (velocity, "Velocity"),
                              (streamlines, "Velocity (Streamlines)"),
-                             (composite, "Velocity (Composite)")):
+                             (composite, "Velocity (Composite)"),
+                             (tracers, "Velocity (Tracers)")):
             if widget is not None:
                 self.tabs.addTab(widget, label)
         layout.addWidget(self.tabs, 1)
@@ -74,6 +82,7 @@ class ProbeMeasurePanel(QtWidgets.QWidget):
         """All children load on first show, not just the one currently in
         view -- switching modes later must never reveal a blank panel."""
         for widget in (self.devices_widget, self.velocity_widget,
-                      self.streamlines_widget, self.composite_widget):
+                      self.streamlines_widget, self.composite_widget,
+                      self.tracers_widget):
             if widget is not None and hasattr(widget, "ensure_loaded"):
                 widget.ensure_loaded()
