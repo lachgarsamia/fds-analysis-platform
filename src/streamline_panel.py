@@ -46,13 +46,29 @@ from __future__ import annotations
 import numpy as np
 from PyQt5 import QtCore, QtWidgets
 
-from widgets import MplCanvas
+from widgets import MplCanvas, plot_fg_color
 from quantity_provider import GatedQuantityError
 from analysis_panel_base import populate_scenario_combo
+from schematic import room_overlay_geometry, ROOM_X, ROOM_Z
 import velocity as vel
 
 DEFAULT_DENSITY = 1.0  # matplotlib's own streamplot default
 DEFAULT_CMAP = "viridis"  # perceptually uniform sequential -- never jet
+
+# Room outline colors. Door/vent colors match views.py's own door/vent-
+# state convention (duplicated rather than imported -- same "zero
+# coupling to the other velocity views" precedent this module already
+# follows for _ensure_field). Walls deliberately do NOT reuse views.py's
+# own wall color (#FFFFFF): that reads fine there against a colored
+# heatmap with a dark path-effect casing around the white line, but this
+# panel's canvas background is plain, fixed white (MplCanvas.PLOT_BG) --
+# a bare white line on white would be invisible, so this uses
+# plot_fg_color() (widgets.py's own "readable against this canvas"
+# helper) instead, resolved at render time. Geometry itself comes from
+# schematic.room_overlay_geometry, the same real &HOLE-derived source
+# the Live Viewer overlays.
+_DOOR_COLOR = "#38BDF8"
+_VENT_STATE_COLORS = {"open": "#22C55E", "closed": "#94A3B8", "HVAC": "#F59E0B"}
 
 # Frame-to-frame stability fix: streamplot()'s automatic seeding
 # (density=...) picks new seed locations independently on every call, so
@@ -60,8 +76,17 @@ DEFAULT_CMAP = "viridis"  # perceptually uniform sequential -- never jet
 # though the underlying U/W field itself evolves smoothly -- the seeds
 # moved, not the flow. Fixed explicit start_points (see _seed_points)
 # sidesteps this: the same seed grid drives every frame, so the pattern
-# now shifts continuously with the field instead of jumping. NX:NZ
-# roughly matches the room's ~2:1 x:z extent ratio.
+# now shifts continuously with the field instead of jumping.
+#
+# Seeded across the room's own bounds (schematic.ROOM_X/ROOM_Z), not the
+# full raw mesh domain -- most of the domain outside the room is the FDS
+# door-corridor/ambient-air buffer this app otherwise doesn't visualize
+# (same room-vs-domain distinction views.py's room-outline crop and
+# device_panel.py's locator canvas already make), so seeding it produced
+# streamlines with no real fire/smoke relevance floating outside the
+# drawn room outline below. A traced line can still leave the room
+# through the door -- only the *starting* points are room-bounded, the
+# vector field itself is unchanged.
 _SEED_GRID_NX = 12
 _SEED_GRID_NZ = 6
 
@@ -77,6 +102,7 @@ class StreamlinePanel(QtWidgets.QWidget):
         super().__init__(parent)
         self._provider = provider
         self._manifest = sorted(manifest, key=lambda e: e.case_index)
+        self._by_index = {e.case_index: e for e in self._manifest}
         self._fps = max(1, fps)
         self._cmap = cmap
         self._loaded = False
@@ -257,14 +283,41 @@ class StreamlinePanel(QtWidgets.QWidget):
             if peak > 1e-9:
                 linewidth = 0.5 + 2.0 * (speed_frame / peak)
 
+        # Seed within the room's own bounds, clamped to this field's real
+        # extent (defensive -- both come from the same mesh, but never
+        # assume) -- see the _SEED_GRID_NX/NZ comment for why.
+        seed_x0, seed_x1 = max(x0, min(ROOM_X)), min(x1, max(ROOM_X))
+        seed_z0, seed_z1 = max(z0, min(ROOM_Z)), min(z1, max(ROOM_Z))
+
         strm = ax.streamplot(
             x, z, u_frame, w_frame,
             color=speed_frame, cmap=self._cmap,
             density=self.density_spin.value(),
             linewidth=linewidth,
-            start_points=self._seed_points(x0, x1, z0, z1),
+            start_points=self._seed_points(seed_x0, seed_x1, seed_z0, seed_z1),
         )
         self.canvas.fig.colorbar(strm.lines, ax=ax, fraction=0.046, pad=0.04, label="Speed (m/s)")
+
+        # Room outline (walls/door/vents) from the real &HOLE-derived
+        # geometry (schematic.room_overlay_geometry), the same source and
+        # colors the Live Viewer overlays on its own heatmap -- gives the
+        # streamlines spatial context instead of floating with no visible
+        # walls/door/vents to relate the flow to. Plain ax.plot() calls,
+        # not views.py's LineCollection/blit-cache machinery, which this
+        # from-scratch-redraw-every-frame canvas doesn't use or need.
+        entry = self._by_index.get(case_index)
+        if entry is not None:
+            geometry = room_overlay_geometry(entry.door, entry.vod, entry.voc)
+            wall_color = plot_fg_color()
+            for wx0, wz0, wx1, wz1 in geometry["walls"]:
+                ax.plot([wx0, wx1], [wz0, wz1], color=wall_color,
+                        linestyle="--", linewidth=1.4, zorder=6)
+            dx0, dz0, dx1, dz1 = geometry["door"]
+            ax.plot([dx0, dx1], [dz0, dz1], color=_DOOR_COLOR, linewidth=2.6, zorder=6)
+            for (vx0, vz0, vx1, vz1), state in geometry["vents"]:
+                ax.plot([vx0, vx1], [vz0, vz1],
+                        color=_VENT_STATE_COLORS.get(state, "#94A3B8"),
+                        linewidth=4.0, zorder=6)
 
         # Same axis scale/aspect convention as VelocityPanel's imshow
         # background (extent + aspect='auto') so the two views are
