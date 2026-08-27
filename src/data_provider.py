@@ -144,8 +144,16 @@ def load_simulation_data(cache_size: int = SCENARIO_CACHE_SIZE) -> SimulationDat
                                timesteps_per_second=FRAMES_PER_SECOND, is_demo=True)
 
     try:
-        check_scenario_count(len(folders), N_CANDLES, N_DOORS, N_VOD, N_VOC)
         entries = get_manifest(SIM_ROOT)
+        # Checked against len(entries), not len(folders): fds/sim_stage1_prep/
+        # layouts (see manifest.py's _resolve_scenario_path docstring) put two
+        # directories on disk per scenario -- the bare placeholder job and its
+        # "_stage1_pleiades" output sibling -- so raw folder count is exactly
+        # 2x the real scenario count by design, not a mismatch. entries is
+        # already deduplicated to one ScenarioEntry per scenario (scan_scenarios
+        # only matches the bare c<n>_d<n>_vod<n>_voc<n> name), so this only
+        # warns on an actual count mismatch.
+        check_scenario_count(len(entries), N_CANDLES, N_DOORS, N_VOD, N_VOC)
         # folders passed to ScenarioStore must be case_index-aligned with
         # the manifest's data_matrix; deriving them from entries (rather
         # than re-using the `folders` list above) keeps that alignment
