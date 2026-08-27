@@ -39,7 +39,7 @@ class ProbeMeasurePanel(QtWidgets.QWidget):
     def __init__(self, devices: QtWidgets.QWidget = None,
                  velocity: QtWidgets.QWidget = None,
                  streamlines: QtWidgets.QWidget = None,
-                 composite: QtWidgets.QWidget = None,
+                 lic: QtWidgets.QWidget = None,
                  tracers: QtWidgets.QWidget = None, parent=None):
         super().__init__(parent)
         self.devices_widget = devices
@@ -50,16 +50,15 @@ class ProbeMeasurePanel(QtWidgets.QWidget):
         # itself, so the two are directly next to each other for visual
         # comparison (see streamline_panel.py's module docstring).
         self.streamlines_widget = streamlines
-        # Composite flow (filled W background + uniform quiver + temperature
-        # isotherms, composite_flow_panel.py) -- a third, independent
-        # visualization of the same U/W-VELOCITY field, alongside this
-        # field. Does not touch velocity/streamlines widgets in any way.
-        self.composite_widget = composite
+        # LIC flow (speed color + Line Integral Convolution direction
+        # texture + temperature isotherms, lic_flow_panel.py) -- a third,
+        # independent visualization of the same U/W-VELOCITY field. Does
+        # not touch velocity/streamlines widgets in any way.
+        self.lic_widget = lic
         # Tracer particles (animated, room-seeded dots with fading trails,
-        # advected by the real U/W field, tracer_flow_panel.py) -- a
-        # fourth, independent visualization of the same U/W-VELOCITY
-        # field. Does not touch velocity/streamlines/composite widgets in
-        # any way.
+        # advected by the real U/W field, tracer_flow_panel.py) -- a fourth,
+        # independent visualization of the same U/W-VELOCITY field. Does
+        # not touch velocity/streamlines/lic widgets in any way.
         self.tracers_widget = tracers
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -68,7 +67,7 @@ class ProbeMeasurePanel(QtWidgets.QWidget):
         for widget, label in ((devices, "Devices"),
                              (velocity, "Velocity"),
                              (streamlines, "Velocity (Streamlines)"),
-                             (composite, "Velocity (Composite)"),
+                             (lic, "Velocity (LIC)"),
                              (tracers, "Velocity (Tracers)")):
             if widget is not None:
                 self.tabs.addTab(widget, label)
@@ -82,7 +81,7 @@ class ProbeMeasurePanel(QtWidgets.QWidget):
         """All children load on first show, not just the one currently in
         view -- switching modes later must never reveal a blank panel."""
         for widget in (self.devices_widget, self.velocity_widget,
-                      self.streamlines_widget, self.composite_widget,
-                      self.tracers_widget):
+                      self.streamlines_widget,
+                      self.lic_widget, self.tracers_widget):
             if widget is not None and hasattr(widget, "ensure_loaded"):
                 widget.ensure_loaded()

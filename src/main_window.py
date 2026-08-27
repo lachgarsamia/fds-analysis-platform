@@ -81,7 +81,7 @@ import field_calculator as field_calculator_mod
 from device_panel import DevicePanel
 from velocity_panel import VelocityPanel
 from streamline_panel import StreamlinePanel
-from composite_flow_panel import CompositeFlowPanel
+from lic_flow_panel import LICFlowPanel
 from tracer_flow_panel import TracerFlowPanel
 from figure_export import save_figure
 from report_builder import build_publication_manifest
@@ -895,12 +895,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.streamline_panel = StreamlinePanel(
                 self.quantity_provider, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
-            # Composite flow (filled W background + uniform quiver +
-            # temperature isotherms): a third, independent visualization of
-            # the same validated U/W-VELOCITY field -- see
-            # composite_flow_panel.py's module docstring. Does not touch
-            # velocity_panel.py or streamline_panel.py in any way.
-            self.composite_flow_panel = CompositeFlowPanel(
+            # LIC flow (speed-color background + Line Integral Convolution
+            # direction texture + temperature isotherms): a third,
+            # independent visualization of the same validated U/W-VELOCITY
+            # field -- see lic_flow_panel.py's module docstring. Does not
+            # touch velocity_panel.py or streamline_panel.py in any way.
+            self.lic_flow_panel = LICFlowPanel(
                 self.quantity_provider, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
             # Tracer particles (animated, room-seeded dots with fading
@@ -908,7 +908,7 @@ class MainWindow(QtWidgets.QMainWindow):
             # fourth, independent visualization of the same validated
             # U/W-VELOCITY field -- see tracer_flow_panel.py's module
             # docstring. Does not touch velocity_panel.py,
-            # streamline_panel.py, or composite_flow_panel.py in any way.
+            # streamline_panel.py, or lic_flow_panel.py in any way.
             self.tracer_flow_panel = TracerFlowPanel(
                 self.quantity_provider, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
@@ -971,8 +971,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.probe_measure_panel = ProbeMeasurePanel(
                 devices=self.device_panel,
                 velocity=self.velocity_panel, streamlines=self.streamline_panel,
-                composite=self.composite_flow_panel,
-                tracers=self.tracer_flow_panel)
+                lic=self.lic_flow_panel, tracers=self.tracer_flow_panel)
             # Compare Presets (Analysis page pruning, item 8): the former
             # top-level Compare page's story-preset buttons, now Compare &
             # Discover's second sub-view. Factorial-only, same gate as
@@ -1030,7 +1029,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.device_panel = None
             self.velocity_panel = None
             self.streamline_panel = None
-            self.composite_flow_panel = None
+            self.lic_flow_panel = None
             self.tracer_flow_panel = None
             self.timeseries_panel = None
             self.energy_panel = None
@@ -1172,8 +1171,8 @@ class MainWindow(QtWidgets.QMainWindow):
                      "energy_panel", "quantities_panel",
                      "study_panel",
                      "spacetime_panel",
-                     "device_panel", "velocity_panel", "streamline_panel", "composite_flow_panel",
-                     "tracer_flow_panel",
+                     "device_panel", "velocity_panel", "streamline_panel",
+                     "lic_flow_panel", "tracer_flow_panel",
                      "dashboard_panel",
                      "smoke_layer_motion_panel"):
             panel = getattr(self, attr, None)
@@ -1225,12 +1224,12 @@ class MainWindow(QtWidgets.QMainWindow):
             # as device_panel.py/velocity_panel.py -- this panel has no
             # other signals to wire (no placed probes).
             self.streamline_panel.set_bus(self.selection_bus)
-        if self.composite_flow_panel is not None:
+        if self.lic_flow_panel is not None:
             # Same set_bus precedent as streamline_panel.py -- no other
             # signals to wire (no placed probes).
-            self.composite_flow_panel.set_bus(self.selection_bus)
+            self.lic_flow_panel.set_bus(self.selection_bus)
         if self.tracer_flow_panel is not None:
-            # Same set_bus precedent as composite_flow_panel.py -- no other
+            # Same set_bus precedent as lic_flow_panel.py -- no other
             # signals to wire (no placed probes).
             self.tracer_flow_panel.set_bus(self.selection_bus)
         # V6-M4 Investigation History: records every *meaningful* selection

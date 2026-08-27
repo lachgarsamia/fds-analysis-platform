@@ -1,9 +1,9 @@
-"""Tracer particles flow panel: a fifth, independent visualization of the
+"""Tracer particles flow panel: a fourth, independent visualization of the
 same validated U/W-VELOCITY field, alongside VelocityPanel's quiver/probe-
-streamlines, StreamlinePanel's matplotlib streamplot, CompositeFlowPanel's
-filled-W-background + quiver, and LICFlowPanel's Line Integral Convolution.
-Does not touch any of those four modules or their panels in any way --
-reuses velocity.py's VectorField exactly as they do (read-only).
+streamlines, StreamlinePanel's matplotlib streamplot, and LICFlowPanel's
+Line Integral Convolution. Does not touch any of those three modules or
+their panels in any way -- reuses velocity.py's VectorField exactly as
+they do (read-only).
 
 Why tracer particles instead of another streamline/LIC variant: every
 static, single-snapshot-per-frame technique (streamplot, LIC, quiver) asks
@@ -33,6 +33,26 @@ stability of a redrawn-from-scratch line), particles persist and carry
 their own state across ticks, so seeding is a one-time random scatter
 within the room, not a grid -- unnaturally regular starting positions
 would read as a grid pattern once the dots started moving.
+
+Vent-aware ceiling containment (visual-clarity fix): a particle may only
+cross the real ceiling (ROOM_Z[1]) where a VOD/VOC vent is currently
+*open* -- everywhere else (solid ceiling, or a closed/HVAC vent) it's
+solid, same as a wall. `_open_vent_spans_and_duct_top()` reads the open
+x-span(s) and the ceiling slab's real top face straight off
+room_overlay_geometry() -- the same geometry the drawn room outline
+itself uses -- so it's driven by the scenario's actual door/vod/voc
+state, never hardcoded. A particle that does cross through an open vent
+is allowed to continue only as far as that real slab top face (the
+opening's true physical depth) before being treated as gone and
+respawned, not left wandering the duct space above the ceiling.
+
+Trail rendering is clipped separately, and more tightly: a trail segment
+only draws where both endpoints sit inside the room rectangle, or inside
+a small TRAIL_VENT_MARGIN_FRAC allowance directly above an open vent's
+span (see _render()) -- a render-only tolerance so a trail streaming out
+a vent doesn't get guillotined exactly at the ceiling line. It never
+widens a vent, changes the containment bound above, or touches velocity
+sampling -- only which already-computed trail segments get drawn.
 
 Row-0-is-ceiling / dt convention: same as every sibling panel (see
 streamline_panel.py's own module docstring for the flip reasoning).
@@ -76,6 +96,36 @@ LIFE_MAX_FRAMES = 90
 _DOOR_COLOR = "#38BDF8"
 _VENT_STATE_COLORS = {"open": "#22C55E", "closed": "#94A3B8", "HVAC": "#F59E0B"}
 
+# Render-only tolerance (module docstring) -- NOT the particle's own
+# ceiling-exit bound (that's the real slab top face read off
+# room_overlay_geometry, see _open_vent_spans_and_duct_top). A trail may
+# render up to this fraction of the vent-to-duct gap (ceiling z to the
+# slab's real top face) above the ceiling line, over an open vent's span
+# only, so a particle's trail streaming out an opening doesn't get cut
+# exactly at the ceiling line. Kept < 1.0 so the margin never exceeds the
+# real physical depth a particle could actually have reached.
+TRAIL_VENT_MARGIN_FRAC = 0.6
+
+
+def _open_vent_spans_and_duct_top(entry) -> tuple:
+    """(open_vent_x_spans, duct_top_z) for `entry`'s scenario -- read
+    straight off room_overlay_geometry(entry.door, entry.vod, entry.voc),
+    the same call the drawn room outline itself uses, not a hardcoded
+    vent position/state. `open_vent_x_spans` is a deduplicated list of
+    (x0, x1) for every VOD/VOC opening currently in the "open" state
+    (HVAC and closed are both solid -- see module docstring); `duct_top_z`
+    is the ceiling slab's real top face z (where a particle that's
+    actually passed through an open vent has cleared the opening),
+    read off the geometry's own vent-segment z-coordinates rather than a
+    separate private constant."""
+    geometry = room_overlay_geometry(entry.door, entry.vod, entry.voc)
+    vents = geometry["vents"]
+    if not vents:
+        return [], None
+    open_spans = sorted({(seg[0], seg[2]) for seg, state in vents if state == "open"})
+    duct_top_z = max(seg[1] for seg, _state in vents)
+    return open_spans, duct_top_z
+
 
 def _sample_uw(u_frame: np.ndarray, w_frame: np.ndarray, extent: tuple,
                x: np.ndarray, z: np.ndarray) -> tuple:
@@ -104,14 +154,33 @@ class _ParticlePool:
     same "step()/render-ready arrays" shape as cinema/particles.py's
     EmberParticles, different physics (see module docstring)."""
 
-    def __init__(self, n: int, room_bounds: tuple, seed: int = 0):
+    def __init__(self, n: int, room_bounds: tuple, open_vent_spans: list = (),
+                 duct_top_z: float = None, seed: int = 0):
         self._room_x0, self._room_x1, self._room_z0, self._room_z1 = room_bounds
+        # Vent-aware ceiling containment (module docstring): open_vent_spans
+        # and duct_top_z come from _open_vent_spans_and_duct_top(), derived
+        # from this scenario's real geometry, not hardcoded here. No open
+        # vents (or no geometry available) -> duct_top_z falls back to the
+        # room's own ceiling, i.e. solid everywhere, same as a closed vent.
+        self._open_vent_spans = list(open_vent_spans)
+        self._duct_top_z = duct_top_z if duct_top_z is not None else self._room_z1
         self._rng = np.random.default_rng(seed)
         self.n = n
         self.pos = self._spawn_positions(n)
         self.trail = np.repeat(self.pos[:, None, :], TRAIL_LEN, axis=1)
         self.age = np.zeros(n, dtype=np.float32)
         self.life = self._rng.uniform(LIFE_MIN_FRAMES, LIFE_MAX_FRAMES, size=n).astype(np.float32)
+
+    def _ceiling_limit(self, x: np.ndarray) -> np.ndarray:
+        """Per-particle z upper bound: the room ceiling everywhere, except
+        over an open vent's x-span, where it's the ceiling slab's real top
+        face (duct_top_z) -- a particle may cross through the opening's
+        true physical depth before being treated as gone (see module
+        docstring)."""
+        limit = np.full(x.shape, self._room_z1, dtype=np.float64)
+        for vx0, vx1 in self._open_vent_spans:
+            limit = np.where((x >= vx0) & (x <= vx1), self._duct_top_z, limit)
+        return limit
 
     def _spawn_positions(self, n: int) -> np.ndarray:
         xs = self._rng.uniform(self._room_x0, self._room_x1, size=n)
@@ -125,14 +194,20 @@ class _ParticlePool:
         self.life = self._rng.uniform(LIFE_MIN_FRAMES, LIFE_MAX_FRAMES, size=self.n).astype(np.float32)
 
     def step(self, u_frame: np.ndarray, w_frame: np.ndarray, extent: tuple, dt: float) -> None:
-        x0, x1, z0, z1 = extent
+        # x stays domain-bounded (unchanged): this fix is scoped to the
+        # ceiling/vents, not the door/corridor. z's upper bound is now
+        # per-particle (see _ceiling_limit), not the domain top -- solid
+        # ceiling blocks at the real wall, an open vent's span allows
+        # through to the slab's real top face, matching module docstring.
+        x0, x1, _domain_z0, _domain_z1 = extent
         u, w = _sample_uw(u_frame, w_frame, extent, self.pos[:, 0], self.pos[:, 1])
         self.pos[:, 0] += dt * u
         self.pos[:, 1] += dt * w
         self.age += 1.0
 
+        ceiling_limit = self._ceiling_limit(self.pos[:, 0])
         out_of_domain = ((self.pos[:, 0] < x0) | (self.pos[:, 0] > x1)
-                         | (self.pos[:, 1] < z0) | (self.pos[:, 1] > z1))
+                         | (self.pos[:, 1] < self._room_z0) | (self.pos[:, 1] > ceiling_limit))
         expired = self.age >= self.life
         respawn = out_of_domain | expired
         if np.any(respawn):
@@ -155,9 +230,8 @@ class _ParticlePool:
 class TracerFlowPanel(QtWidgets.QWidget):
     """Analysis-page tab: a room-seeded pool of tracer particles advected
     by the validated U/W-VELOCITY field, each drawn as a short fading
-    trail. Independent of VelocityPanel/StreamlinePanel/CompositeFlowPanel/
-    LICFlowPanel -- no shared state, no probes, nothing here writes to any
-    of them."""
+    trail. Independent of VelocityPanel/StreamlinePanel/LICFlowPanel -- no
+    shared state, no probes, nothing here writes to any of them."""
 
     def __init__(self, provider, manifest: list, fps: int,
                  n_particles: int = DEFAULT_N_PARTICLES, parent=None):
@@ -230,10 +304,10 @@ class TracerFlowPanel(QtWidgets.QWidget):
 
     def set_bus(self, bus) -> None:
         """Follow the shared playback frame (Selection.time_s), same
-        set_bus precedent as streamline_panel.py/composite_flow_panel.py/
-        lic_flow_panel.py -- this panel has no frame_slider for the
-        generic bind_to_bus sync to hook. One-way: this panel never
-        publishes a selection, only reacts."""
+        set_bus precedent as streamline_panel.py/lic_flow_panel.py -- this
+        panel has no frame_slider for the generic bind_to_bus sync to
+        hook. One-way: this panel never publishes a selection, only
+        reacts."""
         self._bus = bus
         bus.changed.connect(self._on_selection)
         self._on_selection(bus.current, None)
@@ -297,7 +371,13 @@ class TracerFlowPanel(QtWidgets.QWidget):
         if pool is None:
             room_x0, room_x1 = max(extent[0], min(ROOM_X)), min(extent[1], max(ROOM_X))
             room_z0, room_z1 = max(extent[2], min(ROOM_Z)), min(extent[3], max(ROOM_Z))
-            pool = _ParticlePool(self._n_particles, (room_x0, room_x1, room_z0, room_z1), seed=case_index)
+            entry = self._by_index.get(case_index)
+            if entry is not None:
+                open_spans, duct_top_z = _open_vent_spans_and_duct_top(entry)
+            else:
+                open_spans, duct_top_z = [], None
+            pool = _ParticlePool(self._n_particles, (room_x0, room_x1, room_z0, room_z1),
+                                  open_vent_spans=open_spans, duct_top_z=duct_top_z, seed=case_index)
             self._pools[case_index] = pool
         return pool
 
@@ -355,7 +435,27 @@ class TracerFlowPanel(QtWidgets.QWidget):
         alphas = np.tile(np.linspace(0.05, 0.9, TRAIL_LEN - 1), n)
         seg_colors = np.repeat(head_colors, TRAIL_LEN - 1, axis=0)
         seg_colors[:, 3] = alphas
-        trails = LineCollection(segs, colors=seg_colors, linewidths=1.3, zorder=5)
+
+        # Render clip (module docstring): draw a segment only where BOTH
+        # its endpoints sit inside the room rectangle, or inside the small
+        # TRAIL_VENT_MARGIN_FRAC allowance directly above an open vent's
+        # span -- this is what stops a trail from drawing over solid
+        # ceiling/walls/the corridor, independent of _ceiling_limit's own
+        # (looser, real-physical-depth) containment bound above.
+        tx, tz = pool.trail[:, :, 0], pool.trail[:, :, 1]
+        in_room = ((tx >= pool._room_x0) & (tx <= pool._room_x1)
+                  & (tz >= pool._room_z0) & (tz <= pool._room_z1))
+        in_vent_margin = np.zeros_like(in_room)
+        vent_gap = pool._duct_top_z - pool._room_z1
+        trail_margin_z = pool._room_z1 + TRAIL_VENT_MARGIN_FRAC * vent_gap
+        for vx0, vx1 in pool._open_vent_spans:
+            in_vent_margin |= ((tx >= vx0) & (tx <= vx1)
+                               & (tz > pool._room_z1) & (tz <= trail_margin_z))
+        point_visible = in_room | in_vent_margin
+        seg_visible = (point_visible[:, :-1] & point_visible[:, 1:]).reshape(-1)
+
+        trails = LineCollection(segs[seg_visible], colors=seg_colors[seg_visible],
+                                linewidths=1.3, zorder=5)
         ax.add_collection(trails)
         ax.scatter(pool.pos[:, 0], pool.pos[:, 1], c=head_colors, s=10, zorder=6, edgecolors="none")
 
