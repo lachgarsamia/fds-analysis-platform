@@ -204,6 +204,66 @@ class TestMainWindowPageSwitching:
         assert window.nav_rail._labels["about"] == "4  About"
         window.close()
 
+    def test_back_button_activates_already_running_kids_app_without_relaunch(self, qapp, monkeypatch):
+        """If FireScope was launched by the kids app's Grown-ups button
+        and that process is still alive, Back must activate its window
+        rather than spawning a second kids-app process."""
+        import kids_app_launcher
+
+        window = MainWindow(load_simulation_data())
+        monkeypatch.setattr(kids_app_launcher, "find_running_kids_app_pid", lambda: 4242)
+        monkeypatch.setattr(kids_app_launcher, "activate_pid", lambda pid: pid == 4242)
+        relaunched = []
+        monkeypatch.setattr(
+            kids_app_launcher, "launch_kids_app",
+            lambda: relaunched.append(True) or (object(), ""))
+        closed = []
+        monkeypatch.setattr(window, "close", lambda: closed.append(True))
+
+        window._on_back_requested()
+
+        assert closed == [True]
+        assert relaunched == []
+        QtWidgets.QMainWindow.close(window)  # real cleanup -- close() itself was mocked above
+
+    def test_back_button_launches_fresh_when_no_known_alive_launcher(self, qapp, monkeypatch):
+        """No JUNIOR_FIRE_SCIENTIST_PID (or a dead one) -- nothing to
+        activate, so Back falls back to a fresh launch (e.g. FireScope
+        was started some other way than via that button)."""
+        import kids_app_launcher
+
+        window = MainWindow(load_simulation_data())
+        monkeypatch.setattr(kids_app_launcher, "find_running_kids_app_pid", lambda: None)
+        monkeypatch.setattr(kids_app_launcher, "launch_kids_app", lambda: (object(), ""))
+        closed = []
+        monkeypatch.setattr(window, "close", lambda: closed.append(True))
+
+        window._on_back_requested()
+
+        assert closed == [True]
+        QtWidgets.QMainWindow.close(window)  # real cleanup -- close() itself was mocked above
+
+    def test_back_button_stays_open_and_warns_when_launch_fails(self, qapp, monkeypatch):
+        import kids_app_launcher
+
+        window = MainWindow(load_simulation_data())
+        monkeypatch.setattr(kids_app_launcher, "find_running_kids_app_pid", lambda: None)
+        monkeypatch.setattr(
+            kids_app_launcher, "launch_kids_app", lambda: (None, "not installed"))
+        warned = []
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox, "warning",
+            lambda *a, **k: warned.append(True))
+        closed = []
+        monkeypatch.setattr(window, "close", lambda: closed.append(True))
+
+        window._on_back_requested()
+
+        assert warned == [True]
+        assert closed == []
+        QtWidgets.QMainWindow.close(window)  # real cleanup -- close() itself was mocked above
+        window.close()
+
     def test_kiosk_idle_stays_on_current_page(self, qapp):
         """No separate Home/landing page to drift back to (nav reordering
         pass) -- idle must leave the active page exactly as it was, not

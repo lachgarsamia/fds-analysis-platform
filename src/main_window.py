@@ -1118,7 +1118,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.nav_rail = NavRail(nav_entries, parent=self.page_stack)
         self.nav_rail.page_selected.connect(self._navigate_to)
         self.nav_rail.theme_toggle_requested.connect(self._toggle_theme)
-        self.nav_rail.back_requested.connect(self.close)
+        self.nav_rail.back_requested.connect(self._on_back_requested)
         self.nav_rail.quit_requested.connect(self.close)
         self.nav_rail.expanded_changed.connect(lambda _expanded: self._layout_nav_rail())
 
@@ -4568,6 +4568,35 @@ class MainWindow(QtWidgets.QMainWindow):
         for action in self.theme_action_group.actions():
             action.setChecked(action.text() in ("Light", "Dark")
                               and action.text().lower() == self.current_theme_name)
+
+    def _on_back_requested(self) -> None:
+        """Nav rail's Back button. If this FireScope was launched by the
+        kids app's Grown-ups button and that process is still alive
+        (JUNIOR_FIRE_SCIENTIST_PID, set by its own firescope_launcher.py
+        at spawn time), activate its already-open Welcome window instead
+        of starting a second kids-app process -- see
+        kids_app_launcher.py's module docstring for the full mechanism
+        (this is the reverse of what that app's own Grown-ups button
+        does when FireScope is already running). Only that env var and a
+        live pid are checked, not whether it's actually showing Welcome
+        right now -- close enough, and simpler than tracking phase.
+        Falls back to a fresh launch (onto --welcome) whenever there's no
+        known-alive launcher to return to -- FireScope started some
+        other way than via that button (e.g. dev testing). Only closes
+        *this* window once a path back actually worked -- on failure,
+        stay open with the error visible rather than leaving the user
+        with neither app on screen."""
+        import kids_app_launcher as launcher
+        launcher_pid = launcher.find_running_kids_app_pid()
+        if launcher_pid is not None and launcher.activate_pid(launcher_pid):
+            self.close()
+            return
+
+        process, message = launcher.launch_kids_app()
+        if process is None:
+            QtWidgets.QMessageBox.warning(self, "Couldn't open Junior Fire Scientist", message)
+            return
+        self.close()
 
     def _set_ui_scale(self, scale: float):
         self.ui_scale = scale
