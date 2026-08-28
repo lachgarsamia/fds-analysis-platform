@@ -110,14 +110,16 @@ class NavRail(QtWidgets.QWidget):
         # Back (FireScope can be launched standalone or, since the Junior
         # Fire Scientist kids app added its own Grown-ups button, as a
         # separate process spawned from that app's Welcome screen -- see
-        # that repo's public/firescope_launcher.py). This closes FireScope
-        # itself either way -- there's no IPC back to whatever launched
-        # it, and none is needed: closing this window is enough to reveal
-        # the kids app's own window underneath, if that's how you got
-        # here. Deliberately labeled "Back", not "Home" -- FireScope has
-        # no "home" of its own, and "Home" is reserved for a future
-        # kids-app-side control that goes to *its* Welcome screen, which
-        # would be a confusing label collision with this one.
+        # that repo's public/firescope_launcher.py). Never closes
+        # FireScope itself (see main_window._on_back_requested's own
+        # docstring for why) -- it activates the kids app's window and
+        # leaves FireScope running in the background, so a later
+        # Grown-ups click can jump straight back into it instead of
+        # relaunching. Deliberately labeled "Back", not "Home" --
+        # FireScope has no "home" of its own, and "Home" is reserved for
+        # a future kids-app-side control that goes to *its* Welcome
+        # screen, which would be a confusing label collision with this
+        # one.
         self._back_button = QtWidgets.QPushButton()
         self._back_button.setObjectName("navBackButton")
         self._back_button.setAccessibleName("Back")

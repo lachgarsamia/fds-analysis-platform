@@ -462,8 +462,8 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
     }}
 
     /* Same treatment as navThemeButton -- a persistent utility action
-    beside it (see nav.py's own comment on why "Back" and "Quit" are two
-    separate buttons despite both closing the window). */
+    beside it (see nav.py's own comment: Back activates the kids app and
+    leaves FireScope running, Quit closes it -- two distinct actions). */
     QPushButton#navBackButton {{
         background-color: transparent;
         border: none;

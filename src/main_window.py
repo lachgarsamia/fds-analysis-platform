@@ -4570,8 +4570,16 @@ class MainWindow(QtWidgets.QMainWindow):
                               and action.text().lower() == self.current_theme_name)
 
     def _on_back_requested(self) -> None:
-        """Nav rail's Back button. If this FireScope was launched by the
-        kids app's Grown-ups button and that process is still alive
+        """Nav rail's Back button. Never closes FireScope itself -- it
+        stays running in the background, exactly as clicking Grown-ups a
+        second time from the kids app expects (its own
+        launch_researcher_app() only activates rather than relaunching
+        while that process is still alive; closing here would silently
+        force every next Grown-ups click back into a fresh launch). Back
+        only brings the kids app's window to the front.
+
+        If this FireScope was launched by the kids app's Grown-ups
+        button and that process is still alive
         (JUNIOR_FIRE_SCIENTIST_PID, set by its own firescope_launcher.py
         at spawn time), activate its already-open Welcome window instead
         of starting a second kids-app process -- see
@@ -4582,21 +4590,15 @@ class MainWindow(QtWidgets.QMainWindow):
         right now -- close enough, and simpler than tracking phase.
         Falls back to a fresh launch (onto --welcome) whenever there's no
         known-alive launcher to return to -- FireScope started some
-        other way than via that button (e.g. dev testing). Only closes
-        *this* window once a path back actually worked -- on failure,
-        stay open with the error visible rather than leaving the user
-        with neither app on screen."""
+        other way than via that button (e.g. dev testing)."""
         import kids_app_launcher as launcher
         launcher_pid = launcher.find_running_kids_app_pid()
         if launcher_pid is not None and launcher.activate_pid(launcher_pid):
-            self.close()
             return
 
         process, message = launcher.launch_kids_app()
         if process is None:
             QtWidgets.QMessageBox.warning(self, "Couldn't open Junior Fire Scientist", message)
-            return
-        self.close()
 
     def _set_ui_scale(self, scale: float):
         self.ui_scale = scale
