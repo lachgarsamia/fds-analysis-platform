@@ -48,7 +48,42 @@ class TestNavRail:
         QtWidgets.QApplication.sendEvent(rail, QtCore.QEvent(QtCore.QEvent.Leave))
         assert not rail.is_expanded()
         assert rail.width() == collapsed_width
-        assert rail._buttons["live"].text() == "1"
+
+    def test_click_back_emits_back_requested(self, qapp):
+        """Distinct from Quit (test_click_quit_emits_quit_requested below):
+        both close the window, same as clicking Quit would, but this is
+        the entry point meant for "launched by another app, go back to
+        it" (see nav.py's own comment) -- kept as its own signal so the
+        two can diverge later without touching Quit's wiring."""
+        rail = NavRail([("live", "Live Simulation")])
+        received = []
+        rail.back_requested.connect(lambda: received.append(True))
+        rail._back_button.click()
+        assert received == [True]
+
+    def test_back_button_is_not_a_page_entry(self, qapp):
+        """Never a "home" page key (see test_no_home_page_in_nav_rail in
+        TestMainWindowPages below, and nav.py's own module comment on why
+        "Back" is deliberately not named "Home") -- it's a utility
+        button alongside Quit/theme-toggle, not something set_active()
+        or page_selected could ever target."""
+        rail = NavRail([("live", "Live Simulation")])
+        assert "back" not in rail._buttons
+        assert "home" not in rail._buttons
+
+    def test_click_quit_emits_quit_requested(self, qapp):
+        rail = NavRail([("live", "Live Simulation")])
+        received = []
+        rail.quit_requested.connect(lambda: received.append(True))
+        rail._quit_button.click()
+        assert received == [True]
+
+    def test_back_and_quit_labels_differ_when_expanded(self, qapp):
+        rail = NavRail([("live", "Live Simulation")])
+        QtWidgets.QApplication.sendEvent(rail, QtCore.QEvent(QtCore.QEvent.Enter))
+        assert "Back" in rail._back_button.text()
+        assert "Home" not in rail._back_button.text()
+        assert "Quit" in rail._quit_button.text()
 
 
 class TestPageLifecycle:

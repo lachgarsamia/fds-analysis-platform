@@ -462,6 +462,23 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
     }}
 
     /* Same treatment as navThemeButton -- a persistent utility action
+    beside it (see nav.py's own comment on why "Back" and "Quit" are two
+    separate buttons despite both closing the window). */
+    QPushButton#navBackButton {{
+        background-color: transparent;
+        border: none;
+        border-radius: {r_md};
+        text-align: left;
+        padding: {pad_sm} {pad_md};
+        color: {p.text_secondary};
+    }}
+
+    QPushButton#navBackButton:hover {{
+        background-color: {p.bg_elevated};
+        color: {p.text_primary};
+    }}
+
+    /* Same treatment as navThemeButton -- a persistent utility action
     beside it, not styled as destructive (Quit is not data loss here). */
     QPushButton#navQuitButton {{
         background-color: transparent;

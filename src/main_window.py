@@ -1118,6 +1118,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.nav_rail = NavRail(nav_entries, parent=self.page_stack)
         self.nav_rail.page_selected.connect(self._navigate_to)
         self.nav_rail.theme_toggle_requested.connect(self._toggle_theme)
+        self.nav_rail.back_requested.connect(self.close)
         self.nav_rail.quit_requested.connect(self.close)
         self.nav_rail.expanded_changed.connect(lambda _expanded: self._layout_nav_rail())
 
