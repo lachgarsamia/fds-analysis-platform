@@ -350,13 +350,19 @@ class StreamlinePanel(QtWidgets.QWidget):
                     i = j
 
         # --- Open ceiling vents (normal component = W; W > 0 is up/out).
-        #     Probe the W sign across each open vent's span and seed outflow
-        #     columns below the vent / an inflow column above it.
+        #     geometry["vents"] lists each vent twice (a segment at the slab
+        #     underside and one at its top face) -- collapse to one span per
+        #     open vent, then probe the W sign across it and seed outflow
+        #     columns below the vent / inflow columns above it.
+        spans: dict = {}
         for (vx0, vz0, vx1, vz1), state in geometry.get("vents", []):
             if state != "open":
                 continue
-            underside, slab_top = min(vz0, vz1), max(vz0, vz1)
-            for sx in np.linspace(min(vx0, vx1), max(vx0, vx1), _VENT_PROBE_NX):
+            span = (round(min(vx0, vx1), 6), round(max(vx0, vx1), 6))
+            lo, hi = spans.get(span, (vz0, vz1))
+            spans[span] = (min(lo, vz0, vz1), max(hi, vz0, vz1))
+        for (sx0, sx1), (underside, slab_top) in spans.items():
+            for sx in np.linspace(sx0, sx1, _VENT_PROBE_NX):
                 sx = clamp(sx, x0, x1)
                 w = probe(w_mean, sx, underside - _VENT_PROBE_DZ)
                 if w > _FLOW_EPS:                        # outflow -> below the vent
