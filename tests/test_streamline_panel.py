@@ -46,18 +46,37 @@ def _swirl_field(case_index):
     return u.astype(float), w.astype(float)
 
 
-class FakeProvider:
-    """Mimics QuantityProvider's get_vector()/get_extent() -- the two
-    methods velocity.VectorField is duck-typed against (see velocity.py's
-    own docstring)."""
+def _temp_field():
+    """Synthetic TEMPERATURE (t, z, x): a hot blob near centre (~200 C)
+    falling to ~20 C at the edges, so the colour map has real hot/cold to
+    separate."""
+    z = np.linspace(-1, 1, N_Z)
+    x = np.linspace(-1, 1, N_X)
+    xx, zz = np.meshgrid(x, z)
+    frame = 20.0 + 180.0 * np.exp(-(xx ** 2 + zz ** 2) / 0.3)
+    return np.repeat(frame[None, :, :], N_TIMES, axis=0).astype(float)
 
-    def __init__(self, gated_cases=()):
+
+class FakeProvider:
+    """Mimics QuantityProvider's get_vector()/get_extent()/get() -- the
+    methods velocity.VectorField and StreamlinePanel are duck-typed
+    against (see velocity.py's own docstring)."""
+
+    def __init__(self, gated_cases=(), no_temperature=False):
         self._gated = set(gated_cases)
+        self._no_temperature = no_temperature
 
     def get_vector(self, scenario, direction, offset):
         if scenario in self._gated:
             raise GatedQuantityError("forced for test")
         return _swirl_field(scenario)
+
+    def get(self, scenario, key):
+        # StreamlinePanel._ensure_temperature() calls this for the
+        # TEMPERATURE slice (CHANGE 3).
+        if self._no_temperature:
+            raise GatedQuantityError("no TEMPERATURE for test")
+        return _temp_field()
 
     def get_extent(self, scenario, key):
         return EXTENT
@@ -91,17 +110,37 @@ def test_renders_a_real_streamplot_without_error(panel):
     assert len(ax.collections) > 0, "expected at least one LineCollection from streamplot"
 
 
-def test_colorbar_is_added_and_labeled_with_speed_units(panel):
+def test_colorbar_is_added_and_labeled_with_temperature(panel):
     assert len(panel.canvas.fig.axes) >= 2, "expected a colorbar axes alongside the plot axes"
     cbar_ax = panel.canvas.fig.axes[-1]
-    assert "m/s" in cbar_ax.get_ylabel()
+    assert "°C" in cbar_ax.get_ylabel() or "Temperature" in cbar_ax.get_ylabel()
 
 
-def test_uses_perceptually_uniform_colormap_not_jet(panel):
+def test_streamlines_coloured_by_temperature_with_turbo_and_a_data_driven_norm(panel):
+    """Colour = local gas TEMPERATURE on turbo (perceptually-ordered,
+    dark-ended -- never jet, never a washed-out mid-tone ramp), with a
+    plain linear norm from ~ambient to a high percentile (measured
+    against the real distribution, not a fixed diverging centre)."""
+    from matplotlib.colors import Normalize
     ax = panel.canvas.fig.axes[0]
     coll = ax.collections[0]
-    assert coll.cmap.name in ("viridis", "plasma")
+    assert coll.cmap.name == "turbo"
     assert coll.cmap.name != "jet"
+    assert isinstance(coll.norm, Normalize)
+    # near ambient at the bottom, real spread above it
+    assert coll.norm.vmin <= 21.0
+    assert coll.norm.vmax > coll.norm.vmin + 15.0
+
+
+def test_falls_back_to_speed_colour_when_temperature_unavailable(qapp, manifest):
+    """No readable TEMPERATURE for a scenario -> colour by speed (viridis),
+    never crash, never a fabricated temperature field."""
+    p = StreamlinePanel(FakeProvider(no_temperature=True), manifest, fps=4)
+    p.ensure_loaded()
+    ax = p.canvas.fig.axes[0]
+    coll = ax.collections[0]
+    assert coll.cmap.name == "viridis"
+    assert "m/s" in p.canvas.fig.axes[-1].get_ylabel()
 
 
 def test_density_control_default_matches_app_default(panel):

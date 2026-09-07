@@ -44,16 +44,34 @@ click) -- the entire rendered content is the live frame.
 from __future__ import annotations
 
 import numpy as np
+from matplotlib.colors import Normalize
 from PyQt5 import QtCore, QtWidgets
 
 from widgets import MplCanvas, plot_fg_color
 from quantity_provider import GatedQuantityError
 from analysis_panel_base import populate_scenario_combo
+from registry import AMBIENT_C
 from schematic import room_overlay_geometry, ROOM_X, ROOM_Z
+from slice_key import SliceKey
 import velocity as vel
 
 DEFAULT_DENSITY = 1.0  # matplotlib's own streamplot default
-DEFAULT_CMAP = "viridis"  # perceptually uniform sequential -- never jet
+# Fallback colormap for the speed channel only (used if a scenario has no
+# readable TEMPERATURE slice). Streamlines are normally coloured by
+# TEMPERATURE (see _TEMP_CMAP) -- never jet.
+DEFAULT_CMAP = "viridis"
+
+# Streamlines are coloured by the local gas TEMPERATURE (same y=0 slice
+# lic_flow_panel.py's isotherm contours pull from). "turbo" -- a
+# perceptually-ordered rainbow whose bands stay distinct across the whole
+# range and whose endpoints are dark (never white, so a line is always
+# visible on the fixed-white canvas). Chosen over "coolwarm" (measured
+# against real data: ~86% of this dataset's cells sit in 22-45 C, which
+# coolwarm + a diverging norm crushed into indistinguishable near-white
+# mid-tones) and over "jet"/"nipy_spectral" (jet's banding artefacts;
+# nipy_spectral tops out white/grey and loses hot lines). See _render.
+_TEMPERATURE_KEY = SliceKey("TEMPERATURE", 1, 0)
+_TEMP_CMAP = "turbo"
 
 # Room outline colors. Door/vent colors match views.py's own door/vent-
 # state convention (duplicated rather than imported -- same "zero
@@ -107,6 +125,7 @@ class StreamlinePanel(QtWidgets.QWidget):
         self._cmap = cmap
         self._loaded = False
         self._fields: dict = {}         # case_index -> vel.VectorField (successfully computed)
+        self._temperatures: dict = {}   # case_index -> (t, z, x) TEMPERATURE array, or None
         self._gate_reasons: dict = {}   # case_index -> str
         self._bus = None
         self._current_index = 0    # live playback frame -- see set_bus()
@@ -222,6 +241,22 @@ class StreamlinePanel(QtWidgets.QWidget):
         self._fields[case_index] = f
         return f
 
+    def _ensure_temperature(self, case_index: int):
+        """Lazily fetch (and cache) the full (t, z, x) TEMPERATURE array
+        for `case_index` at the same y=0 plane U/W use -- for colouring the
+        streamlines (CHANGE 3). Row 0 is the ceiling, same as u/w. Returns
+        None (and the caller falls back to speed colouring) if TEMPERATURE
+        can't be read for this scenario -- never fabricated."""
+        if case_index in self._temperatures:
+            return self._temperatures[case_index]
+        try:
+            temp = np.asarray(self._provider.get(case_index, _TEMPERATURE_KEY), dtype=float)
+        except Exception:  # noqa: BLE001 - gated / missing plane -> fall back to speed colour
+            self._temperatures[case_index] = None
+            return None
+        self._temperatures[case_index] = temp
+        return temp
+
     # ---------------------------------------------------------- seed points
     def _seed_points(self, x0: float, x1: float, z0: float, z1: float) -> np.ndarray:
         """Fixed start_points grid for streamplot(), generated once per
@@ -277,11 +312,41 @@ class StreamlinePanel(QtWidgets.QWidget):
         x = np.linspace(x0, x1, n_x)
         z = np.linspace(z0, z1, n_z)  # increasing, matches the flipped frame
 
+        # Line WIDTH still scales with local speed (a separate channel from
+        # colour -- CHANGE 3 keeps this as-is).
         linewidth = 1.0
         if self.linewidth_check.isChecked():
             peak = float(speed_frame.max())
             if peak > 1e-9:
                 linewidth = 0.5 + 2.0 * (speed_frame / peak)
+
+        # Line COLOUR = local gas TEMPERATURE (turbo). Same y=0 slice, same
+        # row-0-is-ceiling flip as u/w. Falls back to speed (viridis) only
+        # if this scenario has no readable TEMPERATURE -- never fabricated.
+        temp = self._ensure_temperature(case_index)
+        if temp is not None and temp.shape[0]:
+            temp_frame = np.flip(temp[min(frame_index, temp.shape[0] - 1)], axis=0)
+            color_arr, color_cmap = temp_frame, _TEMP_CMAP
+            # Plain linear norm from ~ambient to the 95th percentile.
+            # Measured on the real data (c2_d0_vod0_voc0, t=115s): p2=21,
+            # p50=29, p90=40, p95=54, p99=126, max=378 -- a right-skewed
+            # spread from ambient, NOT diverging around a centre, so a
+            # TwoSlopeNorm(vcenter=ambient) just wasted half its range on
+            # temperatures that don't occur and crushed the 22-45 C band
+            # (86% of cells) into near-white. p95 as the ceiling keeps the
+            # plume core (a <1%-of-cells outlier) from re-flattening the
+            # scale; a [+20, +80] clamp keeps a cool or a very hot scenario
+            # legible. With turbo this gives distinct bands: cold inflow
+            # (blue) / mixing (green-yellow) / warm (orange) / hot outflow
+            # (red).
+            p95 = float(np.nanpercentile(temp_frame, 95))
+            vmin = min(float(np.nanpercentile(temp_frame, 2)), AMBIENT_C)
+            vmax = float(np.clip(p95, AMBIENT_C + 20.0, AMBIENT_C + 80.0))
+            color_norm = Normalize(vmin=vmin, vmax=vmax)
+            cbar_label = "Temperature (°C)"
+        else:
+            color_arr, color_cmap, color_norm = speed_frame, self._cmap, None
+            cbar_label = "Speed (m/s)"
 
         # Seed within the room's own bounds, clamped to this field's real
         # extent (defensive -- both come from the same mesh, but never
@@ -291,12 +356,12 @@ class StreamlinePanel(QtWidgets.QWidget):
 
         strm = ax.streamplot(
             x, z, u_frame, w_frame,
-            color=speed_frame, cmap=self._cmap,
+            color=color_arr, cmap=color_cmap, norm=color_norm,
             density=self.density_spin.value(),
             linewidth=linewidth,
             start_points=self._seed_points(seed_x0, seed_x1, seed_z0, seed_z1),
         )
-        self.canvas.fig.colorbar(strm.lines, ax=ax, fraction=0.046, pad=0.04, label="Speed (m/s)")
+        self.canvas.fig.colorbar(strm.lines, ax=ax, fraction=0.046, pad=0.04, label=cbar_label)
 
         # Room outline (walls/door/vents) from the real &HOLE-derived
         # geometry (schematic.room_overlay_geometry), the same source and
