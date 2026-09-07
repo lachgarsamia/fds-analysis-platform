@@ -20,11 +20,14 @@ from quantity_provider import GatedQuantityError  # noqa: E402
 
 
 class FakeEntry:
-    def __init__(self, case_index, folder):
+    def __init__(self, case_index, folder, door=0, vod=0, voc=0):
         self.case_index = case_index
         self.folder = folder
         self.path = "/nonexistent"
-        self.candles = self.door = self.vod = self.voc = 0
+        self.candles = 0
+        self.door = door
+        self.vod = vod
+        self.voc = voc
 
 
 EXTENT = (0.0, 1.0, 0.0, 0.5)
@@ -46,6 +49,29 @@ def _swirl_field(case_index):
     return u.astype(float), w.astype(float)
 
 
+def _inout_field(case_index):
+    """Synthetic U/W with an unambiguous through-opening flow: uniform
+    inflow (U > 0, into the room) and uniform updraft (W > 0, out through
+    the ceiling vents). Row 0 = ceiling, matching the app convention that
+    measure.probe_value assumes. Scaled by case_index so scenarios differ."""
+    scale = 0.3 * (1.0 + case_index)
+    u = np.full((N_TIMES, N_Z, N_X), scale, dtype=float)
+    w = np.full((N_TIMES, N_Z, N_X), scale, dtype=float)
+    return u, w
+
+
+def _twolayer_field(case_index):
+    """Synthetic doorway two-layer flow: U > 0 (inflow) below physical
+    z = 0.08 m, U < 0 (outflow) above it -- the classic compartment
+    pattern with a neutral plane mid-opening. W > 0 (vent updraft).
+    Row 0 = ceiling; z per row descends from EXTENT top to bottom."""
+    z_per_row = np.linspace(EXTENT[3], EXTENT[2], N_Z)          # (N_Z,), row 0 = ceiling
+    u_col = np.where(z_per_row < 0.08, 0.3, -0.3)               # inflow low, outflow high
+    u = np.broadcast_to(u_col[None, :, None], (N_TIMES, N_Z, N_X)).astype(float).copy()
+    w = np.full((N_TIMES, N_Z, N_X), 0.3, dtype=float)
+    return u, w
+
+
 def _temp_field():
     """Synthetic TEMPERATURE (t, z, x): a hot blob near centre (~200 C)
     falling to ~20 C at the edges, so the colour map has real hot/cold to
@@ -62,14 +88,15 @@ class FakeProvider:
     methods velocity.VectorField and StreamlinePanel are duck-typed
     against (see velocity.py's own docstring)."""
 
-    def __init__(self, gated_cases=(), no_temperature=False):
+    def __init__(self, gated_cases=(), no_temperature=False, field=_swirl_field):
         self._gated = set(gated_cases)
         self._no_temperature = no_temperature
+        self._field = field
 
     def get_vector(self, scenario, direction, offset):
         if scenario in self._gated:
             raise GatedQuantityError("forced for test")
-        return _swirl_field(scenario)
+        return self._field(scenario)
 
     def get(self, scenario, key):
         # StreamlinePanel._ensure_temperature() calls this for the
@@ -141,6 +168,88 @@ def test_falls_back_to_speed_colour_when_temperature_unavailable(qapp, manifest)
     coll = ax.collections[0]
     assert coll.cmap.name == "viridis"
     assert "m/s" in p.canvas.fig.axes[-1].get_ylabel()
+
+
+_ROOM_GRID_N = 12 * 6   # _SEED_GRID_NX * _SEED_GRID_NZ (unchanged room-coverage grid)
+
+
+def _seeds_for(entry, provider):
+    p = StreamlinePanel(provider, [entry], fps=4)
+    p.ensure_loaded()
+    field = p._ensure_field(entry.case_index)
+    return p, field, p._seed_points(entry, field)
+
+
+def test_opening_seeds_placed_by_real_flow_direction(qapp):
+    """Seeds go where the run-averaged normal velocity says flow actually
+    crosses each opening: with a uniform inflow (U>0) + updraft (W>0)
+    field, the doorway gets inflow seeds on the *corridor* side and each
+    open vent gets outflow seeds *below* it."""
+    import schematic
+    entry = FakeEntry(0, "both_open", door=0, vod=0, voc=0)  # narrow door, both vents open
+    _p, _field, seeds = _seeds_for(entry, FakeProvider(field=_inout_field))
+
+    assert len(seeds) > _ROOM_GRID_N, "opening seeds must be additive to the 12x6 room grid"
+    opening = seeds[_ROOM_GRID_N:]
+    xs, zs = opening[:, 0], opening[:, 1]
+
+    door_x = min(schematic.ROOM_X)
+    # inflow -> seeded on the corridor side of the wall line (x < door_x)
+    at_door_inflow = (xs < door_x) & (xs > door_x - 0.04) & (zs < 0.07)
+    assert np.any(at_door_inflow), "inflow doorway seeds should sit corridor-side, low"
+
+    ceiling = max(schematic.ROOM_Z)
+    for (vx0, vx1) in (schematic._VOD_X, schematic._VOC_X):
+        # outflow -> seeded just below the ceiling underside, within the span
+        below_vent = ((xs >= vx0 - 1e-6) & (xs <= vx1 + 1e-6)
+                      & (zs < ceiling) & (zs > ceiling - 0.07))
+        assert np.any(below_vent), f"expected outflow seeds below the open vent x={vx0}-{vx1}"
+
+
+def test_doorway_two_layer_flow_gets_inflow_low_and_outflow_high(qapp):
+    """When the real U profile through the doorway reverses sign with
+    height (cool inflow low, hot outflow high -- the compartment
+    two-layer pattern, seen in the vents-closed scenarios), the seeds
+    split accordingly: inflow seeds corridor-side and low, outflow seeds
+    room-side and high, with a gap around the neutral plane."""
+    import schematic
+    entry = FakeEntry(0, "vents_closed", door=1, vod=1, voc=1)  # wide door, both vents closed
+    _p, _field, seeds = _seeds_for(entry, FakeProvider(field=_twolayer_field))
+    opening = seeds[_ROOM_GRID_N:]
+    door_x = min(schematic.ROOM_X)
+    door = opening[np.abs(opening[:, 0] - door_x) < 0.05]
+    inflow = door[door[:, 0] < door_x]        # corridor side
+    outflow = door[door[:, 0] > door_x]       # room side
+
+    assert len(inflow) and len(outflow), "two-layer door must get BOTH inflow and outflow seeds"
+    assert inflow[:, 1].max() < 0.09, "inflow seeds sit in the lower layer"
+    assert outflow[:, 1].min() > 0.07, "outflow seeds sit in the upper layer"
+    assert inflow[:, 1].max() <= outflow[:, 1].min(), "layers must not interleave"
+
+
+def test_seed_cache_key_tracks_vent_config(qapp):
+    """Switching to a scenario with a different opening layout regenerates
+    the opening seeds instead of reusing the previous one's."""
+    import schematic
+    prov = FakeProvider(field=_inout_field)
+    both_open = FakeEntry(0, "a", door=0, vod=0, voc=0)
+    vod_closed = FakeEntry(1, "b", door=0, vod=1, voc=0)   # Vent 1 closed
+    p = StreamlinePanel(prov, [both_open, vod_closed], fps=4)
+    p.ensure_loaded()
+
+    s_open = p._seed_points(both_open, p._ensure_field(0))
+    s_closed = p._seed_points(vod_closed, p._ensure_field(1))
+
+    assert (s_open.shape != s_closed.shape) or (not np.array_equal(s_open, s_closed)), \
+        "different vent config must produce a different seed set"
+    assert len(p._seed_cache) == 2
+    assert {k[:3] for k in p._seed_cache} == {(0, 0, 0), (0, 1, 0)}
+
+    # closed VOD gets no seeds anywhere in its x-span
+    closed_opening = s_closed[_ROOM_GRID_N:]
+    vx0, vx1 = schematic._VOD_X
+    at_closed_vod = (closed_opening[:, 0] >= vx0) & (closed_opening[:, 0] <= vx1)
+    assert not np.any(at_closed_vod), "a closed vent must not get opening seeds"
 
 
 def test_density_control_default_matches_app_default(panel):

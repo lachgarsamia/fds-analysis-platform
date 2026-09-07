@@ -53,6 +53,7 @@ from analysis_panel_base import populate_scenario_combo
 from registry import AMBIENT_C
 from schematic import room_overlay_geometry, ROOM_X, ROOM_Z
 from slice_key import SliceKey
+import measure as mz
 import velocity as vel
 
 DEFAULT_DENSITY = 1.0  # matplotlib's own streamplot default
@@ -72,6 +73,48 @@ DEFAULT_CMAP = "viridis"
 # nipy_spectral tops out white/grey and loses hot lines). See _render.
 _TEMPERATURE_KEY = SliceKey("TEMPERATURE", 1, 0)
 _TEMP_CMAP = "turbo"
+
+# Opening-targeted seeds, in addition to the room-coverage grid. Placed by
+# the *real prevailing flow direction* through each opening (mean normal
+# velocity over the last third of the run, per opening location), so that
+# inflow and outflow physically separate: an inflow line is seeded on the
+# far side of the opening (corridor, or the plenum above a vent) and
+# visibly crosses in; an outflow line is seeded on the near side and
+# visibly crosses out.
+#
+# The doorway is *not* assumed one-way. Measured across configs
+# (docs note / commit msg): with both ceiling vents open the door is pure
+# supply air (inflow at every height) because the vents do all the
+# exhaust; but with the ceiling vents closed or partly closed it develops
+# the classic compartment two-layer pattern -- cool inflow low, hot
+# outflow high, a neutral plane near mid-opening (e.g. z~0.075 m in
+# c2_d1_vod1_voc1, outflow reaching -0.14 m/s and ~41 C at z~0.13). The
+# per-z sign read below captures whichever pattern the scenario actually
+# has.
+#
+# The doorway is probed over its FULL physical height (floor to lintel) at
+# a FIXED spacing (_DOOR_PROBE_DZ), not a fixed sample count -- the
+# thinnest real flow layer measured across the scenarios is the
+# still-developing outflow in c2_d1_vod1_voc0, ~0.009 m at the run mean
+# (~0.037 m at t=115 s). A fixed 15-point count on the 0.16 m wide door
+# was 0.011 m spacing -- 0-1 samples across that layer, a knife-edge
+# catch, and it would only get worse on a taller door. 0.004 m spacing
+# puts >=2 samples across any layer >=0.008 m regardless of door height
+# (~40 bilinear probes for the wide door, once, cached -- negligible).
+# Detection (fine) is then decoupled from seed count: consecutive
+# same-sign z-runs are grouped into bands and each band gets at most
+# _DOOR_SEEDS_PER_BAND evenly spread seeds. Spans come from
+# schematic.room_overlay_geometry -- never hardcoded.
+_FLOW_EPS = 0.02            # m/s: |normal component| below this = no net flow, skip
+_DOOR_PROBE_DZ = 0.004     # m: z spacing at which the doorway U sign is read (not a count)
+_DOOR_SEEDS_PER_BAND = 5   # max seeds placed per detected inflow / outflow z-band
+_DOOR_PROBE_DX = 0.014     # x (room side of the wall line) where U is sampled
+_DOOR_IN_DX = -0.020       # inflow seeds sit this far corridor-side of the wall line
+_DOOR_OUT_DX = 0.022       # outflow seeds this far room-side
+_VENT_PROBE_NX = 6        # x-samples across a vent span (fixed 0.08 m span -> spacing OK)
+_VENT_PROBE_DZ = 0.010    # depth below the ceiling underside where W is sampled
+_VENT_OUT_DEPTHS = (0.006, 0.024, 0.044)   # outflow seeds: z below the ceiling underside
+_VENT_IN_ABOVE = 0.016                      # inflow seed: z above the slab top (plenum)
 
 # Room outline colors. Door/vent colors match views.py's own door/vent-
 # state convention (duplicated rather than imported -- same "zero
@@ -129,7 +172,7 @@ class StreamlinePanel(QtWidgets.QWidget):
         self._gate_reasons: dict = {}   # case_index -> str
         self._bus = None
         self._current_index = 0    # live playback frame -- see set_bus()
-        self._seed_cache: dict = {}   # extent tuple -> fixed start_points array, see _seed_points
+        self._seed_cache: dict = {}   # (door, vod, voc, x0, x1, z0, z1) -> start_points array, see _seed_points
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -258,18 +301,107 @@ class StreamlinePanel(QtWidgets.QWidget):
         return temp
 
     # ---------------------------------------------------------- seed points
-    def _seed_points(self, x0: float, x1: float, z0: float, z1: float) -> np.ndarray:
-        """Fixed start_points grid for streamplot(), generated once per
-        distinct plot extent and cached -- reused for every frame of that
-        extent rather than regenerated, which is the actual fix (see the
-        _SEED_GRID_NX/NZ comment)."""
-        key = (x0, x1, z0, z1)
+    def _opening_seed_points(self, geometry: dict, extent: tuple,
+                             u_mean: np.ndarray, w_mean: np.ndarray) -> np.ndarray:
+        """Extra start points at the doorway and each *open* ceiling vent,
+        placed by the real prevailing flow direction there. `u_mean`/
+        `w_mean` are the run-averaged (late-phase) velocity components,
+        (n_z, n_x) with row 0 = ceiling (the raw VectorField convention);
+        `geometry` is schematic.room_overlay_geometry (never hardcoded
+        spans); `extent` is the plot grid (x0, x1, z0, z1) and every point
+        is clamped inside it. Returns (N, 2), possibly empty.
+
+        Direction is made legible by *where* the seed sits, not just by an
+        arrowhead: an inflow seed is on the far side of the opening
+        (corridor for a door, plenum above a vent) so its line visibly
+        crosses in; an outflow seed is on the near side so its line
+        visibly crosses out. Openings that the data shows are one-way get
+        seeds on one side only."""
+        x0, x1, z0, z1 = extent
+        clamp = lambda a, lo, hi: min(max(a, lo), hi)
+        probe = lambda arr, x, z: mz.probe_value(arr, extent, x, z)
+        pts: list = []
+
+        # --- Doorway (normal component = U; U > 0 is into the room). Read
+        #     the U sign up the FULL opening height at _DOOR_PROBE_DZ
+        #     spacing, group consecutive same-sign runs into bands, and
+        #     seed each band (inflow -> corridor side, outflow -> room
+        #     side) with up to _DOOR_SEEDS_PER_BAND evenly spread points.
+        dx0, dz0, dx1, dz1 = geometry.get("door", (None,) * 4)
+        if dx0 is not None:
+            door_x = min(dx0, dx1)                       # the wall line (dx0 == dx1)
+            lo_z, hi_z = clamp(min(dz0, dz1) + 0.004, z0, z1), clamp(max(dz0, dz1), z0, z1)
+            if hi_z > lo_z:
+                probe_x = clamp(door_x + _DOOR_PROBE_DX, x0, x1)
+                zs = np.arange(lo_z, hi_z + _DOOR_PROBE_DZ * 0.5, _DOOR_PROBE_DZ)
+                us = np.array([probe(u_mean, probe_x, z) for z in zs])
+                sign = np.where(us > _FLOW_EPS, 1, np.where(us < -_FLOW_EPS, -1, 0))
+                i = 0
+                while i < len(sign):
+                    if sign[i] == 0:
+                        i += 1
+                        continue
+                    j = i
+                    while j < len(sign) and sign[j] == sign[i]:
+                        j += 1
+                    seed_x = clamp(door_x + (_DOOR_IN_DX if sign[i] > 0 else _DOOR_OUT_DX), x0, x1)
+                    k = min(_DOOR_SEEDS_PER_BAND, j - i)
+                    pts.extend((seed_x, sz) for sz in np.linspace(zs[i], zs[j - 1], k))
+                    i = j
+
+        # --- Open ceiling vents (normal component = W; W > 0 is up/out).
+        #     Probe the W sign across each open vent's span and seed outflow
+        #     columns below the vent / an inflow column above it.
+        for (vx0, vz0, vx1, vz1), state in geometry.get("vents", []):
+            if state != "open":
+                continue
+            underside, slab_top = min(vz0, vz1), max(vz0, vz1)
+            for sx in np.linspace(min(vx0, vx1), max(vx0, vx1), _VENT_PROBE_NX):
+                sx = clamp(sx, x0, x1)
+                w = probe(w_mean, sx, underside - _VENT_PROBE_DZ)
+                if w > _FLOW_EPS:                        # outflow -> below the vent
+                    pts.extend((sx, clamp(underside - d, z0, z1)) for d in _VENT_OUT_DEPTHS)
+                elif w < -_FLOW_EPS:                     # inflow -> above the slab
+                    pts.append((sx, clamp(slab_top + _VENT_IN_ABOVE, z0, z1)))
+
+        return np.asarray(pts, dtype=float).reshape(-1, 2)
+
+    def _seed_points(self, entry, field) -> np.ndarray:
+        """start_points for streamplot(): the fixed 12x6 room-coverage grid
+        (unchanged) concatenated with opening-targeted seeds
+        (_opening_seed_points), placed by `field`'s late-run mean flow
+        direction through each opening. Cached per (door, vod, voc,
+        extent) -- the config is part of the key so a scenario switch
+        regenerates the seeds; the mean is deterministic per scenario, so
+        the seed set is still fixed across playback frames.
+
+        `entry` is a manifest ScenarioEntry (its .door/.vod/.voc drive the
+        geometry); `field` is the scenario's velocity.VectorField."""
+        extent = field.extent
+        x0, x1, z0, z1 = extent
+        door = getattr(entry, "door", 0)
+        vod = getattr(entry, "vod", 0)
+        voc = getattr(entry, "voc", 0)
+        key = (door, vod, voc, x0, x1, z0, z1)
         seeds = self._seed_cache.get(key)
         if seeds is None:
-            xs = np.linspace(x0, x1, _SEED_GRID_NX)
-            zs = np.linspace(z0, z1, _SEED_GRID_NZ)
-            xx, zz = np.meshgrid(xs, zs)
-            seeds = np.column_stack([xx.ravel(), zz.ravel()])
+            # Room-coverage grid, clamped to the room's own bounds (see the
+            # _SEED_GRID_NX/NZ comment) -- unchanged 12x6.
+            gx0, gx1 = max(x0, min(ROOM_X)), min(x1, max(ROOM_X))
+            gz0, gz1 = max(z0, min(ROOM_Z)), min(z1, max(ROOM_Z))
+            xx, zz = np.meshgrid(np.linspace(gx0, gx1, _SEED_GRID_NX),
+                                 np.linspace(gz0, gz1, _SEED_GRID_NZ))
+            room_seeds = np.column_stack([xx.ravel(), zz.ravel()])
+            # Prevailing flow direction: mean of the last third of the run
+            # (the quasi-steady phase), per opening location.
+            n = field.u.shape[0]
+            lo = max(0, int(n * 2 / 3))
+            u_mean = np.asarray(field.u[lo:]).mean(axis=0)
+            w_mean = np.asarray(field.w[lo:]).mean(axis=0)
+            opening_seeds = self._opening_seed_points(
+                room_overlay_geometry(door, vod, voc), extent, u_mean, w_mean)
+            seeds = (np.vstack([room_seeds, opening_seeds])
+                     if opening_seeds.size else room_seeds)
             self._seed_cache[key] = seeds
         return seeds
 
@@ -348,18 +480,19 @@ class StreamlinePanel(QtWidgets.QWidget):
             color_arr, color_cmap, color_norm = speed_frame, self._cmap, None
             cbar_label = "Speed (m/s)"
 
-        # Seed within the room's own bounds, clamped to this field's real
-        # extent (defensive -- both come from the same mesh, but never
-        # assume) -- see the _SEED_GRID_NX/NZ comment for why.
-        seed_x0, seed_x1 = max(x0, min(ROOM_X)), min(x1, max(ROOM_X))
-        seed_z0, seed_z1 = max(z0, min(ROOM_Z)), min(z1, max(ROOM_Z))
-
+        # start_points = the 12x6 room grid + opening-targeted seeds
+        # (doorway + open vents), placed by the scenario's real prevailing
+        # flow direction through each opening and keyed on the door/vent
+        # config so a scenario switch regenerates them. No
+        # integration_direction override anywhere -- streamplot's default
+        # 'both' still traces each seed forward AND backward.
+        entry = self._by_index.get(case_index)
         strm = ax.streamplot(
             x, z, u_frame, w_frame,
             color=color_arr, cmap=color_cmap, norm=color_norm,
             density=self.density_spin.value(),
             linewidth=linewidth,
-            start_points=self._seed_points(seed_x0, seed_x1, seed_z0, seed_z1),
+            start_points=self._seed_points(entry, field),
         )
         self.canvas.fig.colorbar(strm.lines, ax=ax, fraction=0.046, pad=0.04, label=cbar_label)
 
@@ -370,7 +503,6 @@ class StreamlinePanel(QtWidgets.QWidget):
         # walls/door/vents to relate the flow to. Plain ax.plot() calls,
         # not views.py's LineCollection/blit-cache machinery, which this
         # from-scratch-redraw-every-frame canvas doesn't use or need.
-        entry = self._by_index.get(case_index)
         if entry is not None:
             geometry = room_overlay_geometry(entry.door, entry.vod, entry.voc)
             wall_color = plot_fg_color()
