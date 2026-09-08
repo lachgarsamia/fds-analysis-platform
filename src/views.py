@@ -194,7 +194,7 @@ class SliceView:
         # must never fight that toggle's own on/off state.
         self._isoline_mode_enabled = False
         self._isoline_levels: list = []
-        self._isoline_cmap = "viridis"
+        self._isoline_cmap = "jet"  # overridden on every set_isoline_mode() call (TEMPERATURE's registry cmap)
         self._isoline_vmin = None
         self._isoline_vmax = None
         self._isoline_fill_artist = None
@@ -427,6 +427,16 @@ class SliceView:
             0, 0, "", fontsize=6, color="#38BDF8", ha="left", va="center", zorder=6,
             path_effects=_cased_line_effect(1.0))
         self.room_door_label.set_visible(False)
+        # "Vent 1"/"Vent 2" labels, same treatment as "Door" -- name the two
+        # ceiling openings so the live overlay reads on its own. Positioned
+        # just below each vent line, colour matched to its open/closed/HVAC
+        # state (see set_room_outline).
+        self.room_vent_labels = [
+            self.ax.text(0, 0, "", fontsize=6, ha="center", va="top", zorder=6,
+                         path_effects=_cased_line_effect(1.0))
+            for _ in range(2)]
+        for _lbl in self.room_vent_labels:
+            _lbl.set_visible(False)
         self.ax.set_xticks([])
         self.ax.set_yticks([])
         # cax=self._colorbar_ax (not the previous fraction=/pad=, which
@@ -540,7 +550,8 @@ class SliceView:
         artists = [self.heatmap, self.soot_overlay, self.ember_scatter,
                   *self.device_scatters.values(),
                   self.streamline_collection, self.hover_highlight,
-                  self.room_walls, self.room_door, self.room_vents, self.room_door_label]
+                  self.room_walls, self.room_door, self.room_vents, self.room_door_label,
+                  *self.room_vent_labels]
         if self.velocity_quiver is not None:
             artists.append(self.velocity_quiver)
         if self.true_vector_quiver is not None:
@@ -560,6 +571,8 @@ class SliceView:
             self.room_door.set_segments([])
             self.room_vents.set_segments([])
             self.room_door_label.set_visible(False)
+            for _lbl in self.room_vent_labels:
+                _lbl.set_visible(False)
             self.ax.set_xlim(auto=True)
             self.ax.set_ylim(auto=True)
             self.ax.autoscale(True)
@@ -613,6 +626,17 @@ class SliceView:
             vent_colors.append(_VENT_STATE_COLORS.get(state, "#94A3B8"))
         self.room_vents.set_segments(vent_segs)
         self.room_vents.set_color(vent_colors)
+        # "Vent 1" / "Vent 2" labels, same idea as "Door": geometry["vents"]
+        # lists VOD then VOC at the ceiling line (schematic.room_overlay_
+        # geometry), each repeated on the slab top face -- the first two are
+        # the two distinct openings in span order. Sit each just below its
+        # line, coloured to its own state.
+        for i, ((vx0, vz0, vx1, vz1), state) in enumerate(geometry["vents"][:2]):
+            lbl = self.room_vent_labels[i]
+            lbl.set_position(((vx0 + vx1) / 2, min(vz0, vz1) - 0.022))
+            lbl.set_text(f"Vent {i + 1}")
+            lbl.set_color(_VENT_STATE_COLORS.get(state, "#94A3B8"))
+            lbl.set_visible(True)
         # set_xlim/set_ylim above change what's underneath the animated
         # artists (MplCanvas's own docstring: anything that does must recapture) --
         # skipping this left the blit cache holding a stale, differently-

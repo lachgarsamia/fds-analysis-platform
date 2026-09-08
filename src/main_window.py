@@ -5,11 +5,14 @@ The rebuilt main window. Key differences from the original fixed-.ui version:
 
 1. Layout is built entirely in code with QSplitter/QVBoxLayout/QGridLayout
    and real size policies - no fixed-geometry `.ui` file (main_window.ui is
-   left on disk but unused by this entry point), no `showFullScreen()`
-   forced at startup.
-2. The window is genuinely resizable from a defined minimum size up to
-   large/multi-monitor displays; splitter position and window geometry are
-   restored via QSettings between sessions.
+   left on disk but unused by this entry point).
+2. The app runs in a forced full-screen session: showEvent() puts the
+   window full-screen and changeEvent() re-asserts it after any state
+   change that would leave it (minimize, un-maximize, a WM/shortcut
+   un-fullscreen). There is no toggle, menu action, or double-click
+   gesture to exit. Splitter positions are still restored via QSettings;
+   window geometry is not (it would only flash before full-screen).
+   No-op on the headless 'offscreen' platform (tests / session-render).
 3. Styling comes from theme.py's token system (light/dark, runtime switch),
    not a single hardcoded stylesheet.
 4. Every interactive control has an accessible name/description, a logical
@@ -27,7 +30,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
 from config import (DEFAULT_CANDLES, DEFAULT_DOOR, DEFAULT_VOD, DEFAULT_VOC, QUANTITY_DISPLAY,
-                    ISOTHERM_LEVELS, CONTOUR_OVERLAY_LEVELS, AMBIENT_C)
+                    ISOTHERM_LEVELS, CONTOUR_OVERLAY_LEVELS)
 from theme import THEMES, apply_card_shadow, build_qss
 from widgets import CollapsibleSection
 from simulation_controller import SimulationController
@@ -173,7 +176,8 @@ _COMPARE_PRESETS = {
 # not a choice made here. This menu remains only as a manual per-view
 # override a user can still reach for; it does not add a new default.
 COLORMAPS = [
-    ("Viridis (default, colorblind-safe)", "viridis"),
+    ("Jet (temperature default)", "jet"),
+    ("Viridis (colorblind-safe)", "viridis"),
     ("Fire (calibrated)", "fds_fire"),
     ("Flow (calibrated)", "fds_flow"),
     ("Heat (gist_heat)", "gist_heat"),
@@ -357,7 +361,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.current_theme_name = self.settings.value("theme", "dark")
         self.ui_scale = float(self.settings.value("ui_scale", 1.0))
-        self.current_colormap = self.settings.value("colormap", "viridis")
+        self.current_colormap = self.settings.value("colormap", "jet")
         self.current_interpolation = self.settings.value("interpolation", "bilinear")
         # M2.1: which (quantity, direction, offset) slice the heatmap shows.
         # Set before the control panel/plot are built since both read it.
@@ -576,11 +580,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.evidence_notebook_action.triggered.connect(
             lambda checked: self.evidence_dock.setVisible(checked))
         view_menu.addAction(self.evidence_notebook_action)
-        view_menu.addSeparator()
-
-        fullscreen_action = QtWidgets.QAction("Toggle Fullscreen\tF11", self)
-        fullscreen_action.triggered.connect(self._toggle_fullscreen)
-        view_menu.addAction(fullscreen_action)
+        # (No "Toggle Fullscreen" action: the app runs in a forced
+        # full-screen session -- see _enforce_fullscreen / changeEvent.)
 
         export_menu = menu_bar.addMenu("&Export")
         export_animation_action = QtWidgets.QAction("Animation (MP4/GIF)…", self)
@@ -895,6 +896,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.streamline_panel = StreamlinePanel(
                 self.quantity_provider, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
+            # A second, independent StreamlinePanel instance for the Live
+            # Viewer's "Flow view" toggle -- a Qt widget has one parent, so
+            # the Analysis-page instance above can't also live in the live
+            # plot stack. Same class, same behaviour, its own lazy state.
+            self.streamline_live_panel = StreamlinePanel(
+                self.quantity_provider, self.sim_data.manifest,
+                self.sim_data.timesteps_per_second)
             # LIC flow (speed-color background + Line Integral Convolution
             # direction texture + temperature isotherms): a third,
             # independent visualization of the same validated U/W-VELOCITY
@@ -1029,6 +1037,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.device_panel = None
             self.velocity_panel = None
             self.streamline_panel = None
+            self.streamline_live_panel = None
             self.lic_flow_panel = None
             self.tracer_flow_panel = None
             self.timeseries_panel = None
@@ -1173,6 +1182,7 @@ class MainWindow(QtWidgets.QMainWindow):
                      "study_panel",
                      "spacetime_panel",
                      "device_panel", "velocity_panel", "streamline_panel",
+                     "streamline_live_panel",
                      "lic_flow_panel", "tracer_flow_panel",
                      "dashboard_panel",
                      "smoke_layer_motion_panel"):
@@ -1225,6 +1235,11 @@ class MainWindow(QtWidgets.QMainWindow):
             # as device_panel.py/velocity_panel.py -- this panel has no
             # other signals to wire (no placed probes).
             self.streamline_panel.set_bus(self.selection_bus)
+        if self.streamline_live_panel is not None:
+            self.streamline_live_panel.set_bus(self.selection_bus)
+        # Finish the Live Viewer "Flow view" toggle now that the live
+        # streamline panel exists (its plot-stack page).
+        self._wire_streamline_view()
         if self.lic_flow_panel is not None:
             # Same set_bus precedent as streamline_panel.py -- no other
             # signals to wire (no placed probes).
@@ -1773,27 +1788,124 @@ class MainWindow(QtWidgets.QMainWindow):
         # the cell to activate it, then use this combo.
         row.addWidget(_group("Data shown", self.quantity_combo))
 
-        # Range/default/label come from QUANTITY_DISPLAY for the starting
-        # quantity (current_quantity_key, set in __init__); switching
-        # quantity later re-applies these via _apply_quantity_display_defaults.
+        # "Velocity (streamlines)" view toggle: swaps the whole plot area
+        # between the normal heatmap grid and a StreamlinePanel
+        # (self.streamline_live_panel) -- the exact Scientific Analysis
+        # view, its own density control / temperature colouring /
+        # neutral-plane markers included. Disabled without a real manifest
+        # (the panel isn't built in demo-data mode). The panel is created
+        # *after* this bar, so the wiring is finished in
+        # _wire_streamline_view() once it exists.
+        self._streamline_view_on = False
+        # A checkable QPushButton with the shared toggle="true" styling
+        # (theme.py) -- neutral fill when off, solid accent fill + bold
+        # when on, exactly like the scenario toggles, so its state reads
+        # at a glance. Label flips too: "Show streamlines" / "Back to
+        # heatmap".
+        self.streamline_view_toggle = QtWidgets.QPushButton("Show streamlines")
+        self.streamline_view_toggle.setCheckable(True)
+        self.streamline_view_toggle.setProperty("toggle", "true")
+        self.streamline_view_toggle.setAccessibleName("Show the velocity streamlines view")
+        self.streamline_view_toggle.setToolTip(
+            "Switch the plot area to the whole-field velocity streamlines "
+            "(same view as Scientific Analysis, with its own density control).")
+        self.streamline_view_toggle.setEnabled(bool(getattr(self.sim_data, "manifest", None)))
+        self.streamline_view_toggle.toggled.connect(self._on_streamline_view_toggled)
+        row.addWidget(_group("Flow view", self.streamline_view_toggle))
+
+        # Display scale (colour-scale maximum). The visible control is a
+        # compact -/+ button strip docked directly beside the heatmap
+        # colorbar (self.scale_strip, added to the plot panel in
+        # _build_plot_panel). A hidden QSlider is kept as the clamped
+        # integer model: it owns the min/max range and fires
+        # _on_temp_changed, so every existing call site that reads
+        # self.temp_slider.value() / .setValue() is unchanged. Range/
+        # default come from the starting quantity (current_quantity_key);
+        # switching quantity re-applies them via
+        # _apply_quantity_display_defaults.
         initial_display = self._display_for(self.current_quantity_key.quantity)
-        temp_row = QtWidgets.QHBoxLayout()
         self.temp_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.temp_slider.setRange(initial_display['slider_min'], initial_display['slider_max'])
         self.temp_slider.setValue(initial_display['slider_default'])
-        self.temp_slider.setAccessibleName(
-            f"Maximum {initial_display['label'].lower()} scale, {initial_display['unit']}")
-        self.temp_slider.setToolTip(
-            f"Adjust the maximum {initial_display['label'].lower()} shown on the color scale")
+        self._scale_step = self._scale_step_for(initial_display)
+        self.temp_slider.setSingleStep(self._scale_step)
         self.temp_slider.valueChanged.connect(self._on_temp_changed)
-        self.temp_label = QtWidgets.QLabel(f"{initial_display['slider_default']} {initial_display['unit']}")
-        self.temp_label.setProperty("role", "value")
-        self.temp_label.setMinimumWidth(60)
-        temp_row.addWidget(self.temp_slider, 1)
-        temp_row.addWidget(self.temp_label)
-        row.addWidget(_group("Display scale (max)", self._wrap(temp_row)), 1)
+        self.temp_slider.hide()
+        self.scale_strip = self._build_scale_strip(initial_display)
 
+        row.addStretch(1)
         return bar
+
+    def _build_scale_strip(self, display: dict) -> QtWidgets.QWidget:
+        """The vertical -/+ display-scale control docked beside the
+        colorbar (replaces the old slider). `+` on top -> raises the
+        maximum, matching the colorbar's high-values-at-top orientation.
+        The buttons drive self.temp_slider (the clamped model); the label
+        between them shows the current maximum and its unit."""
+        strip = QtWidgets.QWidget()
+        strip.setObjectName("displayScaleStrip")
+        strip.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+        strip.setFixedWidth(66)
+        col = QtWidgets.QVBoxLayout(strip)
+        col.setContentsMargins(4, 10, 6, 10)
+        col.setSpacing(6)
+
+        title = QtWidgets.QLabel("Scale")
+        title.setProperty("role", "caption")
+        title.setAlignment(QtCore.Qt.AlignHCenter)
+        col.addWidget(title)
+        col.addStretch(1)
+
+        self.scale_up_button = QtWidgets.QToolButton()
+        self.scale_up_button.setText("+")
+        self.scale_up_button.setAutoRepeat(True)
+        self.scale_up_button.setFixedSize(38, 30)
+        self.scale_up_button.setAccessibleName("Increase display scale maximum")
+        self.scale_up_button.setToolTip("Raise the maximum value shown on the colour scale")
+        self.scale_up_button.clicked.connect(lambda: self._on_scale_button(+1))
+        col.addWidget(self.scale_up_button, 0, QtCore.Qt.AlignHCenter)
+
+        self.temp_label = QtWidgets.QLabel(f"{display['slider_default']} {display['unit']}")
+        self.temp_label.setProperty("role", "value")
+        self.temp_label.setAlignment(QtCore.Qt.AlignHCenter)
+        self.temp_label.setWordWrap(True)
+        col.addWidget(self.temp_label)
+
+        self.scale_down_button = QtWidgets.QToolButton()
+        self.scale_down_button.setText("−")  # U+2212 MINUS SIGN
+        self.scale_down_button.setAutoRepeat(True)
+        self.scale_down_button.setFixedSize(38, 30)
+        self.scale_down_button.setAccessibleName("Decrease display scale maximum")
+        self.scale_down_button.setToolTip("Lower the maximum value shown on the colour scale")
+        self.scale_down_button.clicked.connect(lambda: self._on_scale_button(-1))
+        col.addWidget(self.scale_down_button, 0, QtCore.Qt.AlignHCenter)
+
+        col.addStretch(1)
+        self._refresh_scale_buttons()
+        return strip
+
+    def _on_scale_button(self, direction: int) -> None:
+        """One -/+ click: move the display-scale maximum by one step,
+        clamped to the quantity's allowed range."""
+        step = getattr(self, "_scale_step", 1)
+        s = self.temp_slider
+        s.setValue(int(min(s.maximum(), max(s.minimum(), s.value() + direction * step))))
+        self._refresh_scale_buttons()
+
+    def _sync_scale_readout(self) -> None:
+        """Refresh the -/+ strip's value label + button enabled-state from
+        the current model value (for paths that set temp_slider with its
+        signals blocked)."""
+        display = self._display_for(self.current_quantity_key.quantity)
+        self.temp_label.setText(f"{self.temp_slider.value()} {display['unit']}")
+        self._refresh_scale_buttons()
+
+    def _refresh_scale_buttons(self) -> None:
+        s = getattr(self, "temp_slider", None)
+        if s is None or not hasattr(self, "scale_up_button"):
+            return
+        self.scale_up_button.setEnabled(s.value() < s.maximum())
+        self.scale_down_button.setEnabled(s.value() > s.minimum())
 
     def _scenario_options(self) -> list:
         """[(label, case_index), ...] for a grid cell's per-cell scenario
@@ -1871,23 +1983,59 @@ class MainWindow(QtWidgets.QMainWindow):
                 "slider_min": q.slider_min, "slider_max": q.slider_max,
                 "slider_default": q.slider_default}
 
+    # Temperature quantities whose display-scale ceiling defaults to the
+    # active scenario's own maximum (supervisor request) rather than a
+    # fixed registry value -- see _default_vmax_for.
+    _TEMP_QUANTITIES = ("TEMPERATURE", "TEMPERATURE (ISOLINES)", "TEMPERATURE RISE")
+
+    @staticmethod
+    def _scale_step_for(display: dict) -> int:
+        """Per-click increment for the -/+ display-scale buttons: about
+        1/40 of the quantity's slider span, at least 1 (temperature
+        ~24 °C, velocity/density 1, soot ~3 mg/m³)."""
+        return max(1, int(round((display['slider_max'] - display['slider_min']) / 40)))
+
+    def _default_vmax_for(self, quantity_key, case_index) -> int:
+        """The initial display-scale ceiling for (quantity, scenario).
+
+        Temperature quantities default to that scenario's own maximum
+        value straight from the simulation output -- so the out-of-the-box
+        view shows the run's full range with nothing clipped, and the
+        -/+ scale buttons adjust from there. Every other quantity keeps
+        its fixed registry default (the same colour meaning the same
+        value across scenarios). Clamped to the quantity's slider range;
+        falls back to the registry default when the field can't be read
+        (demo mode / gated)."""
+        display = self._display_for(quantity_key.quantity)
+        fallback = display['slider_default']
+        if quantity_key.quantity not in self._TEMP_QUANTITIES:
+            return fallback
+        try:
+            data = np.asarray(self._field(self.controller.store, case_index, quantity_key))
+            peak = float(np.nanmax(data))
+            if not np.isfinite(peak):
+                return fallback
+            return max(display['slider_min'],
+                       min(display['slider_max'], int(np.ceil(peak))))
+        except Exception:  # noqa: BLE001 - unreadable/gated field -> registry default
+            return fallback
+
     def _colorbar_label_for(self, quantity: str, display: dict) -> str:
-        """Colorbar title text for `quantity` -- TEMPERATURE's colorbar
-        reads as rise-above-ambient (colormap expressiveness pass, see
-        _colorbar_offset_for), so its label says so explicitly rather than
-        the plain "Temperature (°C)" every other call site still shows
-        (combo box, sliders, Quantities panel -- those describe the raw
-        absolute-temperature quantity itself, unaffected by this)."""
-        if quantity == "TEMPERATURE":
-            return f"Temperature rise above ambient ({display['unit']})"
+        """Colorbar title text for `quantity` -- the plain
+        "<label> (<unit>)" for every quantity. (TEMPERATURE's colorbar
+        used to be relabelled "rise above ambient" to match the offset
+        below; both were removed so the colorbar shows the straight slice
+        values with no translation.)"""
         return f"{display['label']} ({display['unit']})"
 
     def _colorbar_offset_for(self, quantity: str) -> float:
-        """The colorbar tick offset for `quantity` -- see
-        SliceView.set_colorbar_offset. Only TEMPERATURE's fixed clim is
-        deliberately anchored away from 0 (at AMBIENT_C); every other
-        quantity's colorbar shows its clim's raw numbers unchanged."""
-        return AMBIENT_C if quantity == "TEMPERATURE" else 0.0
+        """The colorbar tick offset for `quantity` -- always 0.0: every
+        colorbar shows the raw slice values on its clim, untranslated.
+        (TEMPERATURE previously offset its ticks by the ambient 20 °C so
+        the bar read 0..150 "rise above ambient"; removed -- the underlying
+        data was never translated, only the tick labels were, and the
+        straight absolute °C is what should be shown.)"""
+        return 0.0
 
     def _computed_quantity_infos(self) -> list:
         """SliceInfo entries for calculated/derived quantities whose inputs are
@@ -1975,7 +2123,25 @@ class MainWindow(QtWidgets.QMainWindow):
         self.toolbar.setAccessibleName("Plot navigation toolbar: pan, zoom, save")
 
         layout.addWidget(self.toolbar)
-        layout.addWidget(self.view_grid, 1)  # grid gets all extra vertical space
+        # The grid + the display-scale -/+ strip side by side, so the
+        # scale control sits directly next to the heatmap colorbar
+        # (which matplotlib draws on the right edge of each cell's figure)
+        # rather than in a separate bar. The strip is layout-managed, so
+        # it stays put when the window/grid is resized.
+        grid_page = QtWidgets.QWidget()
+        plot_row = QtWidgets.QHBoxLayout(grid_page)
+        plot_row.setContentsMargins(0, 0, 0, 0)
+        plot_row.setSpacing(0)
+        plot_row.addWidget(self.view_grid, 1)  # grid gets all extra space
+        plot_row.addWidget(self.scale_strip, 0)
+
+        # Page 0 = the heatmap grid + scale strip. Page 1 (added by
+        # _wire_streamline_view once it exists) = the Scientific Analysis
+        # streamline panel, embedded unchanged; the "Flow view" toggle in
+        # the display bar switches between them.
+        self._plot_stack = QtWidgets.QStackedWidget()
+        self._plot_stack.addWidget(grid_page)
+        layout.addWidget(self._plot_stack, 1)
 
         self._init_plot()
         return panel
@@ -2152,12 +2318,15 @@ class MainWindow(QtWidgets.QMainWindow):
             action.setChecked(cmap == display['cmap'])
         self.view_grid.active_view().set_cmap(display['cmap'])
 
-        slider_default = display['slider_default']
+        active_cell = self.view_grid.active_cell()
+        slider_default = self._default_vmax_for(active_cell.quantity_key, active_cell.case_index)
         self.temp_slider.setRange(display['slider_min'], display['slider_max'])
         self.temp_slider.setAccessibleName(
             f"Maximum {display['label'].lower()} scale, {display['unit']}")
         self.temp_slider.setToolTip(
             f"Adjust the maximum {display['label'].lower()} shown on the color scale")
+        self._scale_step = self._scale_step_for(display)
+        self.temp_slider.setSingleStep(self._scale_step)
         self.temp_slider.setValue(slider_default)
 
         self.view_grid.active_view().set_colorbar_label(self._colorbar_label_for(quantity, display))
@@ -2399,7 +2568,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if isoline_applies:
             display = self._display_for(quantity)
             is_active = cell is self.view_grid.active_cell()
-            vmax = self.temp_slider.value() if is_active else display['slider_default']
+            vmax = (self.temp_slider.value() if is_active
+                    else self._default_vmax_for(cell.quantity_key, cell.case_index))
             cell.view.set_isoline_mode(
                 True, levels=CONTOUR_OVERLAY_LEVELS.get("TEMPERATURE", []),
                 cmap=display['cmap'], vmin=display['vmin'], vmax=vmax)
@@ -2604,8 +2774,8 @@ class MainWindow(QtWidgets.QMainWindow):
         is_active = cell is self.view_grid.active_cell()
         cmap = self.current_colormap if is_active else display['cmap']
         vmin = display['vmin']
-        slider_default = display['slider_default']
-        vmax = self.temp_slider.value() if is_active else slider_default
+        vmax = (self.temp_slider.value() if is_active
+                else self._default_vmax_for(cell.quantity_key, cell.case_index))
         index = self._soot_primary_frame_index(
             self.controller.store, cell.case_index, cell.quantity_key, data, self.time_controller.index)
         cell.view.init_plot(
@@ -2635,6 +2805,17 @@ class MainWindow(QtWidgets.QMainWindow):
         cell = self.view_grid.active_cell()
         cell.set_scenario_silently(self.controller.current_case_index())
         cell.set_quantity_silently(self.current_quantity_key)
+        # Seed the colormap from the initial quantity's registry entry
+        # (TEMPERATURE -> "jet"), not a stale persisted value -- the
+        # per-quantity default is authoritative, so the very first frame
+        # renders in the right map without waiting for a quantity change.
+        self.current_colormap = self._display_for(self.current_quantity_key.quantity)['cmap']
+        # Seed the display-scale ceiling from this scenario's own data
+        # (temperature -> its true maximum) before the first render.
+        self.temp_slider.blockSignals(True)
+        self.temp_slider.setValue(self._default_vmax_for(cell.quantity_key, cell.case_index))
+        self.temp_slider.blockSignals(False)
+        self._sync_scale_readout()
         self._current_n_frames = self._init_cell_view(cell)
         self.playback_bar.set_range(self._current_n_frames, self.time_controller.timesteps_per_second)
         self.playback_bar.set_index(0)
@@ -2910,6 +3091,48 @@ class MainWindow(QtWidgets.QMainWindow):
                 cell.view.set_streamline_colors(colors)
                 cell.view.set_vector_field(quiver=quiver, streamlines=streamlines)
                 cell.view.redraw_overlays_now()
+
+    def _wire_streamline_view(self) -> None:
+        """Finish the "Flow view" toggle wiring once streamline_live_panel
+        exists (built after the control bar). Adds it as page 1 of the
+        plot stack, unchanged."""
+        panel = getattr(self, "streamline_live_panel", None)
+        if panel is None or not hasattr(self, "_plot_stack"):
+            self.streamline_view_toggle.setEnabled(False)
+            return
+        if self._plot_stack.indexOf(panel) == -1:
+            self._plot_stack.addWidget(panel)   # page 1 -- set_bus already wired by the caller
+
+    def _on_streamline_view_toggled(self, checked: bool) -> None:
+        """Swap the plot area between the heatmap grid (page 0) and the
+        embedded streamline panel (page 1)."""
+        self._streamline_view_on = bool(checked)
+        self.streamline_view_toggle.setText("Back to heatmap" if checked else "Show streamlines")
+        panel = getattr(self, "streamline_live_panel", None)
+        if panel is None or not hasattr(self, "_plot_stack"):
+            return
+        if checked:
+            panel.ensure_loaded()
+            self._sync_streamline_view_scenario()
+            self._plot_stack.setCurrentWidget(panel)
+        else:
+            self._plot_stack.setCurrentIndex(0)
+
+    def _sync_streamline_view_scenario(self) -> None:
+        """Point the live streamline panel's own scenario combo at the
+        live viewer's current scenario (it keeps its combo, per the
+        'leave it exactly as it was' requirement -- this just keeps the
+        two in step while it's the visible flow view)."""
+        panel = getattr(self, "streamline_live_panel", None)
+        if panel is None:
+            return
+        case_idx = self.controller.current_case_index()
+        combo = panel.scenario_combo
+        for i in range(combo.count()):
+            if combo.itemData(i) == case_idx:
+                if combo.currentIndex() != i:
+                    combo.setCurrentIndex(i)
+                break
 
     def _on_time_changed(self, index: int):
         """TimeController's tick/seek signal (M1.4.1): pull the frame for
@@ -3258,6 +3481,17 @@ class MainWindow(QtWidgets.QMainWindow):
         active = self.view_grid.active_cell()
         if active.cell_type == "slice":
             sync_cell(self, active)  # M2.2: a SOOT-plane switch may change the extent
+            # Data-driven temperature scale: each scenario shows its own
+            # maximum, so re-seed the ceiling when the active scenario
+            # changes (no-op for fixed-scale quantities).
+            if active.quantity_key.quantity in self._TEMP_QUANTITIES:
+                new_default = self._default_vmax_for(active.quantity_key, active.case_index)
+                if new_default != self.temp_slider.value():
+                    self.temp_slider.setValue(new_default)  # fires _on_temp_changed -> re-clim + readout
+                else:
+                    self._sync_scale_readout()
+        if getattr(self, "_streamline_view_on", False):
+            self._sync_streamline_view_scenario()
         if not self.time_controller.is_playing():
             self._on_time_changed(self.time_controller.index)
 
@@ -3505,7 +3739,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if applies_here and not cell.view.cinematic_enabled:
             display = QUANTITY_DISPLAY["TEMPERATURE"]
             is_active = cell is self.view_grid.active_cell()
-            vmax_init = self.temp_slider.value() if is_active else display["slider_default"]
+            vmax_init = (self.temp_slider.value() if is_active
+                         else self._default_vmax_for(cell.quantity_key, cell.case_index))
             cell.view.set_cinematic_mode(True, vmin=display["vmin"], vmax_init=vmax_init)
         elif not applies_here and cell.view.cinematic_enabled:
             cell.view.set_cinematic_mode(False)
@@ -3593,13 +3828,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
             display = self._display_for(cell.quantity_key.quantity)
             _vmin, vmax = cell.view.heatmap.get_clim()
+            self._scale_step = self._scale_step_for(display)
             self.temp_slider.blockSignals(True)
             self.temp_slider.setRange(display['slider_min'], display['slider_max'])
+            self.temp_slider.setSingleStep(self._scale_step)
             self.temp_slider.setValue(int(vmax))
             self.temp_slider.blockSignals(False)
             self.temp_slider.setAccessibleName(f"Maximum {display['label'].lower()} scale, {display['unit']}")
             self.temp_slider.setToolTip(f"Adjust the maximum {display['label'].lower()} shown on the color scale")
             self.temp_label.setText(f"{int(vmax)} {display['unit']}")
+            self._refresh_scale_buttons()
 
         data = self._field(self.controller.store, cell.case_index, cell.quantity_key)
         self._current_n_frames = self._reported_n_frames(self.controller.store, cell.case_index, cell.quantity_key, data)
@@ -3803,7 +4041,7 @@ class MainWindow(QtWidgets.QMainWindow):
         provenance = provenance_line(entry.path, entry.folder, peak / fps)
         figure_png = figure_png_bytes(
             np.asarray(data[peak]), cmap=self.current_colormap, vmin=display['vmin'],
-            vmax=display['slider_default'], extent=self._extent_for(case_index, key),
+            vmax=self._default_vmax_for(key, case_index), extent=self._extent_for(case_index, key),
             colorbar_label=f"{display['label']} ({display['unit']})", title=entry.folder,
             isotherm_levels=ISOTHERM_LEVELS.get(key.quantity))
         summary_text = generate_summary(entry, summary, summaries, self.controller.store, fps, key)
@@ -3896,7 +4134,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # raised the moment a non-active cell's own combo was switched to
         # either derived quantity.
         data = self._field(store, cell.case_index, cell.quantity_key)
-        vmin, vmax = display['vmin'], display['slider_default']
+        # Same as before: this redraw path resets to the quantity's
+        # default ceiling (now data-driven for temperature) rather than
+        # tracking the live slider -- callers that need the slider value
+        # re-apply it via _apply_link_clim / _on_temp_changed afterward.
+        vmin = display['vmin']
+        vmax = self._default_vmax_for(cell.quantity_key, cell.case_index)
         cell.view.set_cmap(display['cmap'])
         cell.view.set_clim(vmin, vmax)
         cell.view.set_colorbar_label(self._colorbar_label_for(cell.quantity_key.quantity, display))
@@ -4056,7 +4299,16 @@ class MainWindow(QtWidgets.QMainWindow):
             vmin = 0.0
             vmax = cell.view.std_vmax(arrays, cache_key=(tuple(cell.ensemble_case_indices), key))
         else:
-            vmin, vmax = display['vmin'], display['slider_default']
+            vmin = display['vmin']
+            # Temperature ensembles scale to the composited range's own
+            # maximum (straight from the data), like the single-cell view.
+            if key.quantity in self._TEMP_QUANTITIES:
+                peak = max((float(np.nanmax(a)) for a in arrays), default=display['slider_default'])
+                vmax = max(display['slider_min'],
+                           min(display['slider_max'], int(np.ceil(peak)))) if np.isfinite(peak) \
+                    else display['slider_default']
+            else:
+                vmax = display['slider_default']
         # Per-operand volume-cadence remap -- see _frame_for_cell's
         # "ensemble" branch for why.
         index = min(self._soot_primary_frame_index(self.controller.store, ci, key, a, self.time_controller.index)
@@ -4117,6 +4369,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # the wrong unit next to the live value.
         display = self._display_for(self.current_quantity_key.quantity)
         self.temp_label.setText(f"{value} {display['unit']}")
+        self._refresh_scale_buttons()
         # vmin stays pinned at the quantity's fixed physical floor
         # (registry.py); only vmax moves with the slider. This -- like the
         # colormap menu -- edits the active cell only (M2.2 design
@@ -4681,7 +4934,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # -------------------------------------------------------- misc/window
     def _setup_shortcuts(self):
-        QtWidgets.QShortcut(QtGui.QKeySequence("F11"), self, activated=self._toggle_fullscreen)
         QtWidgets.QShortcut(QtGui.QKeySequence("Space"), self, activated=self._toggle_play_pause)
         QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+R"), self, activated=self._restart_simulation)
         QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+Q"), self, activated=self.close)
@@ -4766,11 +5018,36 @@ class MainWindow(QtWidgets.QMainWindow):
             self._esc_hold_timer.stop()
         super().keyReleaseEvent(event)
 
-    def _toggle_fullscreen(self):
-        if self.isFullScreen():
-            self.showNormal()
-        else:
+    def _enforce_fullscreen(self) -> None:
+        """Put the window back to full screen. The app runs in a forced
+        full-screen session (no toggle, no menu action): the user should
+        not be able to leave it through a normal window gesture. Deferred
+        via a 0-timer at every call site so it never runs inside the very
+        window-state-change event it is reacting to.
+
+        No-op on the 'offscreen' Qt platform: a headless render (the test
+        suite, `fdsvis-cli session-render`) has no screen to fill, and
+        forcing the state there would make QWidget.resize() -- which those
+        contexts use to exercise responsive layout -- silently ignored."""
+        if QtWidgets.QApplication.platformName() == "offscreen":
+            return
+        if not self.isFullScreen():
             self.showFullScreen()
+
+    def changeEvent(self, event: QtCore.QEvent) -> None:
+        super().changeEvent(event)
+        # Re-assert full screen after any window-state change that left it
+        # (minimize, un-maximize, a WM/shortcut un-fullscreen). isVisible()
+        # guards the pre-show construction phase.
+        if event.type() == QtCore.QEvent.WindowStateChange and self.isVisible():
+            if not self.isFullScreen():
+                QtCore.QTimer.singleShot(0, self._enforce_fullscreen)
+
+    def showEvent(self, event: QtGui.QShowEvent) -> None:
+        super().showEvent(event)
+        if not getattr(self, "_fullscreen_started", False):
+            self._fullscreen_started = True
+            QtCore.QTimer.singleShot(0, self._enforce_fullscreen)
 
     def _toggle_play_pause(self):
         if self.time_controller.is_playing():
@@ -4828,17 +5105,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_history_buttons()
         return bar
 
-    def mouseDoubleClickEvent(self, event):
-        # Kept as an explicit opt-in gesture, but no longer forced at startup.
-        self._toggle_fullscreen()
-
     def _restore_window_state(self):
-        geometry = self.settings.value("geometry")
-        if geometry is not None:
-            self.restoreGeometry(geometry)
-        else:
-            self.resize(1280, 820)
-
+        # Window geometry is deliberately NOT restored: the app runs
+        # full-screen for the whole session (see _enforce_fullscreen), so
+        # a persisted size/position would only cause a startup flash
+        # before showFullScreen() overrides it. Double-clicking the window
+        # no longer toggles full screen either.
         splitter_state = self.settings.value("splitter_state")
         if splitter_state is not None:
             self.splitter.restoreState(splitter_state)

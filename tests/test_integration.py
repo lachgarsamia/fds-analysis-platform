@@ -41,6 +41,31 @@ class TestIntegration:
         assert window.heatmap.get_array().shape == (49, 101)
         window.close()
 
+    def test_live_viewer_flow_view_toggle_swaps_in_the_streamline_panel(self, qapp):
+        """The "Flow view" toggle swaps the plot area between the heatmap
+        grid and the (unchanged) Scientific Analysis streamline panel, and
+        keeps its scenario combo in step with the live scenario."""
+        sim_data = load_simulation_data()
+        window = MainWindow(sim_data)
+        if window.streamline_live_panel is None:     # demo-data build: toggle stays disabled
+            assert not window.streamline_view_toggle.isEnabled()
+            window.close()
+            return
+        # its own instance -- the Analysis-page streamline panel stays put
+        assert window.streamline_live_panel is not window.streamline_panel
+        assert window._plot_stack.count() == 2
+        assert window._plot_stack.widget(1) is window.streamline_live_panel
+
+        window.streamline_view_toggle.setChecked(True)
+        assert window._plot_stack.currentWidget() is window.streamline_live_panel
+        assert window.streamline_live_panel._loaded
+        assert (window.streamline_live_panel.scenario_combo.currentData()
+                == window.controller.current_case_index())
+
+        window.streamline_view_toggle.setChecked(False)
+        assert window._plot_stack.currentIndex() == 0
+        window.close()
+
     def test_mainwindow_theme_switch(self, qapp):
         """Verify light/dark theme switching without crash."""
         sim_data = load_simulation_data()
@@ -4986,4 +5011,127 @@ class TestQuantityDropdownTooltips:
             if interpretation:
                 tip = cell.quantity_combo.itemData(i, QtCore.Qt.ToolTipRole)
                 assert tip
+        window.close()
+
+
+class TestTemperaturePaletteAndScale:
+    """Supervisor-requested changes: temperature renders in 'jet', its
+    values come straight from the simulation with no post-processing, and
+    the display-scale slider is replaced by -/+ buttons docked beside the
+    colorbar."""
+
+    def test_temperature_quantities_use_jet(self, qapp):
+        from registry import get_quantity
+        for q in ("TEMPERATURE", "TEMPERATURE RISE", "TEMPERATURE (ISOLINES)"):
+            assert get_quantity(q).cmap == "jet", q
+        # non-temperature quantities keep their own maps
+        assert get_quantity("VELOCITY").cmap != "jet"
+
+    def test_live_heatmap_renders_in_jet(self, qapp):
+        window = MainWindow(load_simulation_data())
+        assert window.heatmap.get_cmap().name == "jet"
+        window.close()
+
+    def test_colorbar_shows_raw_values_no_ambient_offset(self, qapp):
+        window = MainWindow(load_simulation_data())
+        assert window._colorbar_offset_for("TEMPERATURE") == 0.0
+        label = window._colorbar_label_for("TEMPERATURE", window._display_for("TEMPERATURE"))
+        assert label == "Temperature (°C)"
+        assert "rise above ambient" not in label.lower()
+        window.close()
+
+    def test_temperature_values_are_the_raw_slice(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        ci = window.controller.current_case_index()
+        raw = np.asarray(window.controller.store.get(ci, DEFAULT_SLICE_KEY))
+        via_provider = np.asarray(window.quantity_provider.get(ci, DEFAULT_SLICE_KEY))
+        assert np.array_equal(raw, via_provider), "provider must not transform TEMPERATURE"
+        assert raw.dtype == np.float32, "native FDS .sf precision, not promoted to float64"
+        window.close()
+
+    def test_default_scale_is_the_scenario_maximum(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        ci = window.controller.current_case_index()
+        data_max = float(np.nanmax(window.controller.store.get(ci, DEFAULT_SLICE_KEY)))
+        _vmin, vmax = window.heatmap.get_clim()
+        assert vmax >= data_max, "default scale must not clip the hottest cell"
+        assert vmax == pytest.approx(np.ceil(data_max), abs=1.0)
+        window.close()
+
+    def test_default_scale_follows_the_active_scenario(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo or not window.sim_data.is_factorial:
+            pytest.skip("needs the real factorial dataset")
+        first_vmax = window.heatmap.get_clim()[1]
+        # switch to a stronger-fire scenario (2 candles) and let it settle
+        window.candle_toggle.set_value(1)
+        window._on_candle_changed(1)
+        _drain_workers(qapp, getattr(window.controller, "_prefetch_workers", []))
+        qapp.processEvents()
+        ci = window.controller.current_case_index()
+        data_max = float(np.nanmax(window.controller.store.get(ci, DEFAULT_SLICE_KEY)))
+        assert window.heatmap.get_clim()[1] == pytest.approx(np.ceil(data_max), abs=1.0)
+        # a different scenario -> a different data-driven ceiling
+        assert window.heatmap.get_clim()[1] != first_vmax
+        window.close()
+
+    def test_scale_buttons_step_and_clamp(self, qapp):
+        window = MainWindow(load_simulation_data())
+        start = window.temp_slider.value()
+        step = window._scale_step
+        assert step >= 1
+        window._on_scale_button(+1)
+        assert window.temp_slider.value() == start + step
+        assert window.heatmap.get_clim()[1] == start + step
+        window._on_scale_button(-1)
+        assert window.temp_slider.value() == start
+        # clamp high
+        window.temp_slider.setValue(window.temp_slider.maximum())
+        window._on_scale_button(+1)
+        assert window.temp_slider.value() == window.temp_slider.maximum()
+        assert not window.scale_up_button.isEnabled()
+        # clamp low
+        window.temp_slider.setValue(window.temp_slider.minimum())
+        window._on_scale_button(-1)
+        assert window.temp_slider.value() == window.temp_slider.minimum()
+        assert not window.scale_down_button.isEnabled()
+        window.close()
+
+    def test_scale_change_never_touches_the_data(self, qapp):
+        window = MainWindow(load_simulation_data())
+        if window.sim_data.is_demo:
+            pytest.skip("real dataset not present")
+        ci = window.controller.current_case_index()
+        before = np.array(window.controller.store.get(ci, DEFAULT_SLICE_KEY), copy=True)
+        for _ in range(3):
+            window._on_scale_button(+1)
+        window._on_scale_button(-1)
+        after = np.asarray(window.controller.store.get(ci, DEFAULT_SLICE_KEY))
+        assert np.array_equal(before, after)
+        window.close()
+
+    def test_scale_control_sits_by_the_plot_not_the_bottom_bar(self, qapp):
+        window = MainWindow(load_simulation_data())
+        assert window.scale_strip is not None and not window.temp_slider.isVisible()
+        ancestry = []
+        w = window.scale_strip
+        while w is not None:
+            ancestry.append(w.objectName())
+            w = w.parentWidget()
+        assert "bottomControlBar" not in ancestry
+        assert "displayControlBar" not in ancestry
+        window.close()
+
+    def test_no_way_to_exit_fullscreen_from_the_ui(self, qapp):
+        window = MainWindow(load_simulation_data())
+        assert not hasattr(window, "_toggle_fullscreen")
+        assert hasattr(window, "_enforce_fullscreen")
+        menu_texts = []
+        for menu in window.menuBar().findChildren(QtWidgets.QMenu):
+            menu_texts += [a.text().lower() for a in menu.actions()]
+        assert not any("full" in t and "screen" in t for t in menu_texts)
         window.close()

@@ -78,6 +78,29 @@ class TestSliceView:
         assert view.ax.get_xlim() == (0.0, 1.0)
         assert view.ax.get_ylim() == (0.0, 0.48)
 
+    def test_vent_labels_named_and_state_coloured_then_hidden(self, qapp):
+        """The live overlay names both ceiling openings ("Vent 1"/"Vent 2"),
+        each coloured to its own open/closed/HVAC state like its vent line,
+        and hides them when the geometry goes away -- same treatment as the
+        "Door" label."""
+        import matplotlib.colors as mcolors
+        from schematic import room_overlay_geometry
+        from views import _VENT_STATE_COLORS
+
+        view = SliceView()
+        view.init_plot(FRAME, cmap="gist_heat", interpolation="nearest",
+                        vmin=0.0, vmax=10.0, colorbar_label="x", extent=(0.0, 1.0, 0.0, 0.48))
+        view.set_room_outline(room_overlay_geometry(door=1, vod=2, voc=1))  # HVAC, closed
+        l1, l2 = view.room_vent_labels
+        assert (l1.get_text(), l2.get_text()) == ("Vent 1", "Vent 2")
+        assert l1.get_visible() and l2.get_visible()
+        assert mcolors.same_color(l1.get_color(), _VENT_STATE_COLORS["HVAC"])
+        assert mcolors.same_color(l2.get_color(), _VENT_STATE_COLORS["closed"])
+        # sit below the ceiling line, not on it
+        assert l1.get_position()[1] < 0.22 and l2.get_position()[1] < 0.22
+        view.set_room_outline(None)
+        assert not l1.get_visible() and not l2.get_visible()
+
 
 class TestSliceViewCinematicMode:
     """FireLab roadmap Phase 2.1: cinematic mode is opt-in and reversible,
