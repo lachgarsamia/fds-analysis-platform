@@ -63,7 +63,10 @@ Row-0-is-ceiling / dt convention: same as every sibling panel (see
 streamline_panel.py's own module docstring for the flip reasoning).
 Advection uses real time (dt = 1/fps): a particle moves exactly as far as
 the real flow would carry it in one playback tick, not an arbitrary
-per-render step size.
+per-render step size. Where the field is fast enough that a single Euler
+step would overshoot several grid cells (notably the ~4 m/s HVAC extract
+inlet), that tick is transparently split into sub-steps -- same field,
+same total dt (see _ParticlePool.step / _CFL_SUBSTEP_CELLS).
 """
 
 from __future__ import annotations
@@ -96,6 +99,21 @@ SPEED_GAMMA = 0.45
 TRAIL_LEN = 8
 LIFE_MIN_FRAMES = 30
 LIFE_MAX_FRAMES = 90
+
+# Adaptive sub-stepping (see _ParticlePool.step). Plain forward-Euler
+# advection at the playback tick (dt = 1/fps = 0.25 s) lets a particle in
+# a fast jet -- e.g. a ~4 m/s HVAC extract inlet, ~10x the room's typical
+# ~0.35 m/s -- leap ~90 grid cells in a single step. That is pure
+# numerical overshoot: it renders as long straight diagonal streaks and a
+# tangled knot at the vent, not as real flow (the jet field itself is
+# smooth and coherent). The tick is split into k sub-steps so no sub-step
+# advances a particle more than _CFL_SUBSTEP_CELLS grid cells, re-sampling
+# the frozen-for-this-frame field each time -- identical field, identical
+# total dt, just resolved. k is capped at _MAX_SUBSTEPS for cost; measured
+# on the HVAC scenario the cap binds nearly every frame (pool-wide vmax is
+# the ~3.8 m/s extract jet), a natural-fire scenario sits around k = 7.
+_CFL_SUBSTEP_CELLS = 0.5
+_MAX_SUBSTEPS = 40
 
 # Door/vent colors match views.py's/streamline_panel.py's own convention.
 _DOOR_COLOR = "#38BDF8"
@@ -195,6 +213,7 @@ class _ParticlePool:
         self._door_z_span = door_z_span
         self._rng = np.random.default_rng(seed)
         self.n = n
+        self._last_substeps = 1        # k used by the most recent step() -- diagnostic
         self.pos = self._spawn_positions(n)
         self.trail = np.repeat(self.pos[:, None, :], TRAIL_LEN, axis=1)
         self.age = np.zeros(n, dtype=np.float32)
@@ -243,9 +262,27 @@ class _ParticlePool:
         # allows through to the slab's real top face and the doorway's
         # z-span allows _DOOR_EXIT_DEPTH into the corridor, matching the
         # module docstring.
+        ex0, ex1, ez0, ez1 = extent
+        n_z, n_x = u_frame.shape
+        cell = min((ex1 - ex0) / (n_x - 1), (ez1 - ez0) / (n_z - 1))
+
+        # Adaptive sub-stepping (see the _CFL_SUBSTEP_CELLS comment): pick
+        # k from the fastest particle so no sub-step moves more than
+        # _CFL_SUBSTEP_CELLS cells, then advect k times, re-sampling the
+        # (frozen-for-this-frame) field at each new sub-position. Same
+        # field, same total dt -- a slow particle (k == 1) is unchanged.
         u, w = _sample_uw(u_frame, w_frame, extent, self.pos[:, 0], self.pos[:, 1])
-        self.pos[:, 0] += dt * u
-        self.pos[:, 1] += dt * w
+        vmax = float(np.hypot(u, w).max())
+        k = 1
+        if vmax * dt > _CFL_SUBSTEP_CELLS * cell > 0.0:
+            k = min(_MAX_SUBSTEPS, int(np.ceil(vmax * dt / (_CFL_SUBSTEP_CELLS * cell))))
+        self._last_substeps = k
+        sub_dt = dt / k
+        for s in range(k):
+            if s > 0:
+                u, w = _sample_uw(u_frame, w_frame, extent, self.pos[:, 0], self.pos[:, 1])
+            self.pos[:, 0] += sub_dt * u
+            self.pos[:, 1] += sub_dt * w
         self.age += 1.0
 
         ceiling_limit = self._ceiling_limit(self.pos[:, 0])

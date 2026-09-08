@@ -214,6 +214,73 @@ def test_left_wall_is_solid_above_the_doorway(qapp):
         "an above-lintel particle must be blocked by the solid wall and respawn inside"
 
 
+def _shear_field(A=3.0, nz=41, nx=41):
+    """Smooth, fast, non-uniform field (u ~ sin pi z, w ~ sin pi x) -- a
+    curved flow where a single Euler step at dt=0.25 badly overshoots."""
+    zc = np.linspace(0, 1, nz)[:, None]
+    xc = np.linspace(0, 1, nx)[None, :]
+    u = A * np.sin(np.pi * zc) * np.ones_like(xc)
+    w = A * np.sin(np.pi * xc) * np.ones_like(zc)
+    return u, w
+
+
+def test_fast_field_triggers_adaptive_substepping(qapp):
+    """A ~4 m/s field on a 25 mm grid at dt=0.25 s would leap ~40 cells in
+    one Euler step -- step() must split it into many sub-steps. A slow
+    field takes exactly one."""
+    import tracer_flow_panel as tfp
+    ext = (0.0, 1.0, 0.0, 1.0)
+    pool = tfp._ParticlePool(50, (0.0, 1.0, 0.0, 1.0), seed=0)
+
+    u, w = _shear_field(A=4.0)
+    pool.step(u, w, ext, dt=0.25)
+    assert pool._last_substeps > 10, f"fast field should sub-step a lot, got k={pool._last_substeps}"
+
+    pool.step(u * 1e-3, w * 1e-3, ext, dt=0.25)
+    assert pool._last_substeps == 1, "a slow field must not sub-step"
+
+
+def test_substepping_tracks_the_curved_path_euler_overshoots(qapp):
+    """Against a fine reference integration of the same field, the
+    adaptive step lands close to the true trajectory; a forced single
+    Euler step (k=1) overshoots it by a wide margin."""
+    import tracer_flow_panel as tfp
+    ext = (0.0, 1.0, 0.0, 1.0)
+    u, w = _shear_field(A=2.0)          # ~2.8 m/s peak -- k hits the cap
+    start = np.array([[0.5, 0.35]])
+
+    def integrate(steps):
+        p = tfp._ParticlePool(1, (0.0, 1.0, 0.0, 1.0), seed=0)
+        p.pos[:] = start
+        dt = 0.25 / steps
+        for _ in range(steps):
+            uu, ww = tfp._sample_uw(u, w, ext, p.pos[:, 0], p.pos[:, 1])
+            p.pos[:, 0] += dt * uu
+            p.pos[:, 1] += dt * ww
+        return p.pos.copy()
+
+    ref = integrate(8000)
+
+    pool = tfp._ParticlePool(1, (0.0, 1.0, 0.0, 1.0), seed=0)
+    pool.pos[:] = start
+    pool.step(u, w, ext, dt=0.25)
+    adaptive_err = float(np.hypot(*(pool.pos - ref).ravel()))
+
+    saved = tfp._MAX_SUBSTEPS
+    tfp._MAX_SUBSTEPS = 1
+    try:
+        pe = tfp._ParticlePool(1, (0.0, 1.0, 0.0, 1.0), seed=0)
+        pe.pos[:] = start
+        pe.step(u, w, ext, dt=0.25)
+        euler_err = float(np.hypot(*(pe.pos - ref).ravel()))
+    finally:
+        tfp._MAX_SUBSTEPS = saved
+
+    assert adaptive_err < 0.03, f"adaptive step should track the path, err={adaptive_err:.4f}"
+    assert euler_err > 8 * adaptive_err, \
+        f"single Euler step should overshoot far more (euler {euler_err:.4f} vs adaptive {adaptive_err:.4f})"
+
+
 def test_advection_moves_particles_between_frames(panel):
     """The whole point of a tracer panel over a static plot: particles
     actually move, driven by the real field, as playback advances."""
