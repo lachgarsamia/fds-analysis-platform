@@ -48,7 +48,42 @@ class TestNavRail:
         QtWidgets.QApplication.sendEvent(rail, QtCore.QEvent(QtCore.QEvent.Leave))
         assert not rail.is_expanded()
         assert rail.width() == collapsed_width
-        assert rail._buttons["live"].text() == "1"
+
+    def test_click_back_emits_back_requested(self, qapp):
+        """Distinct from Quit (test_click_quit_emits_quit_requested below):
+        both close the window, same as clicking Quit would, but this is
+        the entry point meant for "launched by another app, go back to
+        it" (see nav.py's own comment) -- kept as its own signal so the
+        two can diverge later without touching Quit's wiring."""
+        rail = NavRail([("live", "Live Simulation")])
+        received = []
+        rail.back_requested.connect(lambda: received.append(True))
+        rail._back_button.click()
+        assert received == [True]
+
+    def test_back_button_is_not_a_page_entry(self, qapp):
+        """Never a "home" page key (see test_no_home_page_in_nav_rail in
+        TestMainWindowPages below, and nav.py's own module comment on why
+        "Back" is deliberately not named "Home") -- it's a utility
+        button alongside Quit/theme-toggle, not something set_active()
+        or page_selected could ever target."""
+        rail = NavRail([("live", "Live Simulation")])
+        assert "back" not in rail._buttons
+        assert "home" not in rail._buttons
+
+    def test_click_quit_emits_quit_requested(self, qapp):
+        rail = NavRail([("live", "Live Simulation")])
+        received = []
+        rail.quit_requested.connect(lambda: received.append(True))
+        rail._quit_button.click()
+        assert received == [True]
+
+    def test_back_and_quit_labels_differ_when_expanded(self, qapp):
+        rail = NavRail([("live", "Live Simulation")])
+        QtWidgets.QApplication.sendEvent(rail, QtCore.QEvent(QtCore.QEvent.Enter))
+        assert "Back" in rail._back_button.text()
+        assert "Home" not in rail._back_button.text()
+        assert "Quit" in rail._quit_button.text()
 
 
 class TestPageLifecycle:
@@ -167,6 +202,74 @@ class TestMainWindowPageSwitching:
         assert window.nav_rail._labels["analysis"] == "2  Scientific Analysis"
         assert window.nav_rail._labels["dataset"] == "3  Dataset Explorer"
         assert window.nav_rail._labels["about"] == "4  About"
+        window.close()
+
+    def test_back_button_activates_already_running_kids_app_without_relaunch(self, qapp, monkeypatch):
+        """If FireScope was launched by the kids app's Grown-ups button
+        and that process is still alive, Back must activate its window
+        rather than spawning a second kids-app process -- and must never
+        close FireScope itself (see _on_back_requested's own docstring:
+        closing here would force every later Grown-ups click back into a
+        fresh launch instead of reactivating this one)."""
+        import kids_app_launcher
+
+        window = MainWindow(load_simulation_data())
+        monkeypatch.setattr(kids_app_launcher, "find_running_kids_app_pid", lambda: 4242)
+        activated = []
+        monkeypatch.setattr(
+            kids_app_launcher, "activate_pid",
+            lambda pid: activated.append(pid) or pid == 4242)
+        relaunched = []
+        monkeypatch.setattr(
+            kids_app_launcher, "launch_kids_app",
+            lambda: relaunched.append(True) or (object(), ""))
+        closed = []
+        monkeypatch.setattr(window, "close", lambda: closed.append(True))
+
+        window._on_back_requested()
+
+        assert activated == [4242]
+        assert relaunched == []
+        assert closed == []
+        window.close()
+
+    def test_back_button_launches_fresh_when_no_known_alive_launcher(self, qapp, monkeypatch):
+        """No JUNIOR_FIRE_SCIENTIST_PID (or a dead one) -- nothing to
+        activate, so Back falls back to a fresh launch (e.g. FireScope
+        was started some other way than via that button). Still never
+        closes FireScope itself."""
+        import kids_app_launcher
+
+        window = MainWindow(load_simulation_data())
+        monkeypatch.setattr(kids_app_launcher, "find_running_kids_app_pid", lambda: None)
+        launched = []
+        monkeypatch.setattr(
+            kids_app_launcher, "launch_kids_app",
+            lambda: launched.append(True) or (object(), ""))
+        closed = []
+        monkeypatch.setattr(window, "close", lambda: closed.append(True))
+
+        window._on_back_requested()
+
+        assert launched == [True]
+        assert closed == []
+        window.close()
+
+    def test_back_button_warns_when_launch_fails(self, qapp, monkeypatch):
+        import kids_app_launcher
+
+        window = MainWindow(load_simulation_data())
+        monkeypatch.setattr(kids_app_launcher, "find_running_kids_app_pid", lambda: None)
+        monkeypatch.setattr(
+            kids_app_launcher, "launch_kids_app", lambda: (None, "not installed"))
+        warned = []
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox, "warning",
+            lambda *a, **k: warned.append(True))
+
+        window._on_back_requested()
+
+        assert warned == [True]
         window.close()
 
     def test_kiosk_idle_stays_on_current_page(self, qapp):

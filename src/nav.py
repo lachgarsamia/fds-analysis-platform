@@ -35,6 +35,7 @@ class NavRail(QtWidgets.QWidget):
 
     page_selected = QtCore.pyqtSignal(str)  # page key
     theme_toggle_requested = QtCore.pyqtSignal()
+    back_requested = QtCore.pyqtSignal()
     quit_requested = QtCore.pyqtSignal()
     expanded_changed = QtCore.pyqtSignal(bool)  # hover state, not a persisted preference
 
@@ -105,6 +106,26 @@ class NavRail(QtWidgets.QWidget):
         self._theme_full_label = "Light mode"
         self._theme_button.setToolTip("Switch to light mode")
         layout.addWidget(self._theme_button)
+
+        # Back (FireScope can be launched standalone or, since the Junior
+        # Fire Scientist kids app added its own Grown-ups button, as a
+        # separate process spawned from that app's Welcome screen -- see
+        # that repo's public/firescope_launcher.py). Never closes
+        # FireScope itself (see main_window._on_back_requested's own
+        # docstring for why) -- it activates the kids app's window and
+        # leaves FireScope running in the background, so a later
+        # Grown-ups click can jump straight back into it instead of
+        # relaunching. Deliberately labeled "Back", not "Home" --
+        # FireScope has no "home" of its own, and "Home" is reserved for
+        # a future kids-app-side control that goes to *its* Welcome
+        # screen, which would be a confusing label collision with this
+        # one.
+        self._back_button = QtWidgets.QPushButton()
+        self._back_button.setObjectName("navBackButton")
+        self._back_button.setAccessibleName("Back")
+        self._back_button.setToolTip("Close FireScope and go back")
+        self._back_button.clicked.connect(self.back_requested.emit)
+        layout.addWidget(self._back_button)
 
         # Quit (Live Viewer control-panel removal follow-up): that column's
         # only remaining content was a title (purely decorative -- the OS
@@ -179,4 +200,5 @@ class NavRail(QtWidgets.QWidget):
             button.setText(full if self._expanded else full.split(None, 1)[0])
         self._theme_button.setText(
             f"{self._theme_icon}  {self._theme_full_label}" if self._expanded else self._theme_icon)
+        self._back_button.setText("←  Back" if self._expanded else "←")
         self._quit_button.setText("⏻  Quit" if self._expanded else "⏻")

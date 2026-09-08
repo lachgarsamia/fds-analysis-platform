@@ -426,6 +426,29 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
         border-top: 1px solid {p.border};
     }}
 
+    /* Display-scale -/+ strip, docked beside the heatmap colorbar
+       (main_window.py's _build_scale_strip). */
+    QWidget#displayScaleStrip {{
+        background-color: {p.bg_sunken};
+        border-left: 1px solid {p.border};
+    }}
+    QWidget#displayScaleStrip QToolButton {{
+        background-color: {p.bg_elevated};
+        border: 1px solid {p.border};
+        border-radius: {r_md};
+        color: {p.text_primary};
+        font-size: 16px;
+        font-weight: 700;
+    }}
+    QWidget#displayScaleStrip QToolButton:hover {{
+        background-color: {p.accent};
+        color: {p.accent_text};
+    }}
+    QWidget#displayScaleStrip QToolButton:disabled {{
+        color: {p.text_secondary};
+        background-color: {p.bg_sunken};
+    }}
+
     QPushButton#navButton {{
         background-color: transparent;
         border: none;
@@ -457,6 +480,23 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
     }}
 
     QPushButton#navThemeButton:hover {{
+        background-color: {p.bg_elevated};
+        color: {p.text_primary};
+    }}
+
+    /* Same treatment as navThemeButton -- a persistent utility action
+    beside it (see nav.py's own comment: Back activates the kids app and
+    leaves FireScope running, Quit closes it -- two distinct actions). */
+    QPushButton#navBackButton {{
+        background-color: transparent;
+        border: none;
+        border-radius: {r_md};
+        text-align: left;
+        padding: {pad_sm} {pad_md};
+        color: {p.text_secondary};
+    }}
+
+    QPushButton#navBackButton:hover {{
         background-color: {p.bg_elevated};
         color: {p.text_primary};
     }}

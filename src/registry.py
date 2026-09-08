@@ -64,22 +64,21 @@ class QuantityInfo:
 
 QUANTITY_REGISTRY = {
     "TEMPERATURE": QuantityInfo(
-        # UI overhaul (fixed colormap decision): "viridis" (was "inferno",
-        # before that "fds_fire") -- every quantity colormap is now
-        # standardized on viridis, not chosen per-quantity, so this is no
-        # longer a per-quantity calibration choice. The fixed 20-170 °C
-        # clim is unaffected by this and stays as before. 170 = AMBIENT_C +
-        # 150 °C of rise -- verified against the real 24-scenario dataset
-        # (see derived_quantities.py's docstring): every scenario's peak is
-        # well above this (382-469 °C absolute), so this deliberately
-        # saturates the flame plume in exchange for spreading the *room's*
-        # ambient-to-hazardous gradient across the visible ramp instead of
-        # crushing it into a sliver below the peak. vmin stays exactly
-        # AMBIENT_C (not renumbered to 0) so this fixed clim reads as
-        # "floored at ambient" without touching any of the other call
-        # sites that already treat this vmin as the real physical ambient
-        # floor (narration's ambient_c, linked-clim's shared floor).
-        "TEMPERATURE", "Temperature", "°C", "viridis", AMBIENT_C,
+        # Colormap: "jet" (supervisor request -- was "viridis", before that
+        # "inferno"/"fds_fire"). Applied to every temperature view; the
+        # flow/velocity panels keep their own perceptually-uniform maps.
+        #
+        # Display scale: the ceiling now defaults to the *active scenario's
+        # own maximum temperature* (main_window._default_vmax_for), not a
+        # fixed value -- so the out-of-the-box view shows that run's full
+        # simulated range with nothing clipped, and the -/+ buttons adjust
+        # from there. slider_default below is only the fallback (demo mode /
+        # data unavailable). vmin stays AMBIENT_C: the domain's own ambient
+        # buffer air sits at ~20 °C, so that is a real value from the
+        # simulation, not an offset, and every other call site already
+        # treats this vmin as the physical ambient floor (narration,
+        # linked-clim's shared floor).
+        "TEMPERATURE", "Temperature", "°C", "jet", AMBIENT_C,
         slider_min=50, slider_max=1000, slider_default=int(AMBIENT_C + 150),
         hazard_levels=(60, 100, 300), kind="slice2d",
         # Analysis dynamic-visualizations pass, Tier 2: log-spaced (not
@@ -215,8 +214,10 @@ QUANTITY_REGISTRY = {
 
     # --- Derived quantities (computable now from the fields above) ----------
     "TEMPERATURE RISE": QuantityInfo(
-        # "viridis" (was "fds_fire") -- UI overhaul: standardized colormap.
-        "TEMPERATURE RISE", "Temperature rise (ΔT)", "°C", "viridis", 0.0,
+        # "jet" -- follows TEMPERATURE (this is that same field, minus the
+        # ambient offset); the supervisor request applies to every
+        # temperature view.
+        "TEMPERATURE RISE", "Temperature rise (ΔT)", "°C", "jet", 0.0,
         slider_min=10, slider_max=1000, slider_default=280,
         hazard_levels=(40, 80, 280), kind="derived",
         interpretation="Temperature above ambient (T − 20 °C); isolates the fire's "
@@ -237,7 +238,9 @@ QUANTITY_REGISTRY = {
         # data-driven: see that entry's comment for the real 24-scenario
         # percentile/peak grounding), so the two stay identical by
         # construction instead of two hand-kept copies drifting apart.
-        "TEMPERATURE (ISOLINES)", "Temperature (Isolines)", "°C", "viridis", AMBIENT_C,
+        # Colormap "jet" -- follows TEMPERATURE (same field, different
+        # render style).
+        "TEMPERATURE (ISOLINES)", "Temperature (Isolines)", "°C", "jet", AMBIENT_C,
         slider_min=50, slider_max=1000, slider_default=int(AMBIENT_C + 150), kind="derived",
         interpretation="The same gas-temperature field as Temperature, shown as filled "
                        "contour bands with isotherm lines instead of a continuous "
