@@ -95,8 +95,15 @@ SPEED_GAMMA = 0.45
 # Trail length (positions kept per particle, oldest to newest) and per-
 # particle lifespan range (frames) before a staggered respawn -- randomized
 # per particle so the whole pool never visibly "resets" at once, matching
-# cinema/particles.py's EmberParticles' own age/life convention.
-TRAIL_LEN = 8
+# cinema/particles.py's EmberParticles' own age/life convention. One trail
+# slot == one advection sub-step (see _ParticlePool.step): a slow particle
+# takes one sub-step per frame so its trail spans TRAIL_LEN frames; a fast
+# particle takes many sub-steps per frame so the same TRAIL_LEN slots
+# resolve a shorter, finer arc. TRAIL_LEN is set well above the original 8
+# so a fast trail still reads as a trail, not a dot; measured whole-panel
+# render is ~50 ms/frame at 400 particles (4 fps playback budget is
+# 250 ms) -- matplotlib's own redraw is the bulk. See _render.
+TRAIL_LEN = 16
 LIFE_MIN_FRAMES = 30
 LIFE_MAX_FRAMES = 90
 
@@ -109,11 +116,16 @@ LIFE_MAX_FRAMES = 90
 # smooth and coherent). The tick is split into k sub-steps so no sub-step
 # advances a particle more than _CFL_SUBSTEP_CELLS grid cells, re-sampling
 # the frozen-for-this-frame field each time -- identical field, identical
-# total dt, just resolved. k is capped at _MAX_SUBSTEPS for cost; measured
-# on the HVAC scenario the cap binds nearly every frame (pool-wide vmax is
-# the ~3.8 m/s extract jet), a natural-fire scenario sits around k = 7.
+# total dt, just resolved. k is capped at _MAX_SUBSTEPS. The cap is
+# deliberately low: measured on the HVAC scenario the worst per-step
+# overshoot has already fully converged (~27 cells of *real* advection,
+# down from ~54 for a single Euler step) by k ~= 8, so a higher cap buys
+# nothing numerically -- it only costs sub-steps and, since each sub-step
+# feeds one trail slot, shortens the drawn trail (TRAIL_LEN / k frames of
+# span). At _MAX_SUBSTEPS == TRAIL_LEN a capped-out fast particle's trail
+# still spans a full frame; a natural-fire scenario needs k ~= 7.
 _CFL_SUBSTEP_CELLS = 0.5
-_MAX_SUBSTEPS = 40
+_MAX_SUBSTEPS = 16
 
 # Door/vent colors match views.py's/streamline_panel.py's own convention.
 _DOOR_COLOR = "#38BDF8"
@@ -269,8 +281,11 @@ class _ParticlePool:
         # Adaptive sub-stepping (see the _CFL_SUBSTEP_CELLS comment): pick
         # k from the fastest particle so no sub-step moves more than
         # _CFL_SUBSTEP_CELLS cells, then advect k times, re-sampling the
-        # (frozen-for-this-frame) field at each new sub-position. Same
-        # field, same total dt -- a slow particle (k == 1) is unchanged.
+        # (frozen-for-this-frame) field at each new sub-position and
+        # pushing each onto the trail. A fast particle's whole trail is
+        # then its resolved curved sub-path -- one uniform resolution end
+        # to end, no coarse-vs-fine seam. A slow particle (k == 1) records
+        # one point per frame, exactly as before.
         u, w = _sample_uw(u_frame, w_frame, extent, self.pos[:, 0], self.pos[:, 1])
         vmax = float(np.hypot(u, w).max())
         k = 1
@@ -278,11 +293,15 @@ class _ParticlePool:
             k = min(_MAX_SUBSTEPS, int(np.ceil(vmax * dt / (_CFL_SUBSTEP_CELLS * cell))))
         self._last_substeps = k
         sub_dt = dt / k
+        first_recorded = max(0, k - TRAIL_LEN)   # only the last TRAIL_LEN sub-steps survive the buffer
         for s in range(k):
             if s > 0:
                 u, w = _sample_uw(u_frame, w_frame, extent, self.pos[:, 0], self.pos[:, 1])
             self.pos[:, 0] += sub_dt * u
             self.pos[:, 1] += sub_dt * w
+            if s >= first_recorded:
+                self.trail = np.roll(self.trail, -1, axis=1)
+                self.trail[:, -1, :] = self.pos
         self.age += 1.0
 
         ceiling_limit = self._ceiling_limit(self.pos[:, 0])
@@ -298,14 +317,10 @@ class _ParticlePool:
             self.life[respawn] = self._rng.uniform(
                 LIFE_MIN_FRAMES, LIFE_MAX_FRAMES, size=n_respawn).astype(np.float32)
             # A respawned particle's trail must not draw a stray line back
-            # to its old (pre-respawn) position -- reset its whole history
-            # to the new spot instead of rolling a jump into it.
+            # to its old (pre-respawn) position -- collapse its whole
+            # history (all slots, filled by the sub-step loop above) to the
+            # new spot instead of rolling a jump into it.
             self.trail[respawn] = self.pos[respawn][:, None, :]
-
-        # Roll the trail buffer and append the (possibly just-respawned)
-        # current position as the newest sample.
-        self.trail = np.roll(self.trail, -1, axis=1)
-        self.trail[:, -1, :] = self.pos
 
 
 class TracerFlowPanel(QtWidgets.QWidget):
@@ -511,11 +526,12 @@ class TracerFlowPanel(QtWidgets.QWidget):
         head_colors = plt_cmap(DEFAULT_CMAP)(norm(speed))
 
         # Fading trail: TRAIL_LEN-1 segments per particle, oldest (alpha
-        # near 0) to newest (alpha 1) -- same LineCollection technique
-        # views.py's room outline already uses, not a new pattern.
+        # near 0) to newest (alpha ~1) -- same LineCollection technique
+        # views.py's room outline already uses. Uniform resolution end to
+        # end (one slot per sub-step), so no coarse/fine seam.
         n = pool.n
         segs = np.stack([pool.trail[:, :-1, :], pool.trail[:, 1:, :]], axis=2).reshape(-1, 2, 2)
-        alphas = np.tile(np.linspace(0.05, 0.9, TRAIL_LEN - 1), n)
+        alphas = np.tile(np.linspace(0.04, 0.9, TRAIL_LEN - 1), n)
         seg_colors = np.repeat(head_colors, TRAIL_LEN - 1, axis=0)
         seg_colors[:, 3] = alphas
 

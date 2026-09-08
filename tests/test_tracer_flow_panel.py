@@ -281,6 +281,28 @@ def test_substepping_tracks_the_curved_path_euler_overshoots(qapp):
         f"single Euler step should overshoot far more (euler {euler_err:.4f} vs adaptive {adaptive_err:.4f})"
 
 
+def test_fast_particle_trail_is_a_resolved_curve_not_a_dot(qapp):
+    """Each sub-step feeds one trail slot, so after a fast step a moving
+    particle's TRAIL_LEN slots trace an arc (uniform resolution, no
+    coarse/fine seam) rather than collapsing to its endpoint."""
+    import tracer_flow_panel as tfp
+    ext = (0.0, 1.0, 0.0, 1.0)
+    u, w = _shear_field(A=2.0)
+    pool = tfp._ParticlePool(40, (0.0, 1.0, 0.0, 1.0), seed=1)
+    pool.pos[:] = np.column_stack([np.full(40, 0.5), np.linspace(0.2, 0.8, 40)])
+    pool.trail[:] = pool.pos[:, None, :]
+    pool.step(u, w, ext, dt=0.25)
+
+    moved = np.hypot(*(pool.trail[:, -1, :] - pool.trail[:, 0, :]).T) > 3e-3
+    assert moved.any()
+    bbox = np.hypot(*(pool.trail.max(axis=1) - pool.trail.min(axis=1)).T)
+    assert np.all(bbox[moved] > 3e-3), "a fast particle's trail collapsed to ~a point"
+    # slots advance monotonically along the path (no back-and-forth wobble)
+    hop = np.hypot(*np.diff(pool.trail, axis=1).transpose(2, 0, 1))
+    net = np.hypot(*(pool.trail[:, -1, :] - pool.trail[:, 0, :]).T)
+    assert np.all(hop[moved].sum(axis=1) < 1.5 * net[moved] + 1e-6), "trail zig-zags instead of tracing the arc"
+
+
 def test_advection_moves_particles_between_frames(panel):
     """The whole point of a tracer panel over a static plot: particles
     actually move, driven by the real field, as playback advances."""
