@@ -1,54 +1,50 @@
 #!/bin/bash
-# Resilient launcher for the FDS SLCF Visualizer.
-#
-# Why this exists: on this machine, PyQt5's Cocoa platform-plugin init
-# repeatedly failed to start ("Could not find the Qt platform plugin
-# cocoa"). Root-caused: the project (and its old .venv) lived under
-# ~/Desktop, which has iCloud "Desktop & Documents" sync enabled. Qt's own
-# QDir::entryList() -- used to enumerate the Qt5/plugins/platforms
-# directory at startup -- silently returned zero entries there (confirmed
-# directly: Python's os.listdir() saw all 4 platform .dylib files fine at
-# the exact same path, QDir saw none; the identical QDir call worked
-# instantly once tested against a copy outside ~/Desktop). That's why it
-# looked "intermittent, byte-identical env, one launch works one doesn't"
-# -- it tracked iCloud's local materialization state for that folder, not
-# a broken install. The venv now lives at ~/.venvs/fds_visualizer,
-# outside any iCloud-synced folder, which fixes this at the root.
-#
-# A second, genuinely separate failure mode was also seen once: the
-# installed PyQt5/PyQt5-Qt5/PyQt5-sip trio drifting out of a mutually
-# consistent state (pip resolving a newer PyQt5-Qt5 than the bindings
-# were built against). Plain relaunching never fixes that one -- only
-# reinstalling the matched, pinned trio does -- so that recovery path
-# stays below as a fallback even though the Desktop/iCloud issue was the
-# actual cause of most crashes seen this session.
-#
-# Both failure modes abort inside Qt's C++ layer via qFatal() before
-# Python ever gets a chance to catch anything, so neither can be fixed by
-# retrying *within* one process -- only by relaunching or reinstalling
-# then relaunching the process from the outside.
-
 set -u
 cd "$(dirname "$0")"
 
 VENV="$HOME/.venvs/fds_visualizer"
 PYTHON="$VENV/bin/python"
-PIP="$VENV/bin/pip"
 MAX_ATTEMPTS=4
-STARTUP_WINDOW_S=6   # a crash within this many seconds of launch is treated as a startup-only failure, not a real runtime issue
+STARTUP_WINDOW_S=6
 PYQT_VERSION="5.15.11"
 PYQT_SIP_VERSION="12.18.0"
 
-if [ ! -x "$PYTHON" ]; then
-    echo "error: $PYTHON not found -- expected a venv at $VENV (deliberately" >&2
-    echo "outside ~/Desktop/iCloud sync, see comment above). Create it with:" >&2
-    echo "  python3 -m venv $VENV && $PIP install -e $(dirname "$0")" >&2
+for f in pyproject.toml src/main.py; do
+    if [ ! -f "$f" ]; then
+        echo "error: $f not found -- run this from the repository root." >&2
+        exit 1
+    fi
+done
+
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "error: python3 not found. Install Python 3 and retry." >&2
     exit 1
+fi
+
+# venv kept outside the repo: under an iCloud-synced folder Qt can't
+# enumerate its Cocoa plugin dir and the app aborts at startup.
+ARCH_PREFIX=""
+if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ] && command -v arch >/dev/null 2>&1; then
+    ARCH_PREFIX="arch -arm64"
+fi
+
+if [ ! -x "$PYTHON" ]; then
+    echo "Creating virtual environment at $VENV..."
+    $ARCH_PREFIX python3 -m venv "$VENV" || exit 1
+fi
+if [ ! -x "$PYTHON" ]; then
+    echo "error: venv creation did not produce $PYTHON" >&2
+    exit 1
+fi
+
+if ! "$PYTHON" -m pip show fdsvis >/dev/null 2>&1; then
+    echo "Installing project dependencies..."
+    $ARCH_PREFIX "$PYTHON" -m pip install -e . || exit 1
 fi
 
 try_launch_once() {
     start_ts=$(date +%s)
-    PYTHONPATH=src "$PYTHON" src/main.py "$@"
+    PYTHONPATH=src $ARCH_PREFIX "$PYTHON" src/main.py "$@"
     code=$?
     elapsed=$(( $(date +%s) - start_ts ))
     return_code=$code
@@ -56,11 +52,9 @@ try_launch_once() {
 }
 
 reinstall_pyqt() {
-    echo "[run.sh] Every plain retry failed at startup -- that's the signature of a" >&2
-    echo "[run.sh] mismatched PyQt5/PyQt5-Qt5/PyQt5-sip install, not the transient race." >&2
-    echo "[run.sh] Reinstalling the matched, pinned trio once..." >&2
-    "$PIP" uninstall -y PyQt5 PyQt5-Qt5 PyQt5-sip >&2
-    "$PIP" install --no-cache-dir \
+    echo "[run.sh] repeated startup failures -- reinstalling the pinned PyQt5 trio..." >&2
+    $ARCH_PREFIX "$PYTHON" -m pip uninstall -y PyQt5 PyQt5-Qt5 PyQt5-sip >&2
+    $ARCH_PREFIX "$PYTHON" -m pip install --no-cache-dir --force-reinstall \
         "PyQt5==${PYQT_VERSION}" "PyQt5-Qt5==${PYQT_VERSION}" "PyQt5-sip==${PYQT_SIP_VERSION}" >&2
 }
 
@@ -70,16 +64,13 @@ run_attempts() {
     local attempt=1
     while [ "$attempt" -le "$n" ]; do
         if [ "$attempt" -gt 1 ]; then
-            echo "[run.sh] Startup race hit (attempt $((attempt - 1))/$n) -- relaunching..."
+            echo "[run.sh] startup failed (attempt $((attempt - 1))/$n) -- relaunching..."
         fi
         try_launch_once "$@"
         if [ "$return_code" -eq 0 ]; then
             return 0
         fi
         if [ "$return_elapsed" -ge "$STARTUP_WINDOW_S" ]; then
-            # Ran for a while before exiting -- either the user closed the
-            # window normally or a real (non-startup) error occurred.
-            # Retrying (or reinstalling) won't help and would be wrong.
             return "$return_code"
         fi
         attempt=$((attempt + 1))
@@ -100,6 +91,5 @@ if [ "$code" -eq 0 ] || [ "$return_elapsed" -ge "$STARTUP_WINDOW_S" ]; then
     exit "$code"
 fi
 
-echo "[run.sh] Still failing at startup after retries AND a clean PyQt5 reinstall --" >&2
-echo "[run.sh] this is something new. Check the output above." >&2
+echo "[run.sh] still failing at startup after retries and a clean PyQt5 reinstall." >&2
 exit 1
