@@ -34,25 +34,30 @@ their own state across ticks, so seeding is a one-time random scatter
 within the room, not a grid -- unnaturally regular starting positions
 would read as a grid pattern once the dots started moving.
 
-Vent-aware ceiling containment (visual-clarity fix): a particle may only
-cross the real ceiling (ROOM_Z[1]) where a VOD/VOC vent is currently
-*open* -- everywhere else (solid ceiling, or a closed/HVAC vent) it's
-solid, same as a wall. `_open_vent_spans_and_duct_top()` reads the open
-x-span(s) and the ceiling slab's real top face straight off
-room_overlay_geometry() -- the same geometry the drawn room outline
-itself uses -- so it's driven by the scenario's actual door/vod/voc
-state, never hardcoded. A particle that does cross through an open vent
-is allowed to continue only as far as that real slab top face (the
-opening's true physical depth) before being treated as gone and
-respawned, not left wandering the duct space above the ceiling.
+Room-boundary containment (visual-clarity fix): a live particle is
+contained by the room's own walls and ceiling, not the far-away FDS
+domain edge -- it may only leave through an actual opening. The ceiling
+(ROOM_Z[1]) is solid except where a VOD/VOC vent is currently *open*; the
+left wall (ROOM_X[0]) is solid except across the doorway's z-span; the
+right wall and floor are always solid. `_open_vent_spans_and_duct_top()`
+and `_door_z_span()` read the open x-span(s), the ceiling slab's real top
+face, and the door opening's height straight off room_overlay_geometry()
+-- the same geometry the drawn room outline itself uses -- so containment
+is driven by the scenario's actual door/vod/voc state, never hardcoded. A
+particle that does cross an open vent is allowed to continue only as far
+as that real slab top face (the opening's true physical depth); one that
+crosses the doorway continues a small fixed _DOOR_EXIT_DEPTH into the
+(unmodelled) corridor. Past that it's treated as gone and respawned, not
+left wandering outside the room.
 
 Trail rendering is clipped separately, and more tightly: a trail segment
 only draws where both endpoints sit inside the room rectangle, or inside
-a small TRAIL_VENT_MARGIN_FRAC allowance directly above an open vent's
-span (see _render()) -- a render-only tolerance so a trail streaming out
-a vent doesn't get guillotined exactly at the ceiling line. It never
-widens a vent, changes the containment bound above, or touches velocity
-sampling -- only which already-computed trail segments get drawn.
+a small TRAIL_VENT_MARGIN_FRAC allowance directly outside an open vent's
+span or the doorway (see _render()) -- a render-only tolerance so a trail
+streaming out an opening doesn't get guillotined exactly at the room
+line. It never widens an opening, changes the containment bound above, or
+touches velocity sampling -- only which already-computed trail segments
+get drawn.
 
 Row-0-is-ceiling / dt convention: same as every sibling panel (see
 streamline_panel.py's own module docstring for the flip reasoning).
@@ -97,14 +102,23 @@ _DOOR_COLOR = "#38BDF8"
 _VENT_STATE_COLORS = {"open": "#22C55E", "closed": "#94A3B8", "HVAC": "#F59E0B"}
 
 # Render-only tolerance (module docstring) -- NOT the particle's own
-# ceiling-exit bound (that's the real slab top face read off
-# room_overlay_geometry, see _open_vent_spans_and_duct_top). A trail may
-# render up to this fraction of the vent-to-duct gap (ceiling z to the
-# slab's real top face) above the ceiling line, over an open vent's span
-# only, so a particle's trail streaming out an opening doesn't get cut
-# exactly at the ceiling line. Kept < 1.0 so the margin never exceeds the
+# opening-exit bound (that's the real slab top face / _DOOR_EXIT_DEPTH,
+# see _ceiling_limit and _wall_x_limits). A trail may render up to this
+# fraction of the particle's own allowed excursion past the ceiling line
+# (over an open vent's span) or past the left wall line (over the
+# doorway's z-span), so a trail streaming out an opening doesn't get cut
+# exactly at the room line. Kept < 1.0 so the margin never exceeds the
 # real physical depth a particle could actually have reached.
 TRAIL_VENT_MARGIN_FRAC = 0.6
+
+# Horizontal analogue of the ceiling's vent gap. Unlike an open ceiling
+# vent (which opens onto the ceiling slab's real modelled top face,
+# _open_vent_spans_and_duct_top's duct_top_z), the doorway opens onto an
+# unmodelled corridor, so this is a small fixed depth a particle may run
+# past the left wall line through the door's z-span before it's treated
+# as gone -- set to the ceiling slab depth (0.02 m) for visual
+# consistency with the vent allowance.
+_DOOR_EXIT_DEPTH = 0.02
 
 
 def _open_vent_spans_and_duct_top(entry) -> tuple:
@@ -125,6 +139,19 @@ def _open_vent_spans_and_duct_top(entry) -> tuple:
     open_spans = sorted({(seg[0], seg[2]) for seg, state in vents if state == "open"})
     duct_top_z = max(seg[1] for seg, _state in vents)
     return open_spans, duct_top_z
+
+
+def _door_z_span(entry) -> tuple:
+    """(z0, z1) of the doorway opening in the room's left wall for
+    `entry`'s scenario -- read straight off room_overlay_geometry()'s own
+    "door" segment (the same geometry the drawn outline uses), so it
+    tracks narrow vs wide door without a hardcoded height. None if the
+    scenario has no door segment."""
+    door = room_overlay_geometry(entry.door, entry.vod, entry.voc).get("door")
+    if not door:
+        return None
+    _dx0, dz0, _dx1, dz1 = door
+    return (min(dz0, dz1), max(dz0, dz1))
 
 
 def _sample_uw(u_frame: np.ndarray, w_frame: np.ndarray, extent: tuple,
@@ -155,15 +182,17 @@ class _ParticlePool:
     EmberParticles, different physics (see module docstring)."""
 
     def __init__(self, n: int, room_bounds: tuple, open_vent_spans: list = (),
-                 duct_top_z: float = None, seed: int = 0):
+                 duct_top_z: float = None, door_z_span: tuple = None, seed: int = 0):
         self._room_x0, self._room_x1, self._room_z0, self._room_z1 = room_bounds
-        # Vent-aware ceiling containment (module docstring): open_vent_spans
-        # and duct_top_z come from _open_vent_spans_and_duct_top(), derived
-        # from this scenario's real geometry, not hardcoded here. No open
-        # vents (or no geometry available) -> duct_top_z falls back to the
-        # room's own ceiling, i.e. solid everywhere, same as a closed vent.
+        # Room-boundary containment (module docstring): open_vent_spans,
+        # duct_top_z and door_z_span all come from the scenario's real
+        # geometry (_open_vent_spans_and_duct_top / _door_z_span), not
+        # hardcoded here. No open vents (or no geometry) -> duct_top_z
+        # falls back to the room's own ceiling, i.e. solid everywhere;
+        # door_z_span None -> the left wall is solid its whole height.
         self._open_vent_spans = list(open_vent_spans)
         self._duct_top_z = duct_top_z if duct_top_z is not None else self._room_z1
+        self._door_z_span = door_z_span
         self._rng = np.random.default_rng(seed)
         self.n = n
         self.pos = self._spawn_positions(n)
@@ -182,6 +211,20 @@ class _ParticlePool:
             limit = np.where((x >= vx0) & (x <= vx1), self._duct_top_z, limit)
         return limit
 
+    def _wall_x_limits(self, z: np.ndarray) -> tuple:
+        """Per-particle (x_lo, x_hi) bounds: the room's own side walls
+        everywhere, except across the doorway's z-span on the left wall,
+        where a particle may cross _DOOR_EXIT_DEPTH past the wall line
+        (the horizontal analogue of _ceiling_limit's open-vent allowance)
+        before it's treated as gone. The right wall is always solid."""
+        x_lo = np.full(z.shape, self._room_x0, dtype=np.float64)
+        x_hi = np.full(z.shape, self._room_x1, dtype=np.float64)
+        if self._door_z_span is not None:
+            dz0, dz1 = self._door_z_span
+            through_door = (z >= dz0) & (z <= dz1)
+            x_lo = np.where(through_door, self._room_x0 - _DOOR_EXIT_DEPTH, x_lo)
+        return x_lo, x_hi
+
     def _spawn_positions(self, n: int) -> np.ndarray:
         xs = self._rng.uniform(self._room_x0, self._room_x1, size=n)
         zs = self._rng.uniform(self._room_z0, self._room_z1, size=n)
@@ -194,22 +237,23 @@ class _ParticlePool:
         self.life = self._rng.uniform(LIFE_MIN_FRAMES, LIFE_MAX_FRAMES, size=self.n).astype(np.float32)
 
     def step(self, u_frame: np.ndarray, w_frame: np.ndarray, extent: tuple, dt: float) -> None:
-        # x stays domain-bounded (unchanged): this fix is scoped to the
-        # ceiling/vents, not the door/corridor. z's upper bound is now
-        # per-particle (see _ceiling_limit), not the domain top -- solid
-        # ceiling blocks at the real wall, an open vent's span allows
-        # through to the slab's real top face, matching module docstring.
-        x0, x1, _domain_z0, _domain_z1 = extent
+        # Bounds are the room's own walls/ceiling now, per-particle (see
+        # _wall_x_limits / _ceiling_limit), not the far-off domain edge --
+        # a solid border blocks at the real room line, an open vent's span
+        # allows through to the slab's real top face and the doorway's
+        # z-span allows _DOOR_EXIT_DEPTH into the corridor, matching the
+        # module docstring.
         u, w = _sample_uw(u_frame, w_frame, extent, self.pos[:, 0], self.pos[:, 1])
         self.pos[:, 0] += dt * u
         self.pos[:, 1] += dt * w
         self.age += 1.0
 
         ceiling_limit = self._ceiling_limit(self.pos[:, 0])
-        out_of_domain = ((self.pos[:, 0] < x0) | (self.pos[:, 0] > x1)
-                         | (self.pos[:, 1] < self._room_z0) | (self.pos[:, 1] > ceiling_limit))
+        x_lo, x_hi = self._wall_x_limits(self.pos[:, 1])
+        out_of_room = ((self.pos[:, 0] < x_lo) | (self.pos[:, 0] > x_hi)
+                       | (self.pos[:, 1] < self._room_z0) | (self.pos[:, 1] > ceiling_limit))
         expired = self.age >= self.life
-        respawn = out_of_domain | expired
+        respawn = out_of_room | expired
         if np.any(respawn):
             n_respawn = int(np.sum(respawn))
             self.pos[respawn] = self._spawn_positions(n_respawn)
@@ -374,10 +418,12 @@ class TracerFlowPanel(QtWidgets.QWidget):
             entry = self._by_index.get(case_index)
             if entry is not None:
                 open_spans, duct_top_z = _open_vent_spans_and_duct_top(entry)
+                door_span = _door_z_span(entry)
             else:
-                open_spans, duct_top_z = [], None
+                open_spans, duct_top_z, door_span = [], None, None
             pool = _ParticlePool(self._n_particles, (room_x0, room_x1, room_z0, room_z1),
-                                  open_vent_spans=open_spans, duct_top_z=duct_top_z, seed=case_index)
+                                  open_vent_spans=open_spans, duct_top_z=duct_top_z,
+                                  door_z_span=door_span, seed=case_index)
             self._pools[case_index] = pool
         return pool
 
@@ -438,10 +484,11 @@ class TracerFlowPanel(QtWidgets.QWidget):
 
         # Render clip (module docstring): draw a segment only where BOTH
         # its endpoints sit inside the room rectangle, or inside the small
-        # TRAIL_VENT_MARGIN_FRAC allowance directly above an open vent's
-        # span -- this is what stops a trail from drawing over solid
-        # ceiling/walls/the corridor, independent of _ceiling_limit's own
-        # (looser, real-physical-depth) containment bound above.
+        # TRAIL_VENT_MARGIN_FRAC allowance just outside an open vent's span
+        # (above the ceiling) or the doorway's z-span (left of the wall) --
+        # this is what stops a trail from drawing over solid
+        # ceiling/walls/the corridor, independent of the pool's own
+        # (looser, real-physical-depth) containment bounds.
         tx, tz = pool.trail[:, :, 0], pool.trail[:, :, 1]
         in_room = ((tx >= pool._room_x0) & (tx <= pool._room_x1)
                   & (tz >= pool._room_z0) & (tz <= pool._room_z1))
@@ -451,7 +498,13 @@ class TracerFlowPanel(QtWidgets.QWidget):
         for vx0, vx1 in pool._open_vent_spans:
             in_vent_margin |= ((tx >= vx0) & (tx <= vx1)
                                & (tz > pool._room_z1) & (tz <= trail_margin_z))
-        point_visible = in_room | in_vent_margin
+        in_door_margin = np.zeros_like(in_room)
+        if pool._door_z_span is not None:
+            dz0, dz1 = pool._door_z_span
+            trail_margin_x = pool._room_x0 - TRAIL_VENT_MARGIN_FRAC * _DOOR_EXIT_DEPTH
+            in_door_margin |= ((tz >= dz0) & (tz <= dz1)
+                               & (tx < pool._room_x0) & (tx >= trail_margin_x))
+        point_visible = in_room | in_vent_margin | in_door_margin
         seg_visible = (point_visible[:, :-1] & point_visible[:, 1:]).reshape(-1)
 
         trails = LineCollection(segs[seg_visible], colors=seg_colors[seg_visible],

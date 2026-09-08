@@ -137,9 +137,7 @@ def test_particles_are_seeded_within_room_bounds(panel):
     """Room-bounded seeding, same convention as streamline_panel.py's
     _seed_points -- a freshly *spawned* particle should start inside the
     (extent-clamped) room, not scattered across the full domain including
-    outside walls. Checked via _spawn_positions() directly rather than
-    panel.pos after a render, since a live particle's advected position is
-    only bounded by the domain extent, not the room, until it respawns."""
+    outside walls."""
     from schematic import ROOM_X, ROOM_Z
 
     case_index = panel.scenario_combo.currentData()
@@ -149,6 +147,71 @@ def test_particles_are_seeded_within_room_bounds(panel):
     z0, z1 = ROOM_Z
     assert np.all(fresh[:, 0] >= x0 - 1e-9) and np.all(fresh[:, 0] <= x1 + 1e-9)
     assert np.all(fresh[:, 1] >= z0 - 1e-9) and np.all(fresh[:, 1] <= z1 + 1e-9)
+
+
+def test_advected_particles_stay_inside_the_room_except_through_openings(qapp):
+    """Regression: a live (advected) particle is contained by the room's
+    own walls/ceiling, not the far-off domain edge -- it may only leave
+    through the doorway's z-span (left wall) or an open vent's x-span
+    (ceiling), never a solid border. Before the fix, particles drifted
+    out the corridor side and their dots/trails rendered outside the
+    drawn room outline where there is no opening.
+
+    Driven directly through _ParticlePool.step() with strong uniform
+    fields aimed at each border, so every particle is pushed hard against
+    a wall/ceiling within a few ticks."""
+    import tracer_flow_panel as tfp
+
+    room = (0.27, 1.0, 0.0, 0.22)
+    open_spans, duct_top = [(0.32, 0.40), (0.86, 0.94)], 0.24
+    door_span = (0.0, 0.06)
+    nz, nx = 12, 16
+    ext = (0.0, 1.0, 0.0, 0.5)
+
+    for ux, wz in ((-3.0, 0.0), (3.0, 0.0), (0.0, 3.0), (0.0, -3.0)):
+        pool = tfp._ParticlePool(200, room, open_vent_spans=open_spans,
+                                 duct_top_z=duct_top, door_z_span=door_span, seed=1)
+        u = np.full((nz, nx), ux)
+        w = np.full((nz, nx), wz)
+        for _ in range(40):
+            pool.step(u, w, ext, dt=0.25)
+        p = pool.pos
+        assert np.all(p[:, 0] <= room[1] + 1e-9), "passed through the solid right wall"
+        assert np.all(p[:, 1] >= room[2] - 1e-9), "passed through the solid floor"
+
+        left_out = p[p[:, 0] < room[0] - 1e-9]
+        assert np.all((left_out[:, 1] >= door_span[0] - 1e-9)
+                      & (left_out[:, 1] <= door_span[1] + 1e-9)), \
+            "left through a solid part of the left wall"
+        assert np.all(left_out[:, 0] >= room[0] - tfp._DOOR_EXIT_DEPTH - 1e-9)
+
+        top_out = p[p[:, 1] > room[3] + 1e-9]
+        for px, pz in top_out:
+            assert any(a - 1e-9 <= px <= b + 1e-9 for a, b in open_spans), \
+                "left through solid ceiling"
+            assert pz <= duct_top + 1e-9
+
+
+def test_left_wall_is_solid_above_the_doorway(qapp):
+    """Same leftward nudge just past the wall line: a particle at door
+    height is allowed through the opening (sits in the exit allowance);
+    one above the door lintel hits solid wall and respawns inside."""
+    import tracer_flow_panel as tfp
+
+    room = (0.27, 1.0, 0.0, 0.22)
+    pool = tfp._ParticlePool(2, room, open_vent_spans=[], duct_top_z=None,
+                             door_z_span=(0.0, 0.06), seed=0)
+    pool.pos[:] = [[0.30, 0.03], [0.30, 0.15]]   # one at door height, one above the lintel
+    pool.trail[:] = pool.pos[:, None, :]
+    u = np.full((12, 16), -0.16)   # dx = -0.04 at dt=0.25 -> x = 0.26, just past the wall
+    w = np.zeros((12, 16))
+    pool.step(u, w, (0.0, 1.0, 0.0, 0.5), dt=0.25)
+
+    at_door, above_lintel = pool.pos[0], pool.pos[1]
+    assert room[0] - tfp._DOOR_EXIT_DEPTH - 1e-9 <= at_door[0] < room[0], \
+        "a door-height particle should pass into the exit allowance, not respawn"
+    assert above_lintel[0] >= room[0] - 1e-9, \
+        "an above-lintel particle must be blocked by the solid wall and respawn inside"
 
 
 def test_advection_moves_particles_between_frames(panel):
