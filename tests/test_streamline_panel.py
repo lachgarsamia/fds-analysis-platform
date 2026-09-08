@@ -227,6 +227,38 @@ def test_doorway_two_layer_flow_gets_inflow_low_and_outflow_high(qapp):
     assert inflow[:, 1].max() <= outflow[:, 1].min(), "layers must not interleave"
 
 
+def test_neutral_plane_marked_for_a_two_layer_doorway(qapp):
+    """The doorway sign-read that classifies inflow vs outflow bands also
+    surfaces the U=0 crossing between them -- one dashed tick + a metres
+    label straddling the wall line, near the real reversal height."""
+    import schematic
+    entry = FakeEntry(0, "vents_closed", door=1, vod=1, voc=1)
+    p = StreamlinePanel(FakeProvider(field=_twolayer_field), [entry], fps=4)
+    p.ensure_loaded()
+    field = p._ensure_field(entry.case_index)
+
+    marks = p._neutral_marks(entry, field)
+    assert len(marks) == 1, "one two-layer doorway -> exactly one neutral-plane mark"
+    mx0, mx1, zc = marks[0]
+    door_x = min(schematic.ROOM_X)
+    assert mx0 < door_x < mx1, "the tick should straddle the wall line"
+    assert 0.06 < zc < 0.10, f"neutral plane near the 0.08 m reversal, got {zc:.3f}"
+
+    ax = p.canvas.fig.axes[0]
+    assert any(t.get_text().startswith("z=") and t.get_text().endswith("m")
+               for t in ax.texts), "expected a 'z=...m' label drawn on the plot"
+
+
+def test_no_neutral_plane_mark_for_a_one_way_doorway(qapp):
+    """A one-way (pure inflow) doorway has no neutral plane -- the marker
+    must not be fabricated."""
+    entry = FakeEntry(0, "both_open", door=0, vod=0, voc=0)
+    p = StreamlinePanel(FakeProvider(field=_inout_field), [entry], fps=4)
+    p.ensure_loaded()
+    field = p._ensure_field(entry.case_index)
+    assert p._neutral_marks(entry, field) == []
+
+
 def test_seed_cache_key_tracks_vent_config(qapp):
     """Switching to a scenario with a different opening layout regenerates
     the opening seeds instead of reusing the previous one's."""

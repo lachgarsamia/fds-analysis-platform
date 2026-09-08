@@ -116,6 +116,15 @@ _VENT_PROBE_DZ = 0.010    # depth below the ceiling underside where W is sampled
 _VENT_OUT_DEPTHS = (0.006, 0.024, 0.044)   # outflow seeds: z below the ceiling underside
 _VENT_IN_ABOVE = 0.016                      # inflow seed: z above the slab top (plenum)
 
+# Neutral-plane annotation: for a doorway the sign-read classifies as a
+# genuine two-layer split (a real inflow band AND a real outflow band),
+# mark the z where U crosses zero -- the same crossing implicit in the
+# band grouping, otherwise discarded. Drawn as a short horizontal dashed
+# tick across the wall line (+/- _DOOR_MARK_HALFSPAN) with a metres
+# label. One-way openings get no marker -- no neutral plane exists there.
+_DOOR_MARK_HALFSPAN = 0.03
+_NEUTRAL_COLOR = "#BE123C"
+
 # Room outline colors. Door/vent colors match views.py's own door/vent-
 # state convention (duplicated rather than imported -- same "zero
 # coupling to the other velocity views" precedent this module already
@@ -172,7 +181,7 @@ class StreamlinePanel(QtWidgets.QWidget):
         self._gate_reasons: dict = {}   # case_index -> str
         self._bus = None
         self._current_index = 0    # live playback frame -- see set_bus()
-        self._seed_cache: dict = {}   # (door, vod, voc, x0, x1, z0, z1) -> start_points array, see _seed_points
+        self._seed_cache: dict = {}   # (door, vod, voc, x0, x1, z0, z1) -> (start_points, neutral_marks), see _seed_points
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -309,7 +318,12 @@ class StreamlinePanel(QtWidgets.QWidget):
         (n_z, n_x) with row 0 = ceiling (the raw VectorField convention);
         `geometry` is schematic.room_overlay_geometry (never hardcoded
         spans); `extent` is the plot grid (x0, x1, z0, z1) and every point
-        is clamped inside it. Returns (N, 2), possibly empty.
+        is clamped inside it.
+
+        Returns (start_points (N, 2), neutral_marks), where neutral_marks
+        is a list of (x_tick_lo, x_tick_hi, z) -- one per doorway the
+        sign-read classifies as a genuine two-layer split, at the z where
+        U crosses zero. Empty for one-way openings.
 
         Direction is made legible by *where* the seed sits, not just by an
         arrowhead: an inflow seed is on the far side of the opening
@@ -321,6 +335,7 @@ class StreamlinePanel(QtWidgets.QWidget):
         clamp = lambda a, lo, hi: min(max(a, lo), hi)
         probe = lambda arr, x, z: mz.probe_value(arr, extent, x, z)
         pts: list = []
+        neutral_marks: list = []
 
         # --- Doorway (normal component = U; U > 0 is into the room). Read
         #     the U sign up the FULL opening height at _DOOR_PROBE_DZ
@@ -349,6 +364,28 @@ class StreamlinePanel(QtWidgets.QWidget):
                     pts.extend((seed_x, sz) for sz in np.linspace(zs[i], zs[j - 1], k))
                     i = j
 
+                # Neutral plane: only when the same sign-read shows BOTH a
+                # real inflow band and a real outflow band (a genuine
+                # two-layer door -- never fabricated for a one-way one).
+                # z is the U=0 crossing between the top inflow sample and
+                # the bottom outflow sample; if a weak zone separates them
+                # with no strict crossing, the midpoint of that gap.
+                if np.any(sign > 0) and np.any(sign < 0):
+                    in_top = float(zs[sign > 0].max())
+                    out_bot = float(zs[sign < 0].min())
+                    zc = None
+                    for m in range(len(us) - 1):
+                        if zs[m] < in_top - 1e-9 or zs[m + 1] > out_bot + 1e-9:
+                            continue
+                        if us[m] == 0.0 or us[m] * us[m + 1] < 0.0:
+                            zc = zs[m] + (zs[m + 1] - zs[m]) * (-us[m]) / (us[m + 1] - us[m])
+                            break
+                    if zc is None:
+                        zc = 0.5 * (in_top + out_bot)
+                    neutral_marks.append((clamp(door_x - _DOOR_MARK_HALFSPAN, x0, x1),
+                                          clamp(door_x + _DOOR_MARK_HALFSPAN, x0, x1),
+                                          float(clamp(zc, z0, z1))))
+
         # --- Open ceiling vents (normal component = W; W > 0 is up/out).
         #     geometry["vents"] lists each vent twice (a segment at the slab
         #     underside and one at its top face) -- collapse to one span per
@@ -370,7 +407,13 @@ class StreamlinePanel(QtWidgets.QWidget):
                 elif w < -_FLOW_EPS:                     # inflow -> above the slab
                     pts.append((sx, clamp(slab_top + _VENT_IN_ABOVE, z0, z1)))
 
-        return np.asarray(pts, dtype=float).reshape(-1, 2)
+        return np.asarray(pts, dtype=float).reshape(-1, 2), neutral_marks
+
+    @staticmethod
+    def _config_key(entry, field) -> tuple:
+        x0, x1, z0, z1 = field.extent
+        return (getattr(entry, "door", 0), getattr(entry, "vod", 0),
+                getattr(entry, "voc", 0), x0, x1, z0, z1)
 
     def _seed_points(self, entry, field) -> np.ndarray:
         """start_points for streamplot(): the fixed 12x6 room-coverage grid
@@ -379,18 +422,17 @@ class StreamlinePanel(QtWidgets.QWidget):
         direction through each opening. Cached per (door, vod, voc,
         extent) -- the config is part of the key so a scenario switch
         regenerates the seeds; the mean is deterministic per scenario, so
-        the seed set is still fixed across playback frames.
+        the seed set is still fixed across playback frames. The cache
+        entry is (start_points, neutral_marks); see _neutral_marks.
 
         `entry` is a manifest ScenarioEntry (its .door/.vod/.voc drive the
         geometry); `field` is the scenario's velocity.VectorField."""
         extent = field.extent
         x0, x1, z0, z1 = extent
-        door = getattr(entry, "door", 0)
-        vod = getattr(entry, "vod", 0)
-        voc = getattr(entry, "voc", 0)
-        key = (door, vod, voc, x0, x1, z0, z1)
-        seeds = self._seed_cache.get(key)
-        if seeds is None:
+        key = self._config_key(entry, field)
+        door, vod, voc = key[:3]
+        cached = self._seed_cache.get(key)
+        if cached is None:
             # Room-coverage grid, clamped to the room's own bounds (see the
             # _SEED_GRID_NX/NZ comment) -- unchanged 12x6.
             gx0, gx1 = max(x0, min(ROOM_X)), min(x1, max(ROOM_X))
@@ -404,12 +446,21 @@ class StreamlinePanel(QtWidgets.QWidget):
             lo = max(0, int(n * 2 / 3))
             u_mean = np.asarray(field.u[lo:]).mean(axis=0)
             w_mean = np.asarray(field.w[lo:]).mean(axis=0)
-            opening_seeds = self._opening_seed_points(
+            opening_seeds, neutral_marks = self._opening_seed_points(
                 room_overlay_geometry(door, vod, voc), extent, u_mean, w_mean)
             seeds = (np.vstack([room_seeds, opening_seeds])
                      if opening_seeds.size else room_seeds)
-            self._seed_cache[key] = seeds
-        return seeds
+            cached = (seeds, neutral_marks)
+            self._seed_cache[key] = cached
+        return cached[0]
+
+    def _neutral_marks(self, entry, field) -> list:
+        """Doorway neutral-plane annotations [(x_tick_lo, x_tick_hi, z), ...]
+        for this scenario -- surfaced from the same inflow/outflow sign
+        classification _opening_seed_points does for seeding, cached
+        alongside the seeds. Empty for one-way openings."""
+        self._seed_points(entry, field)          # populates the cache entry
+        return self._seed_cache[self._config_key(entry, field)][1]
 
     # --------------------------------------------------------------- render
     def _render(self) -> None:
@@ -521,6 +572,20 @@ class StreamlinePanel(QtWidgets.QWidget):
                 ax.plot([vx0, vx1], [vz0, vz1],
                         color=_VENT_STATE_COLORS.get(state, "#94A3B8"),
                         linewidth=4.0, zorder=6)
+
+        # Neutral-plane markers: only for a doorway the sign-read found to
+        # be a genuine two-layer split (inflow band + outflow band). z is
+        # the U=0 crossing already located to classify those bands (see
+        # _opening_seed_points) -- surfaced here, not recomputed. A short
+        # dashed tick across the wall line + a metres label. One-way
+        # openings produce no mark.
+        for mx0, mx1, mz_ in self._neutral_marks(entry, field):
+            ax.plot([mx0, mx1], [mz_, mz_], color=_NEUTRAL_COLOR,
+                    linestyle=(0, (4, 2)), linewidth=1.4, zorder=7)
+            ax.annotate(f"z={mz_:.3f}m", xy=(mx1, mz_), xytext=(3, 0),
+                        textcoords="offset points", va="center", ha="left",
+                        fontsize=6.5, fontweight="bold", color=_NEUTRAL_COLOR,
+                        zorder=7)
 
         # Same axis scale/aspect convention as VelocityPanel's imshow
         # background (extent + aspect='auto') so the two views are
