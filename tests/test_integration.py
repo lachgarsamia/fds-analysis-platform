@@ -43,27 +43,87 @@ class TestIntegration:
 
     def test_live_viewer_flow_view_toggle_swaps_in_the_streamline_panel(self, qapp):
         """The "Flow view" toggle swaps the plot area between the heatmap
-        grid and the (unchanged) Scientific Analysis streamline panel, and
-        keeps its scenario combo in step with the live scenario."""
+        grid and its own StreamlinePanel instance (the Analysis-page one
+        stays put), aligned to the same canvas rect, scenario kept in step
+        with the live viewer."""
         sim_data = load_simulation_data()
         window = MainWindow(sim_data)
+        window.resize(1400, 900)
+        window.show()
+        qapp.processEvents()
         if window.streamline_live_panel is None:     # demo-data build: toggle stays disabled
             assert not window.streamline_view_toggle.isEnabled()
             window.close()
             return
-        # its own instance -- the Analysis-page streamline panel stays put
         assert window.streamline_live_panel is not window.streamline_panel
-        assert window._plot_stack.count() == 2
-        assert window._plot_stack.widget(1) is window.streamline_live_panel
+        assert window._plot_stack.count() == 2                     # grid + streamline page
+        assert window.streamline_live_panel in window._streamline_page.findChildren(type(window.streamline_live_panel))
+
+        cell = next(c for c in window.view_grid.visible_cells() if c.cell_type == "slice")
+        hm = cell.view.canvas
+        hm_rect = (hm.width(), hm.height())
 
         window.streamline_view_toggle.setChecked(True)
-        assert window._plot_stack.currentWidget() is window.streamline_live_panel
+        for _ in range(4):
+            qapp.processEvents()
+        assert window._plot_stack.currentWidget() is window._streamline_page
         assert window.streamline_live_panel._loaded
+        # streamline controls show, heatmap palette hides
+        assert window._streamline_ctrls_group.isVisible()
+        assert not window._palette_group.isVisible()
+        assert window.streamline_density_spin.isVisible()
         assert (window.streamline_live_panel.scenario_combo.currentData()
                 == window.controller.current_case_index())
+        # the streamline canvas lands at the same size/place as the heatmap's
+        sc = window.streamline_live_panel.canvas
+        assert sc.width() == hm_rect[0]
+        assert abs(sc.height() - hm_rect[1]) <= 4          # sub-pixel layout rounding at small sizes
+        assert sc.mapToGlobal(sc.rect().topLeft()) == hm.mapToGlobal(hm.rect().topLeft())
+        # ... and the two plots' data->pixel transforms agree, so the room
+        # outline / vents / door stay put when toggling (the actual ask).
+        h_ax = cell.view.ax
+        s_ax = window.streamline_live_panel.canvas.fig.axes[0]
+        for pt in ((0.27, 0.22), (0.36, 0.22), (1.0, 0.0)):
+            hp = h_ax.transData.transform(pt)
+            sp = s_ax.transData.transform(pt)
+            assert abs(hp[0] - sp[0]) < 4 and abs(hp[1] - sp[1]) < 4, (pt, hp, sp)
+        # chrome is hidden -- only the canvas is visible in the panel
+        assert not window.streamline_live_panel.scenario_combo.isVisible()
 
         window.streamline_view_toggle.setChecked(False)
+        qapp.processEvents()
         assert window._plot_stack.currentIndex() == 0
+        window.close()
+
+    def test_live_viewer_colour_palette_dropdown_applies_trimmed_maps(self, qapp):
+        """The bottom-bar colour-palette dropdown routes through
+        _set_colormap and the maps have no near-black extremes."""
+        import matplotlib as mpl
+        import numpy as np
+        window = MainWindow(load_simulation_data())
+        window.show()
+        qapp.processEvents()
+        cell = next(c for c in window.view_grid.visible_cells() if c.cell_type == "slice")
+        for i in range(window.palette_combo.count()):
+            window.palette_combo.setCurrentIndex(i)
+            qapp.processEvents()
+            name = window.palette_combo.currentData()
+            assert window.current_colormap == name
+            assert cell.view.heatmap.get_cmap().name == name
+            cm = mpl.colormaps[name]
+            for end in (cm(0.0), cm(1.0)):
+                assert max(end[:3]) > 0.25, f"{name} extreme {end[:3]} too dark"
+
+        # the TEMPERATURE (ISOLINES) contour bands follow the same dropdown
+        labels = [window.quantity_combo.itemText(i) for i in range(window.quantity_combo.count())]
+        if "Temperature (Isolines)" in labels:
+            window.quantity_combo.setCurrentIndex(labels.index("Temperature (Isolines)"))
+            qapp.processEvents()
+            for i in range(window.palette_combo.count()):
+                window.palette_combo.setCurrentIndex(i)
+                qapp.processEvents()
+                name = window.palette_combo.currentData()
+                assert cell.view._isoline_cmap == name
         window.close()
 
     def test_mainwindow_theme_switch(self, qapp):
@@ -5028,8 +5088,12 @@ class TestTemperaturePaletteAndScale:
         assert get_quantity("VELOCITY").cmap != "jet"
 
     def test_live_heatmap_renders_in_jet(self, qapp):
+        # The live viewer applies the colour-palette dropdown's default,
+        # which is jet with the near-black ends trimmed ("fs_jet") -- still
+        # jet, per a later Live-Viewer request. The registry (Scientific
+        # Analysis) keeps plain "jet"; see test_temperature_quantities_use_jet.
         window = MainWindow(load_simulation_data())
-        assert window.heatmap.get_cmap().name == "jet"
+        assert window.heatmap.get_cmap().name in ("jet", "fs_jet")
         window.close()
 
     def test_colorbar_shows_raw_values_no_ambient_offset(self, qapp):

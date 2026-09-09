@@ -185,6 +185,73 @@ COLORMAPS = [
     ("Cividis (colorblind-safe)", "cividis"),
 ]
 
+# Live-viewer colour-palette dropdown (final polish): a small curated set,
+# each an end-trimmed slice of a matplotlib map so the extremes never go
+# to near-black -- a dark bottom (cold) or dark top (hot) makes the
+# highest-interest cells the hardest to read on the projector. Registered
+# under "fs_*" names so the existing string-keyed cmap plumbing (settings,
+# set_cmap, imshow, export) is untouched. Live viewer only.
+_LIVE_PALETTE_SPEC = [
+    # label       base        lo     hi   -- only the darkest sliver at each end is shaved
+    ("Jet",       "jet",      0.04,  0.94),
+    ("Hot",       "hot",      0.10,  1.00),
+    ("Cool",      "cool",     0.00,  1.00),
+    ("Rainbow",   "rainbow",  0.00,  1.00),
+    ("Turbo",     "turbo",    0.05,  0.92),
+    ("Plasma",    "plasma",   0.06,  1.00),
+    ("Viridis",   "viridis",  0.05,  1.00),
+]
+
+
+def _register_live_palettes():
+    """Build + register the end-trimmed 'fs_*' colormaps once. Returns
+    [(label, registered_name), ...] for the dropdown."""
+    import matplotlib as _mpl
+    out = []
+    for label, base, lo, hi in _LIVE_PALETTE_SPEC:
+        name = f"fs_{base}"
+        try:
+            src = _mpl.colormaps[base]
+            cm = _mpl.colors.LinearSegmentedColormap.from_list(
+                name, src(np.linspace(lo, hi, 256)), N=256)
+            _mpl.colormaps.register(cm, name=name, force=True)
+            out.append((label, name))
+        except Exception:  # noqa: BLE001 - a missing base map just drops that entry
+            logger.warning("live palette %s (%s) unavailable", label, base)
+    return out
+
+
+LIVE_PALETTES = _register_live_palettes()
+
+
+class _LiveStreamlinePanel(StreamlinePanel):
+    """StreamlinePanel re-laid-out to sit exactly where the Live Viewer's
+    heatmap sits: the same figure box as SliceView.init_plot's gridspec,
+    the same aspect='equal' letterboxing, and no title -- so the "Flow
+    view" toggle reads as the two plots overlaid. The flow content itself
+    (turbo temperature colour, density control, neutral-plane markers) is
+    the Scientific Analysis panel, unchanged.
+    """
+    # SliceView.init_plot gridspec: left=0.03 right=0.83 top=0.97
+    # bottom=0.05, width_ratios=(18, 1), wspace=0.05
+    #   usable = 0.80 - wspace(0.05*0.40=0.02) = 0.78, split 18:1
+    _AX_BOX = (0.03, 0.05, 0.739, 0.92)      # [left, bottom, w, h] main axes
+    _CBAR_BOX = (0.789, 0.05, 0.041, 0.92)   # colorbar
+
+    def _render(self) -> None:
+        super()._render()
+        axes = self.canvas.fig.axes
+        if len(axes) < 2:        # gate/unavailable path -- leave its message alone
+            return
+        ax = axes[0]
+        ax.set_title("")
+        ax.set_aspect("equal")
+        ax.set_adjustable("box")
+        ax.set_anchor("C")       # letterbox centred, like imshow
+        ax.set_position(self._AX_BOX)
+        axes[1].set_position(self._CBAR_BOX)
+        self.canvas.draw_idle()
+
 # Bilinear is the default (GUI modernization pass, item 7) -- matplotlib's
 # imshow default of "nearest" is genuinely blocky at this grid's native
 # 49x101 resolution stretched to fill a much larger on-screen cell.
@@ -896,11 +963,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.streamline_panel = StreamlinePanel(
                 self.quantity_provider, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
-            # A second, independent StreamlinePanel instance for the Live
-            # Viewer's "Flow view" toggle -- a Qt widget has one parent, so
-            # the Analysis-page instance above can't also live in the live
-            # plot stack. Same class, same behaviour, its own lazy state.
-            self.streamline_live_panel = StreamlinePanel(
+            # A second StreamlinePanel instance for the Live Viewer's "Flow
+            # view" toggle -- a Qt widget has one parent, so the Analysis
+            # instance above can't also live in the live plot stack. The
+            # _Live subclass only re-lays-out the figure so it overlaps the
+            # heatmap; the flow content is identical.
+            self.streamline_live_panel = _LiveStreamlinePanel(
                 self.quantity_provider, self.sim_data.manifest,
                 self.sim_data.timesteps_per_second)
             # LIC flow (speed-color background + Line Integral Convolution
@@ -1813,6 +1881,50 @@ class MainWindow(QtWidgets.QMainWindow):
         self.streamline_view_toggle.toggled.connect(self._on_streamline_view_toggled)
         row.addWidget(_group("Flow view", self.streamline_view_toggle))
 
+        # Streamline controls -- density (editable field + up/down) and the
+        # "width scales with speed" toggle. Their own group, shown ONLY while
+        # the streamline view is up (see _on_streamline_view_toggled); they
+        # drive the embedded panel's own controls -> re-render.
+        self.streamline_density_spin = QtWidgets.QDoubleSpinBox()
+        self.streamline_density_spin.setAccessibleName("Streamline density")
+        self.streamline_density_spin.setToolTip("How tightly the streamlines pack (streamplot density).")
+        self.streamline_density_spin.setRange(0.2, 5.0)
+        self.streamline_density_spin.setSingleStep(0.2)
+        self.streamline_density_spin.setDecimals(1)
+        self.streamline_density_spin.setValue(1.0)
+        self.streamline_density_spin.setPrefix("density ")
+        self.streamline_density_spin.valueChanged.connect(self._on_streamline_density_changed)
+        self.streamline_width_check = QtWidgets.QCheckBox("width ∝ speed")
+        self.streamline_width_check.setAccessibleName("Streamline width scales with speed")
+        self.streamline_width_check.setToolTip("Thicken each streamline where the local flow is faster.")
+        self.streamline_width_check.setChecked(True)
+        self.streamline_width_check.toggled.connect(self._on_streamline_width_toggled)
+        _sctrl = QtWidgets.QWidget()
+        _sctrl_h = QtWidgets.QHBoxLayout(_sctrl)
+        _sctrl_h.setContentsMargins(0, 0, 0, 0)
+        _sctrl_h.setSpacing(8)
+        _sctrl_h.addWidget(self.streamline_density_spin)
+        _sctrl_h.addWidget(self.streamline_width_check)
+        self._streamline_ctrls_group = _group("Streamlines", _sctrl)
+        self._streamline_ctrls_group.setVisible(False)
+        row.addWidget(self._streamline_ctrls_group)
+
+        # Colour palette -- end-trimmed maps so the hottest / coldest cells
+        # never sit in near-black. Shown ONLY while the heatmap is up (the
+        # inverse of the streamline controls). Routes through _set_colormap
+        # like View > Colormap, so it edits the active cell and persists.
+        self.palette_combo = QtWidgets.QComboBox()
+        self.palette_combo.setAccessibleName("Heatmap colour palette")
+        self.palette_combo.setToolTip("Colour map for the temperature heatmap (ends trimmed for legibility).")
+        for label, name in LIVE_PALETTES:
+            self.palette_combo.addItem(label, name)
+        _cur = next((i for i, (_l, n) in enumerate(LIVE_PALETTES)
+                     if n == getattr(self, "current_colormap", None)), 0)
+        self.palette_combo.setCurrentIndex(_cur)
+        self.palette_combo.currentIndexChanged.connect(self._on_live_palette_changed)
+        self._palette_group = _group("Colour palette", self.palette_combo)
+        row.addWidget(self._palette_group)
+
         # Display scale (colour-scale maximum). The visible control is a
         # compact -/+ button strip docked directly beside the heatmap
         # colorbar (self.scale_strip, added to the plot panel in
@@ -2123,27 +2235,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self.toolbar.setAccessibleName("Plot navigation toolbar: pan, zoom, save")
 
         layout.addWidget(self.toolbar)
-        # The grid + the display-scale -/+ strip side by side, so the
-        # scale control sits directly next to the heatmap colorbar
-        # (which matplotlib draws on the right edge of each cell's figure)
-        # rather than in a separate bar. The strip is layout-managed, so
-        # it stays put when the window/grid is resized.
-        grid_page = QtWidgets.QWidget()
-        plot_row = QtWidgets.QHBoxLayout(grid_page)
+        # A QStackedWidget swaps page 0 (heatmap grid) <-> page 1 (streamline
+        # panel, added by _wire_streamline_view). The scale strip sits
+        # OUTSIDE the stack, always beside it, so both pages get exactly the
+        # same plot rectangle -- toggling reads as the two views overlaid.
+        self._plot_stack = QtWidgets.QStackedWidget()
+        self._plot_stack.addWidget(self.view_grid)   # page 0
+
+        plot_row = QtWidgets.QHBoxLayout()
         plot_row.setContentsMargins(0, 0, 0, 0)
         plot_row.setSpacing(0)
-        plot_row.addWidget(self.view_grid, 1)  # grid gets all extra space
-        plot_row.addWidget(self.scale_strip, 0)
-
-        # Page 0 = the heatmap grid + scale strip. Page 1 (added by
-        # _wire_streamline_view once it exists) = the Scientific Analysis
-        # streamline panel, embedded unchanged; the "Flow view" toggle in
-        # the display bar switches between them.
-        self._plot_stack = QtWidgets.QStackedWidget()
-        self._plot_stack.addWidget(grid_page)
-        layout.addWidget(self._plot_stack, 1)
+        plot_row.addWidget(self._plot_stack, 1)      # plot area gets all extra space
+        plot_row.addWidget(self.scale_strip, 0)      # -/+ strip next to the colorbar
+        layout.addLayout(plot_row, 1)
 
         self._init_plot()
+        # Apply the colour-palette dropdown's selection now that the grid
+        # exists, so the shown heatmap matches what the dropdown displays
+        # (the registry default the cells init with is the un-trimmed map).
+        if LIVE_PALETTES and self.palette_combo.currentData():
+            self._on_live_palette_changed(self.palette_combo.currentIndex())
         return panel
 
     def _build_status_bar(self):
@@ -2570,9 +2681,12 @@ class MainWindow(QtWidgets.QMainWindow):
             is_active = cell is self.view_grid.active_cell()
             vmax = (self.temp_slider.value() if is_active
                     else self._default_vmax_for(cell.quantity_key, cell.case_index))
+            # the isolines track the active cell's live palette, exactly as
+            # the heatmap image does (see _apply_link_clim_state's cmap pick)
+            iso_cmap = self.current_colormap if is_active else display['cmap']
             cell.view.set_isoline_mode(
                 True, levels=CONTOUR_OVERLAY_LEVELS.get("TEMPERATURE", []),
-                cmap=display['cmap'], vmin=display['vmin'], vmax=vmax)
+                cmap=iso_cmap, vmin=display['vmin'], vmax=vmax)
         else:
             cell.view.set_isoline_mode(False)
 
@@ -3094,27 +3208,89 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _wire_streamline_view(self) -> None:
         """Finish the "Flow view" toggle wiring once streamline_live_panel
-        exists (built after the control bar). Adds it as page 1 of the
-        plot stack, unchanged."""
+        exists (built after the control bar). Builds plot-stack page 1: the
+        panel with all its chrome hidden (title / scenario combo / density /
+        line-width check / status) so only its canvas shows, under a top
+        spacer sized to the grid cell's header -- so toggling heatmap <->
+        streamlines keeps the plot in the same place and at the same size,
+        as if the two were overlaid."""
         panel = getattr(self, "streamline_live_panel", None)
         if panel is None or not hasattr(self, "_plot_stack"):
             self.streamline_view_toggle.setEnabled(False)
             return
-        if self._plot_stack.indexOf(panel) == -1:
-            self._plot_stack.addWidget(panel)   # page 1 -- set_bus already wired by the caller
+        if getattr(self, "_streamline_page", None) is not None:
+            return
+        # strip the panel to its canvas: hide every widget in its top rows
+        # (title / scenario combo / density label+spin / line-width check /
+        # status), leaving only panel.canvas.
+        pl = panel.layout()
+        pl.setContentsMargins(0, 0, 0, 0)
+        pl.setSpacing(0)
+        for i in range(pl.count()):
+            it = pl.itemAt(i)
+            wdg = it.widget()
+            if wdg is not None and wdg is not panel.canvas:
+                wdg.setVisible(False)
+            elif it.layout() is not None:
+                sub = it.layout()
+                for j in range(sub.count()):
+                    jw = sub.itemAt(j).widget()
+                    if jw is not None:
+                        jw.setVisible(False)
+        # seed the bottom-bar controls from the panel's own state
+        self.streamline_density_spin.setValue(panel.density_spin.value())
+        self.streamline_width_check.setChecked(panel.linewidth_check.isChecked())
+
+        page = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(page)
+        v.setContentsMargins(2, 2, 2, 2)   # match GridCell._outer_layout
+        v.setSpacing(0)
+        self._streamline_top_spacer = QtWidgets.QWidget()
+        self._streamline_top_spacer.setFixedHeight(28)  # refined per real header on first toggle
+        v.addWidget(self._streamline_top_spacer)
+        v.addWidget(panel, 1)
+        self._streamline_page = page
+        self._plot_stack.addWidget(page)   # page 1
+
+    def _align_streamline_page(self) -> None:
+        """Size the streamline page's top spacer so its canvas starts at the
+        exact same y as the heatmap grid cell's canvas -- measured live, so
+        it tracks the header height at any theme / UI scale."""
+        spacer = getattr(self, "_streamline_top_spacer", None)
+        if spacer is None:
+            return
+        try:
+            canvas = self.view_grid.active_cell().view.canvas
+            top_in_stack = canvas.mapTo(self._plot_stack, canvas.rect().topLeft()).y()
+            spacer.setFixedHeight(max(0, top_in_stack - 2))   # -2 for the page's own top margin
+        except Exception:  # noqa: BLE001 - keep the default spacer on any layout surprise
+            pass
 
     def _on_streamline_view_toggled(self, checked: bool) -> None:
         """Swap the plot area between the heatmap grid (page 0) and the
         embedded streamline panel (page 1)."""
         self._streamline_view_on = bool(checked)
         self.streamline_view_toggle.setText("Back to heatmap" if checked else "Show streamlines")
+        # Context-dependent controls: streamline density / width when the
+        # streamlines are up, the heatmap colour palette when the heatmap is.
+        if hasattr(self, "_streamline_ctrls_group"):
+            self._streamline_ctrls_group.setVisible(checked)
+        if hasattr(self, "_palette_group"):
+            self._palette_group.setVisible(not checked)
+        # the -/+ scale strip drives the heatmap's colour-scale max -- keep
+        # its footprint (so the plot stays the same width) but grey it out
+        # while the streamline view, which has its own fixed colorbar, is up.
+        if hasattr(self, "scale_strip"):
+            self.scale_strip.setEnabled(not checked)
         panel = getattr(self, "streamline_live_panel", None)
-        if panel is None or not hasattr(self, "_plot_stack"):
+        page = getattr(self, "_streamline_page", None)
+        if panel is None or page is None:
             return
         if checked:
             panel.ensure_loaded()
             self._sync_streamline_view_scenario()
-            self._plot_stack.setCurrentWidget(panel)
+            self._align_streamline_page()
+            self._plot_stack.setCurrentWidget(page)
         else:
             self._plot_stack.setCurrentIndex(0)
 
@@ -3133,6 +3309,32 @@ class MainWindow(QtWidgets.QMainWindow):
                 if combo.currentIndex() != i:
                     combo.setCurrentIndex(i)
                 break
+
+    def _on_streamline_density_changed(self, value: float) -> None:
+        """Bottom-bar density spinbox -> the embedded panel's own control."""
+        panel = getattr(self, "streamline_live_panel", None)
+        if panel is not None and panel.density_spin.value() != value:
+            panel.density_spin.setValue(value)   # fires the panel's re-render
+
+    def _on_streamline_width_toggled(self, checked: bool) -> None:
+        """Bottom-bar "width ∝ speed" -> the embedded panel's own checkbox."""
+        panel = getattr(self, "streamline_live_panel", None)
+        if panel is not None and panel.linewidth_check.isChecked() != checked:
+            panel.linewidth_check.setChecked(checked)   # fires the panel's re-render
+
+    def _on_live_palette_changed(self, _idx: int) -> None:
+        """Live-viewer colour-palette dropdown -> _set_colormap (same path
+        as View > Colormap). Guarded: this combo is built before the grid."""
+        if not hasattr(self, "view_grid"):
+            return
+        name = self.palette_combo.currentData()
+        if name:
+            self._set_colormap(name)
+            # TEMPERATURE (ISOLINES) draws its contours from a colormap too --
+            # re-sync the active cell so the isolines follow the new palette.
+            active = self.view_grid.active_cell()
+            if active is not None:
+                self._apply_contour_overlay_state(active)
 
     def _on_time_changed(self, index: int):
         """TimeController's tick/seek signal (M1.4.1): pull the frame for
