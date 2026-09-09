@@ -3329,12 +3329,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         name = self.palette_combo.currentData()
         if name:
-            self._set_colormap(name)
-            # TEMPERATURE (ISOLINES) draws its contours from a colormap too --
-            # re-sync the active cell so the isolines follow the new palette.
-            active = self.view_grid.active_cell()
-            if active is not None:
-                self._apply_contour_overlay_state(active)
+            self._set_colormap(name)   # also re-syncs TEMPERATURE (ISOLINES) bands
 
     def _on_time_changed(self, index: int):
         """TimeController's tick/seek signal (M1.4.1): pull the frame for
@@ -5065,6 +5060,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.current_colormap = cmap
         self.settings.setValue("colormap", cmap)
         self.view_grid.active_view().set_cmap(cmap)
+        # TEMPERATURE (ISOLINES) draws its filled contour bands from a
+        # colormap too, so it has to follow any colormap change -- whether
+        # from the bottom-bar palette dropdown or the View > Colormap menu.
+        active = self.view_grid.active_cell()
+        if (active is not None and active.quantity_key
+                and active.quantity_key.quantity == "TEMPERATURE (ISOLINES)"):
+            self._apply_contour_overlay_state(active)
 
     def _set_interpolation(self, interpolation: str):
         # Interpolation is treated as a global "look" setting (applies to
