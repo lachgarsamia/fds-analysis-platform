@@ -640,6 +640,29 @@ def build_qss(p: Palette, ui_scale: float = 1.0) -> str:
         outline: none;
     }}
 
+    /* Without this, a QDoubleSpinBox (the Live Viewer streamline-density
+    field) falls back to the native style -- dark-grey text on the dark
+    theme's near-black, effectively unreadable. Match the QComboBox pill. */
+    QAbstractSpinBox {{
+        background-color: {p.bg_sunken};
+        color: {p.text_primary};
+        border: none;
+        border-radius: {r_md};
+        padding: {pad_sm} {pad_md};
+        min-height: 26px;
+        selection-background-color: {p.accent};
+        selection-color: {p.accent_text};
+    }}
+
+    QAbstractSpinBox:focus {{
+        border: 2px solid {p.focus_ring};
+    }}
+
+    QAbstractSpinBox:disabled {{
+        color: {p.text_disabled};
+        background-color: {p.bg_sunken};
+    }}
+
     NavigationToolbar2QT {{
         background-color: {p.bg_elevated};
         border-bottom: 1px solid {p.border};
