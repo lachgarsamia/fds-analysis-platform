@@ -124,6 +124,10 @@ class TestIntegration:
                 qapp.processEvents()
                 name = window.palette_combo.currentData()
                 assert cell.view._isoline_cmap == name
+            # ... and the View > Colormap menu path (_set_colormap direct) too
+            window._set_colormap("plasma")
+            qapp.processEvents()
+            assert cell.view._isoline_cmap == "plasma"
         window.close()
 
     def test_mainwindow_theme_switch(self, qapp):
